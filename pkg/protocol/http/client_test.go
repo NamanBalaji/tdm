@@ -4,6 +4,7 @@ package http
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -138,6 +139,129 @@ func TestInitialize(t *testing.T) {
 		}
 		_, err := client.Initialize(context.Background(), server.URL, opts)
 		require.NoError(t, err)
+	})
+
+	t.Run("HEAD not allowed falls back to range check", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.Method {
+			case http.MethodHead:
+				w.WriteHeader(http.StatusMethodNotAllowed)
+			case http.MethodGet:
+				if r.Header.Get("Range") == "bytes=0-0" {
+					w.Header().Set("Content-Range", "bytes 0-0/1000")
+					w.Header().Set("Content-Length", "1")
+					w.Header().Set("Content-Type", "text/plain")
+					w.WriteHeader(http.StatusPartialContent)
+				}
+			}
+		}))
+		defer server.Close()
+
+		client := NewClient(nil)
+		fileInfo, err := client.Initialize(context.Background(), server.URL, protocol.DownloadOptions{})
+
+		require.NoError(t, err)
+		assert.Equal(t, int64(1000), fileInfo.Size)
+		assert.True(t, fileInfo.Resumable)
+	})
+
+	t.Run("server doesn't support range requests", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodHead {
+				w.WriteHeader(http.StatusMethodNotAllowed)
+				return
+			}
+			// Ignore range header and send full response
+			w.Header().Set("Content-Length", "1000")
+			w.Header().Set("Content-Type", "text/plain")
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer server.Close()
+
+		client := NewClient(nil)
+		fileInfo, err := client.Initialize(context.Background(), server.URL, protocol.DownloadOptions{})
+
+		require.NoError(t, err)
+		assert.Equal(t, int64(1000), fileInfo.Size)
+		assert.False(t, fileInfo.Resumable)
+	})
+
+	t.Run("content disposition filename", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Disposition", `attachment; filename="test.txt"`)
+			w.Header().Set("Content-Type", "text/plain")
+			w.Header().Set("Content-Length", "1000")
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer server.Close()
+
+		client := NewClient(nil)
+		fileInfo, err := client.Initialize(context.Background(), server.URL, protocol.DownloadOptions{})
+
+		require.NoError(t, err)
+		assert.Equal(t, "test.txt", fileInfo.Filename)
+	})
+
+	t.Run("filename from URL when no content disposition", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/plain")
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer server.Close()
+
+		client := NewClient(nil)
+		fileInfo, err := client.Initialize(context.Background(), server.URL+"/path/testfile.txt", protocol.DownloadOptions{})
+
+		require.NoError(t, err)
+		assert.Equal(t, "testfile.txt", fileInfo.Filename)
+	})
+
+	t.Run("error handling with proper HTTP error types", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusInternalServerError)
+		}))
+		defer server.Close()
+
+		client := NewClient(nil)
+		_, err := client.Initialize(context.Background(), server.URL, protocol.DownloadOptions{})
+
+		assert.Error(t, err)
+		var httpErr *HTTPError
+		assert.True(t, errors.As(err, &httpErr))
+		assert.Equal(t, ErrorTypeHTTP, httpErr.Type)
+		assert.Equal(t, http.StatusInternalServerError, httpErr.Status)
+	})
+
+	t.Run("handles network errors", func(t *testing.T) {
+		client := NewClient(nil)
+		_, err := client.Initialize(context.Background(), "http://invalid.localhost:9999", protocol.DownloadOptions{})
+
+		assert.Error(t, err)
+		var httpErr *HTTPError
+		assert.True(t, errors.As(err, &httpErr))
+		assert.Equal(t, ErrorTypeNetwork, httpErr.Type)
+	})
+
+	t.Run("HEAD and Range both fail falls back to normal GET", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.Method {
+			case http.MethodHead:
+				w.WriteHeader(http.StatusMethodNotAllowed)
+			case http.MethodGet:
+				// Always return 200 OK with full content
+				w.Header().Set("Content-Length", "1000")
+				w.Header().Set("Content-Type", "text/plain")
+				w.WriteHeader(http.StatusOK)
+			}
+		}))
+		defer server.Close()
+
+		client := NewClient(nil)
+		fileInfo, err := client.Initialize(context.Background(), server.URL, protocol.DownloadOptions{})
+
+		require.NoError(t, err)
+		assert.Equal(t, int64(1000), fileInfo.Size)
+		assert.False(t, fileInfo.Resumable)
 	})
 }
 

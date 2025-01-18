@@ -41,3 +41,22 @@ func (e *HTTPError) Error() string {
 func (e *HTTPError) Unwrap() error {
 	return e.Err
 }
+
+func NewHTTPStatusError(op, url string, status int, err error) *HTTPError {
+	return &HTTPError{
+		Type:      ErrorTypeHTTP,
+		Operation: op,
+		URL:       url,
+		Status:    status,
+		Err:       err,
+	}
+}
+
+func NewHTTPNetworkError(op, url string, err error) *HTTPError {
+	return &HTTPError{
+		Type:      ErrorTypeNetwork,
+		Operation: op,
+		URL:       url,
+		Err:       err,
+	}
+}
