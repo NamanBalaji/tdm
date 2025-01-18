@@ -35,7 +35,12 @@ type Option func(*DownloadOptions)
 // WithHeaders sets custom headers for the download
 func WithHeaders(headers map[string]string) Option {
 	return func(o *DownloadOptions) {
-		o.Headers = headers
+		if o.Headers == nil {
+			o.Headers = make(map[string]string)
+		}
+		for k, v := range headers {
+			o.Headers[k] = v
+		}
 	}
 }
 
