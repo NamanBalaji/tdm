@@ -2,189 +2,78 @@ package event
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"sync"
 	"time"
 )
 
 type EventBus interface {
-	// GetSubscription creates a new subscription for specified event types
-	GetSubscription(ctx context.Context, types ...EventType) (*Subscription, error)
-	// RemoveSubscription removes a subscription
-	RemoveSubscription(*Subscription) error
-	// Publish sends an event to all relevant subscribers
-	Publish(ctx context.Context, evt Event) error
-	// Close shuts down the event bus
-	Close() error
+	Subscribe(ctx context.Context, et EventType) <-chan Event
+	Emit(et EventType, data interface{})
 }
 
 type eventBus struct {
-	logger     *slog.Logger
-	mu         sync.RWMutex
-	subs       map[EventType][]*Subscription
-	bufferSize int
-	closed     bool
-	wg         sync.WaitGroup
+	logger      *slog.Logger
+	mu          sync.RWMutex
+	subscribers map[EventType][]chan Event
+	bufferSize  int
 }
 
-type EventBusConfig struct {
-	Logger     *slog.Logger
-	BufferSize int
-}
-
-func NewEventBus(cfg EventBusConfig) EventBus {
+func NewEventBus(logger *slog.Logger, bufferSize int) EventBus {
 	return &eventBus{
-		logger:     cfg.Logger,
-		subs:       make(map[EventType][]*Subscription),
-		bufferSize: cfg.BufferSize,
+		logger:      logger,
+		subscribers: make(map[EventType][]chan Event),
+		bufferSize:  bufferSize,
 	}
 }
 
-func (b *eventBus) GetSubscription(ctx context.Context, types ...EventType) (*Subscription, error) {
-	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	default:
-		if len(types) == 0 {
-			b.logger.Error("subscription failed: no event types specified")
-			return nil, fmt.Errorf("at least one event type must be specified")
-		}
-
-		b.mu.Lock()
-		defer b.mu.Unlock()
-
-		if b.closed {
-			return nil, fmt.Errorf("event bus is closed")
-		}
-
-		sub := &Subscription{
-			Types: types,
-			Ch:    make(chan Event, b.bufferSize),
-			Done:  make(chan struct{}),
-		}
-
-		for _, t := range types {
-			b.subs[t] = append(b.subs[t], sub)
-		}
-
-		b.logger.Info("new subscription created",
-			"event_types", types,
-			"subscriber_count", len(types))
-
-		return sub, nil
-	}
-}
-
-func (b *eventBus) RemoveSubscription(sub *Subscription) error {
-	if sub == nil {
-		return nil
-	}
-
+func (b *eventBus) Subscribe(ctx context.Context, eventType EventType) <-chan Event {
 	b.mu.Lock()
+	ch := make(chan Event, b.bufferSize)
+	b.subscribers[eventType] = append(b.subscribers[eventType], ch)
 	defer b.mu.Unlock()
 
-	if b.closed {
-		return fmt.Errorf("event bus is closed")
-	}
-
-	// Signal that the subscription is being removed
-	close(sub.Done)
-
-	for _, t := range sub.Types {
-		currentSubs := b.subs[t]
-		newSubs := make([]*Subscription, 0, len(currentSubs))
-		for _, s := range currentSubs {
-			if s != sub {
-				newSubs = append(newSubs, s)
-			}
-		}
-		if len(newSubs) == 0 {
-			delete(b.subs, t)
-			b.logger.Debug("removed last subscriber for event type", "event_type", t)
-		} else {
-			b.subs[t] = newSubs
-		}
-	}
-
-	// Drain any remaining events before closing
 	go func() {
-		for range sub.Ch {
-			// Drain channel
-		}
+		<-ctx.Done()
+		b.unsubscribe(eventType, ch)
 	}()
 
-	close(sub.Ch)
-	b.logger.Info("subscription removed", "event_types", sub.Types)
-	return nil
+	return ch
 }
 
-func (b *eventBus) Publish(ctx context.Context, evt Event) error {
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	default:
-		b.mu.RLock()
-		defer b.mu.RUnlock()
+func (b *eventBus) Emit(eventType EventType, data any) {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
 
-		if b.closed {
-			return fmt.Errorf("event bus is closed")
+	event := Event{
+		Type:      eventType,
+		Data:      data,
+		Timestamp: time.Now().UTC(),
+	}
+
+	for _, ch := range b.subscribers[eventType] {
+		select {
+		case ch <- event:
+		default:
+			b.logger.Warn("event channel full, dropping event",
+				"event_type", eventType,
+				"subscribers", len(b.subscribers[eventType]),
+			)
 		}
-
-		if evt.Timestamp.IsZero() {
-			evt.Timestamp = time.Now()
-		}
-
-		if subs, ok := b.subs[evt.Type]; ok {
-			b.wg.Add(1)
-			go func(subscribers []*Subscription) {
-				defer b.wg.Done()
-				for _, sub := range subscribers {
-					select {
-					case <-ctx.Done():
-						return
-					case <-sub.Done:
-						continue
-					default:
-						select {
-						case sub.Ch <- evt:
-						case <-sub.Done:
-							continue
-						default:
-							b.logger.Warn("dropped event: subscriber channel full",
-								"event_type", evt.Type)
-						}
-					}
-				}
-			}(subs) // Pass subscribers slice to avoid race conditions
-		} else {
-			b.logger.Debug("no subscribers for event", "event_type", evt.Type)
-		}
-
-		return nil
 	}
 }
 
-func (b *eventBus) Close() error {
+func (b *eventBus) unsubscribe(eventType EventType, ch chan Event) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	if b.closed {
-		return nil
-	}
+	subs := b.subscribers[eventType]
+	for i, sub := range subs {
+		if sub == ch {
+			b.subscribers[eventType] = append(subs[:i], subs[i+1:]...)
+			close(ch)
 
-	b.closed = true
-
-	b.wg.Wait()
-
-	for t, subs := range b.subs {
-		for _, sub := range subs {
-			close(sub.Done)
-			close(sub.Ch)
+			return
 		}
-		delete(b.subs, t)
 	}
-
-	b.logger.Info("event bus closed")
-	return nil
 }
