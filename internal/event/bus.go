@@ -7,73 +7,87 @@ import (
 	"time"
 )
 
+// EventBus is the interface for the event bus.
 type EventBus interface {
 	Subscribe(ctx context.Context, et EventType) <-chan Event
-	Emit(et EventType, data interface{})
+	Emit(et EventType, data any)
 }
 
+// eventBus is the implementation of the EventBus interface.
 type eventBus struct {
 	logger      *slog.Logger
-	mu          sync.RWMutex
-	subscribers map[EventType][]chan Event
+	subscribers *sync.Map // EventType → []*subscriber
 	bufferSize  int
 }
 
+// NewEventBus creates a new EventBus instance.
 func NewEventBus(logger *slog.Logger, bufferSize int) EventBus {
 	return &eventBus{
 		logger:      logger,
-		subscribers: make(map[EventType][]chan Event),
+		subscribers: &sync.Map{},
 		bufferSize:  bufferSize,
 	}
 }
 
-func (b *eventBus) Subscribe(ctx context.Context, eventType EventType) <-chan Event {
-	b.mu.Lock()
+// Subscribe subscribes to events of a specific type.
+func (b *eventBus) Subscribe(ctx context.Context, et EventType) <-chan Event {
 	ch := make(chan Event, b.bufferSize)
-	b.subscribers[eventType] = append(b.subscribers[eventType], ch)
-	defer b.mu.Unlock()
+	sub := &subscriber{ch: ch}
 
+	// Load or create subscriber list for this event type
+	rawSubs, _ := b.subscribers.LoadOrStore(et, []*subscriber{})
+	subs := rawSubs.([]*subscriber)
+	subs = append(subs, sub)
+	b.subscribers.Store(et, subs)
+
+	// Cleanup on context cancellation
 	go func() {
 		<-ctx.Done()
-		b.unsubscribe(eventType, ch)
+		sub.closed.Store(true)
+		close(ch)
+		b.cleanupSubscriber(et, sub)
 	}()
 
 	return ch
 }
 
-func (b *eventBus) Emit(eventType EventType, data any) {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
+// Emit emits an event of a specific type with associated data.
+func (b *eventBus) Emit(et EventType, data any) {
+	rawSubs, ok := b.subscribers.Load(et)
+	if !ok {
+		return // No subscribers
+	}
 
+	subs := rawSubs.([]*subscriber)
 	event := Event{
-		Type:      eventType,
+		Type:      et,
 		Data:      data,
 		Timestamp: time.Now().UTC(),
 	}
 
-	for _, ch := range b.subscribers[eventType] {
+	for _, sub := range subs {
+		if sub.closed.Load() {
+			continue
+		}
 		select {
-		case ch <- event:
+		case sub.ch <- event:
 		default:
-			b.logger.Warn("event channel full, dropping event",
-				"event_type", eventType,
-				"subscribers", len(b.subscribers[eventType]),
-			)
+			b.logger.Warn("event channel full", "event_type", et)
 		}
 	}
 }
 
-func (b *eventBus) unsubscribe(eventType EventType, ch chan Event) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
+// cleanupSubscriber removes a subscriber from the list for a specific event type.
+func (b *eventBus) cleanupSubscriber(et EventType, target *subscriber) {
+	rawSubs, _ := b.subscribers.Load(et)
+	subs := rawSubs.([]*subscriber)
 
-	subs := b.subscribers[eventType]
-	for i, sub := range subs {
-		if sub == ch {
-			b.subscribers[eventType] = append(subs[:i], subs[i+1:]...)
-			close(ch)
-
-			return
+	newSubs := make([]*subscriber, 0, len(subs))
+	for _, sub := range subs {
+		if sub != target {
+			newSubs = append(newSubs, sub)
 		}
 	}
+
+	b.subscribers.Store(et, newSubs)
 }

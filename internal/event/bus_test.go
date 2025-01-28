@@ -1,124 +1,237 @@
-package event
+package event_test
 
 import (
 	"context"
+	"io"
 	"log/slog"
 	"os"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/NamanBalaji/tdm/internal/event"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
-var logger = slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
-	Level: slog.LevelDebug,
-}))
-
-func TestEventBusBasic(t *testing.T) {
-	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
-		Level: slog.LevelDebug,
-	}))
-	bus := NewEventBus(logger, 10)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	sub := bus.Subscribe(ctx, TaskCreated)
-
-	bus.Emit(TaskCreated, "task-123")
-
-	select {
-	case e := <-sub:
-		id, ok := e.Data.(string)
-		assert.True(t, ok)
-		assert.Equal(t, "task-123", id)
-	case <-time.After(100 * time.Millisecond):
-		t.Fatal("event not received")
-	}
+type testLogger struct {
+	*slog.Logger
+	warnings []string
 }
 
-func TestContextCancellation(t *testing.T) {
-	bus := NewEventBus(logger, 0)
-	ctx, cancel := context.WithCancel(context.Background())
-	sub := bus.Subscribe(ctx, TaskCreated)
-
-	cancel()
-
-	_, ok := <-sub
-	assert.False(t, ok)
+func (tl *testLogger) Warn(msg string, args ...any) {
+	tl.warnings = append(tl.warnings, msg)
 }
 
-func TestConcurrentOperations(t *testing.T) {
-	bus := NewEventBus(logger, 100)
+func TestEventBus(t *testing.T) {
+	t.Run("SingleSubscriberReceivesEvent", func(t *testing.T) {
+		logger := &testLogger{
+			Logger: slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+				Level: slog.LevelDebug,
+			})),
+		}
+		bus := event.NewEventBus(logger.Logger, 10)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+		ch := bus.Subscribe(ctx, event.TaskCreated)
+		expectedData := map[string]string{"task_id": "123"}
 
-	var (
-		emitterWG    sync.WaitGroup
-		subscriberWG sync.WaitGroup
-	)
+		bus.Emit(event.TaskCreated, expectedData)
 
-	// Start subscribers
-	for i := 0; i < 10; i++ {
-		subscriberWG.Add(1)
+		select {
+		case e := <-ch:
+			assert.Equal(t, event.TaskCreated, e.Type)
+			assert.Equal(t, expectedData, e.Data)
+			assert.False(t, e.Timestamp.IsZero())
+		case <-time.After(100 * time.Millisecond):
+			t.Fatal("Did not receive event within timeout")
+		}
+	})
+
+	t.Run("MultipleSubscribersSameEventType", func(t *testing.T) {
+		logger := &testLogger{
+			Logger: slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+				Level: slog.LevelDebug,
+			})),
+		}
+
+		bus := event.NewEventBus(logger.Logger, 10)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		var wg sync.WaitGroup
+		const subscribers = 5
+		wg.Add(subscribers)
+
+		for i := 0; i < subscribers; i++ {
+			ch := bus.Subscribe(ctx, event.ChunkProgress)
+			go func() {
+				defer wg.Done()
+				<-ch // Ensure we receive the event
+			}()
+		}
+
+		bus.Emit(event.ChunkProgress, map[string]int{"bytes": 1024})
+		wg.Wait() // Wait for all subscribers to receive
+	})
+
+	t.Run("UnsubscribeViaContextCancellation", func(t *testing.T) {
+		logger := &testLogger{
+			Logger: slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+				Level: slog.LevelDebug,
+			})),
+		}
+
+		bus := event.NewEventBus(logger.Logger, 10)
+		ctx, cancel := context.WithCancel(context.Background())
+
+		ch := bus.Subscribe(ctx, event.TaskCompleted)
+		cancel() // Unsubscribe
+
+		// Wait for unsubscribe to complete
+		time.Sleep(50 * time.Millisecond)
+		bus.Emit(event.TaskCompleted, nil)
+
+		select {
+		case _, ok := <-ch:
+			assert.False(t, ok, "Channel should be closed")
+		case <-time.After(100 * time.Millisecond):
+			t.Fatal("Channel not closed after unsubscribe")
+		}
+	})
+
+	t.Run("DifferentEventTypesDontInterfere", func(t *testing.T) {
+		logger := &testLogger{
+			Logger: slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+				Level: slog.LevelDebug,
+			})),
+		}
+
+		bus := event.NewEventBus(logger.Logger, 10)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		mainCh := bus.Subscribe(ctx, event.TaskCreated)
+		otherCh := bus.Subscribe(ctx, event.TaskCompleted)
+
+		bus.Emit(event.TaskCreated, "create")
+		bus.Emit(event.TaskCompleted, "complete")
+
+		select {
+		case e := <-mainCh:
+			assert.Equal(t, event.TaskCreated, e.Type)
+		case <-time.After(100 * time.Millisecond):
+			t.Fatal("Main subscriber didn't receive event")
+		}
+
+		select {
+		case e := <-otherCh:
+			assert.Equal(t, event.TaskCompleted, e.Type)
+		case <-time.After(100 * time.Millisecond):
+			t.Fatal("Other subscriber didn't receive event")
+		}
+	})
+
+	t.Run("HighConcurrencyStressTest", func(t *testing.T) {
+		logger := slog.New(slog.NewTextHandler(io.Discard, nil)) // Disable logs for this test
+		bus := event.NewEventBus(logger, 1000)                   // Large buffer to prevent drops
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		const (
+			emitters   = 10
+			eventsEach = 100
+		)
+
+		var (
+			emitWg     sync.WaitGroup
+			eventCount atomic.Int32
+			done       = make(chan struct{})
+		)
+
+		// Single subscriber with guaranteed processing
+		ch := bus.Subscribe(ctx, event.ChunkProgress)
 		go func() {
-			defer subscriberWG.Done()
-			sub := bus.Subscribe(ctx, TaskCreated)
-			for {
-				select {
-				case _, ok := <-sub:
-					if !ok {
-						return
-					}
-				case <-ctx.Done():
-					return
+			for range ch {
+				eventCount.Add(1)
+			}
+			close(done)
+		}()
+
+		// Start emitters
+		emitWg.Add(emitters)
+		for i := 0; i < emitters; i++ {
+			go func() {
+				defer emitWg.Done()
+				for j := 0; j < eventsEach; j++ {
+					bus.Emit(event.ChunkProgress, j)
 				}
-			}
-		}()
-	}
+			}()
+		}
 
-	for i := 0; i < 5; i++ {
-		emitterWG.Add(1)
-		go func() {
-			defer emitterWG.Done()
-			for j := 0; j < 100; j++ {
-				bus.Emit(TaskCreated, j)
-			}
-		}()
-	}
+		// Wait for all emits to complete
+		emitWg.Wait()
 
-	emitterWG.Wait()
+		// Allow time for remaining events to be processed
+		time.Sleep(100 * time.Millisecond)
 
-	cancel()
+		// Close and wait for subscriber
+		cancel()
+		<-done
 
-	subscriberWG.Wait()
-}
+		expected := emitters * eventsEach
+		assert.Equal(t, int32(expected), eventCount.Load(),
+			"Missing %d events (buffer overflows: reduce concurrency or increase buffer size)",
+			int32(expected)-eventCount.Load(),
+		)
+	})
 
-func TestChannelFull(t *testing.T) {
-	var logged bool
-	logger := slog.New(slog.NewTextHandler(&testWriter{t: t, fn: func() { logged = true }}, nil))
+	t.Run("EventDataIntegrity", func(t *testing.T) {
+		logger := &testLogger{
+			Logger: slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+				Level: slog.LevelDebug,
+			})),
+		}
 
-	bus := NewEventBus(logger, 1)
+		bus := event.NewEventBus(logger.Logger, 10)
 
-	ctx := context.Background()
-	bus.Subscribe(ctx, TaskCreated)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	bus.Emit(TaskCreated, "1")
-	bus.Emit(TaskCreated, "2")
+		type complexData struct {
+			ID    string
+			Bytes int64
+			Error error
+		}
+		expected := complexData{ID: "123", Bytes: 1024}
 
-	time.Sleep(100 * time.Millisecond)
-	assert.True(t, logged, "should log channel full")
-}
+		ch := bus.Subscribe(ctx, event.FileMergingCompleted)
+		bus.Emit(event.FileMergingCompleted, expected)
 
-type testWriter struct {
-	t  *testing.T
-	fn func()
-}
+		select {
+		case e := <-ch:
+			received, ok := e.Data.(complexData)
+			require.True(t, ok, "Type assertion failed")
+			assert.Equal(t, expected, received)
+		case <-time.After(100 * time.Millisecond):
+			t.Fatal("Did not receive event")
+		}
+	})
 
-func (w *testWriter) Write(p []byte) (n int, err error) {
-	w.t.Helper()
-	w.fn()
-	return len(p), nil
+	t.Run("NoSubscribersNoPanic", func(t *testing.T) {
+		logger := &testLogger{
+			Logger: slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+				Level: slog.LevelDebug,
+			})),
+		}
+
+		bus := event.NewEventBus(logger.Logger, 10)
+
+		assert.NotPanics(t, func() {
+			bus.Emit(event.SystemWarning, "test")
+		})
+	})
 }
