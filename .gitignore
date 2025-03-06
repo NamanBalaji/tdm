@@ -1,0 +1,31 @@
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.tmp
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool, specifically when used with LiteIDE
+*.out
+cover.html
+
+# Dependency directories (remove the comment below to include it)
+# vendor/
+
+# Go workspace file
+go.work
+.idea
+.vscode
+.DS_Store
+
+# Dependency directories (remove the comment below to include it)
+vendor/
+junit.xml
+*.pem
+*.csr
+*.srl
+.env
