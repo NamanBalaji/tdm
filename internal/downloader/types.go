@@ -1,6 +1,7 @@
 package downloader
 
 import (
+	"github.com/google/uuid"
 	"time"
 )
 
@@ -70,8 +71,7 @@ type DownloadInfo struct {
 
 // Progress represents a progress update event
 type Progress struct {
-	DownloadID     string
-	ChunkID        string // Empty for overall download updates
+	DownloadID     uuid.UUID
 	BytesCompleted int64
 	TotalBytes     int64
 	Speed          int64 // Current speed in bytes/sec
