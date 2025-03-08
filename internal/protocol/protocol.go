@@ -5,6 +5,7 @@ import (
 	"github.com/NamanBalaji/tdm/internal/chunk"
 	"github.com/NamanBalaji/tdm/internal/connection"
 	"github.com/NamanBalaji/tdm/internal/downloader"
+	"github.com/NamanBalaji/tdm/internal/protocol/http"
 	"sync"
 )
 
@@ -15,7 +16,7 @@ type Protocol interface {
 	// Initialize gathers information about the download resource
 	Initialize(url string, options *downloader.DownloadOptions) (*downloader.DownloadInfo, error)
 	// CreateConnection creates a new connection for chunk download
-	CreateConnection(chunk *chunk.Chunk, options *downloader.DownloadOptions) (connection.Connection, error)
+	CreateConnection(urlStr string, chunk *chunk.Chunk, options *downloader.DownloadOptions) (connection.Connection, error)
 }
 
 var (
@@ -32,7 +33,11 @@ type Handler struct {
 }
 
 func NewHandler() *Handler {
-	return &Handler{}
+	return &Handler{
+		protocols: []Protocol{
+			http.NewHandler(),
+		},
+	}
 }
 
 // RegisterProtocol adds a protocol to the handler

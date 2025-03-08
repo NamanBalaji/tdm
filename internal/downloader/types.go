@@ -19,6 +19,7 @@ const (
 
 // DownloadOptions contains configurable settings for a download
 type DownloadOptions struct {
+	URL                string
 	Filename           string            // Target filename (optional, extracted from URL if empty)
 	Directory          string            // Target directory for downloaded file
 	Connections        int               // Number of parallel connections (0 = use default)
