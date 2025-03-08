@@ -18,7 +18,6 @@ import (
 const (
 	defaultConnectTimeout = 30 * time.Second
 	defaultReadTimeout    = 30 * time.Second
-	defaultWriteTimeout   = 30 * time.Second
 	defaultIdleTimeout    = 90 * time.Second
 	defaultUserAgent      = "TDM/1.0"
 )
@@ -64,60 +63,23 @@ func (h *Handler) CanHandle(urlStr string) bool {
 }
 
 func (h *Handler) Initialize(urlStr string, options *downloader.DownloadOptions) (*downloader.DownloadInfo, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), defaultConnectTimeout)
-	defer cancel()
-
-	// Create a HEAD request to get file information
-	req, err := http.NewRequestWithContext(ctx, "HEAD", urlStr, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
+	info, err := h.initializeWithHEAD(urlStr, options)
+	if err == nil {
+		return info, nil
 	}
 
-	// Add common headers
-	req.Header.Set("User-Agent", defaultUserAgent)
-
-	// Add custom headers if provided
-	if options != nil && options.Headers != nil {
-		for key, value := range options.Headers {
-			req.Header.Set(key, value)
+	if IsFallbackError(err) {
+		info, err = h.initializeWithRangeGET(urlStr, options)
+		if err == nil {
+			return info, nil
 		}
 	}
-	resp, err := h.client.Do(req)
-	if err != nil {
-		// If HEAD fails, try GET with Range: bytes=0-0
-		return h.initializeWithGET(urlStr, options)
-	}
-	defer resp.Body.Close()
 
-	// Check if the server returned an error status
-	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("server returned error status: %s", resp.Status)
+	if IsFallbackError(err) {
+		return h.initializeWithRegularGET(urlStr, options)
 	}
 
-	// Extract file information
-	info := &downloader.DownloadInfo{
-		URL:             urlStr,
-		MimeType:        resp.Header.Get("Content-Type"),
-		TotalSize:       resp.ContentLength,
-		SupportsRanges:  resp.Header.Get("Accept-Ranges") == "bytes",
-		LastModified:    parseLastModified(resp.Header.Get("Last-Modified")),
-		ETag:            resp.Header.Get("ETag"),
-		AcceptRanges:    resp.Header.Get("Accept-Ranges") == "bytes",
-		ContentEncoding: resp.Header.Get("Content-Encoding"),
-		Server:          resp.Header.Get("Server"),
-		CanBeResumed:    resp.Header.Get("Accept-Ranges") == "bytes",
-	}
-
-	// Try to get filename from Content-Disposition header
-	filename := parseContentDisposition(resp.Header.Get("Content-Disposition"))
-	if filename != "" {
-		info.Filename = filename
-	} else {
-		// Extract filename from URL if not found in headers
-		info.Filename = extractFilenameFromURL(urlStr)
-	}
-
-	return info, nil
+	return nil, err
 }
 
 func (h *Handler) CreateConnection(urlString string, chunk *chunk.Chunk, options *downloader.DownloadOptions) (connection.Connection, error) {
@@ -145,31 +107,36 @@ func (h *Handler) CreateConnection(urlString string, chunk *chunk.Chunk, options
 	return conn, nil
 }
 
-// initializeWithGET attempts to initialize using a GET request with Range header
-// This is a fallback when HEAD requests are not supported by the server
-func (h *Handler) initializeWithGET(urlStr string, options *downloader.DownloadOptions) (*downloader.DownloadInfo, error) {
-	// First try with a range request to test if server supports ranges
-	info, rangeSupported, err := h.initializeWithRangeGET(urlStr, options)
-	if err == nil {
-		return info, nil
-	}
-
-	// If range request failed, try with regular GET (but only get headers)
-	if !rangeSupported {
-		return h.initializeWithRegularGET(urlStr, options)
-	}
-
-	return nil, err
-}
-
-// initializeWithRangeGET tries to get file info using Range headers
-func (h *Handler) initializeWithRangeGET(urlStr string, options *downloader.DownloadOptions) (*downloader.DownloadInfo, bool, error) {
+// initializeWithHEAD attempts to initialize using a HEAD request
+func (h *Handler) initializeWithHEAD(urlStr string, options *downloader.DownloadOptions) (*downloader.DownloadInfo, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), defaultConnectTimeout)
 	defer cancel()
 
-	req, err := generateGETRequest(ctx, urlStr, options)
+	req, err := generateRequest(ctx, urlStr, http.MethodHead, options)
 	if err != nil {
-		return nil, false, err
+		return nil, err
+	}
+
+	resp, err := h.client.Do(req)
+	if err != nil {
+		return nil, ClassifyError(err)
+	}
+
+	if resp.StatusCode >= 400 {
+		return nil, ErrHeadNotSupported
+	}
+
+	return generateInfo(urlStr, resp, resp.Header.Get("Accept-Ranges") == "bytes", resp.ContentLength), nil
+}
+
+// initializeWithRangeGET tries to get file info using Range headers
+func (h *Handler) initializeWithRangeGET(urlStr string, options *downloader.DownloadOptions) (*downloader.DownloadInfo, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), defaultConnectTimeout)
+	defer cancel()
+
+	req, err := generateRequest(ctx, urlStr, http.MethodGet, options)
+	if err != nil {
+		return nil, err
 	}
 
 	// Set range header to get just the first byte
@@ -178,51 +145,34 @@ func (h *Handler) initializeWithRangeGET(urlStr string, options *downloader.Down
 	// Execute the GET request
 	resp, err := h.client.Do(req)
 	if err != nil {
-		return nil, false, fmt.Errorf("failed to connect to server: %w", err)
+		return nil, ClassifyError(err)
 	}
 	defer resp.Body.Close()
 
-	// Check if range request was rejected or returned an error
-	if resp.StatusCode != 206 {
-		return nil, false, fmt.Errorf("server does not support range requests")
+	if resp.StatusCode >= 400 {
+		return nil, ClassifyHTTPError(resp.StatusCode)
 	}
 
-	// Extract file information
-	info := &downloader.DownloadInfo{
-		URL:             urlStr,
-		MimeType:        resp.Header.Get("Content-Type"),
-		TotalSize:       -1,   // Unknown size
-		SupportsRanges:  true, // Confirmed by 206 status
-		LastModified:    parseLastModified(resp.Header.Get("Last-Modified")),
-		ETag:            resp.Header.Get("ETag"),
-		AcceptRanges:    true,
-		ContentEncoding: resp.Header.Get("Content-Encoding"),
-		Server:          resp.Header.Get("Server"),
-		CanBeResumed:    true,
+	// Check if range request was rejected or returned an error
+	if resp.StatusCode != 206 {
+		return nil, ErrRangesNotSupported
 	}
 
 	// Try to parse Content-Range header to get total size
 	contentRange := resp.Header.Get("Content-Range")
+	var totalSize int64 = -1
 	if contentRange != "" {
 		// Format: bytes 0-0/1234
 		parts := strings.Split(contentRange, "/")
 		if len(parts) == 2 {
 			size, err := strconv.ParseInt(parts[1], 10, 64)
 			if err == nil {
-				info.TotalSize = size
+				totalSize = size
 			}
 		}
 	}
 
-	// Try to get filename from Content-Disposition header
-	filename := parseContentDisposition(resp.Header.Get("Content-Disposition"))
-	if filename != "" {
-		info.Filename = filename
-	} else {
-		info.Filename = extractFilenameFromURL(urlStr)
-	}
-
-	return info, true, nil
+	return generateInfo(urlStr, resp, true, totalSize), nil
 }
 
 // initializeWithRegularGET gets file info using a regular GET request
@@ -231,7 +181,7 @@ func (h *Handler) initializeWithRegularGET(urlStr string, options *downloader.Do
 	ctx, cancel := context.WithTimeout(context.Background(), defaultConnectTimeout)
 	defer cancel()
 
-	req, err := generateGETRequest(ctx, urlStr, options)
+	req, err := generateRequest(ctx, urlStr, http.MethodGet, options)
 	if err != nil {
 		return nil, err
 	}
@@ -273,8 +223,9 @@ func (h *Handler) initializeWithRegularGET(urlStr string, options *downloader.Do
 
 		resp, err = h.client.Do(tempReq)
 		if err != nil {
-			return nil, fmt.Errorf("failed to connect to server: %w", err)
+			return nil, ClassifyError(err)
 		}
+		// We'll close the body immediately after getting headers
 		resp.Body.Close()
 	} else if resp.Body != nil {
 		defer resp.Body.Close()
@@ -282,33 +233,10 @@ func (h *Handler) initializeWithRegularGET(urlStr string, options *downloader.Do
 
 	// Check if the server returned an error status
 	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("server returned error status: %s", resp.Status)
+		return nil, ClassifyHTTPError(resp.StatusCode)
 	}
 
-	// Extract file information
-	info := &downloader.DownloadInfo{
-		URL:             urlStr,
-		MimeType:        resp.Header.Get("Content-Type"),
-		TotalSize:       resp.ContentLength, // May be -1 if unknown
-		SupportsRanges:  false,              // We already determined ranges aren't supported
-		LastModified:    parseLastModified(resp.Header.Get("Last-Modified")),
-		ETag:            resp.Header.Get("ETag"),
-		AcceptRanges:    false,
-		ContentEncoding: resp.Header.Get("Content-Encoding"),
-		Server:          resp.Header.Get("Server"),
-		CanBeResumed:    false, // Cannot resume without ranges
-	}
-
-	// Try to get filename from Content-Disposition header
-	filename := parseContentDisposition(resp.Header.Get("Content-Disposition"))
-	if filename != "" {
-		info.Filename = filename
-	} else {
-		// Extract filename from URL if not found in headers
-		info.Filename = extractFilenameFromURL(urlStr)
-	}
-
-	return info, nil
+	return generateInfo(urlStr, resp, false, resp.ContentLength), nil
 }
 
 // headerOnlyConn is a net.Conn wrapper that closes after reading headers
@@ -392,16 +320,14 @@ func parseLastModified(header string) time.Time {
 	return t
 }
 
-func generateGETRequest(ctx context.Context, urlStr string, options *downloader.DownloadOptions) (*http.Request, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, urlStr, nil)
+func generateRequest(ctx context.Context, urlStr, method string, options *downloader.DownloadOptions) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, method, urlStr, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
-	// Set common headers
 	req.Header.Set("User-Agent", defaultUserAgent)
 
-	// Add custom headers if provided
 	if options != nil && options.Headers != nil {
 		for key, value := range options.Headers {
 			req.Header.Set(key, value)
@@ -409,4 +335,29 @@ func generateGETRequest(ctx context.Context, urlStr string, options *downloader.
 	}
 
 	return req, nil
+}
+
+func generateInfo(urlStr string, resp *http.Response, canRange bool, totalSize int64) *downloader.DownloadInfo {
+	info := &downloader.DownloadInfo{
+		URL:             urlStr,
+		MimeType:        resp.Header.Get("Content-Type"),
+		TotalSize:       totalSize,
+		SupportsRanges:  canRange,
+		LastModified:    parseLastModified(resp.Header.Get("Last-Modified")),
+		ETag:            resp.Header.Get("ETag"),
+		AcceptRanges:    canRange,
+		ContentEncoding: resp.Header.Get("Content-Encoding"),
+		Server:          resp.Header.Get("Server"),
+		CanBeResumed:    canRange,
+	}
+
+	filename := parseContentDisposition(resp.Header.Get("Content-Disposition"))
+	if filename != "" {
+		info.Filename = filename
+	} else {
+		// Extract filename from URL if not found in headers
+		info.Filename = extractFilenameFromURL(info.URL)
+	}
+
+	return info
 }

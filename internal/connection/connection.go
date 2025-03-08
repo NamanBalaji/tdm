@@ -14,6 +14,10 @@ type Connection interface {
 	IsAlive() bool
 	// Reset reestablishes a dropped connection
 	Reset() error
+	// GetURL returns the connection's URL (for connection pooling)
+	GetURL() string
+	// GetHeaders returns the connection's headers (for connection pooling)
+	GetHeaders() map[string]string
 	// SetTimeout sets read/write timeouts
 	SetTimeout(timeout time.Duration)
 }

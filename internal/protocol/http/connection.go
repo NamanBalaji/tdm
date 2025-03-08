@@ -104,3 +104,11 @@ func (c *Connection) Reset() error {
 func (c *Connection) SetTimeout(timeout time.Duration) {
 	c.timeout = timeout
 }
+
+func (c *Connection) GetURL() string {
+	return c.url
+}
+
+func (c *Connection) GetHeaders() map[string]string {
+	return c.headers
+}
