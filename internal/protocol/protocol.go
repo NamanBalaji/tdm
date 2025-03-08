@@ -2,6 +2,8 @@ package protocol
 
 import (
 	"errors"
+	"github.com/NamanBalaji/tdm/internal/chunk"
+	"github.com/NamanBalaji/tdm/internal/connection"
 	"github.com/NamanBalaji/tdm/internal/downloader"
 	"sync"
 )
@@ -13,7 +15,7 @@ type Protocol interface {
 	// Initialize gathers information about the download resource
 	Initialize(url string, options *downloader.DownloadOptions) (*downloader.DownloadInfo, error)
 	// CreateConnection creates a new connection for chunk download
-	CreateConnection()
+	CreateConnection(chunk *chunk.Chunk, options *downloader.DownloadOptions) (connection.Connection, error)
 }
 
 var (

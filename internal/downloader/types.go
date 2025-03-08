@@ -9,12 +9,12 @@ import (
 type DownloadStatus string
 
 const (
-	StatusPending   DownloadStatus = "pending"   // Initial state
-	StatusActive    DownloadStatus = "active"    // Currently downloading
-	StatusPaused    DownloadStatus = "paused"    // Paused by user
-	StatusCompleted DownloadStatus = "completed" // Successfully completed
-	StatusFailed    DownloadStatus = "failed"    // Failed to complete
-	StatusQueued    DownloadStatus = "queued"    // Waiting in queue
+	StatusPending   DownloadStatus = "pending"
+	StatusActive    DownloadStatus = "active"
+	StatusPaused    DownloadStatus = "paused"
+	StatusCompleted DownloadStatus = "completed"
+	StatusFailed    DownloadStatus = "failed"
+	StatusQueued    DownloadStatus = "queued"
 )
 
 // DownloadOptions contains configurable settings for a download

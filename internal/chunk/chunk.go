@@ -2,7 +2,9 @@ package chunk
 
 import (
 	"context"
+	"github.com/NamanBalaji/tdm/internal/connection"
 	"github.com/google/uuid"
+	"io"
 	"os"
 	"sync/atomic"
 	"time"
@@ -30,9 +32,9 @@ type Chunk struct {
 	Status       Status    // Current status
 	TempFilePath string    // Path to temporary file for this chunk
 	Error        error     // Last error encountered
-	// connection object
-	RetryCount int       // Number of times this chunk has been retried
-	LastActive time.Time // Last time data was received
+	Connection   connection.Connection
+	RetryCount   int       // Number of times this chunk has been retried
+	LastActive   time.Time // Last time data was received
 
 	// Special flags
 	SequentialDownload bool // True if server doesn't support ranges and we need sequential download
@@ -61,7 +63,7 @@ func NewChunk(downloadID uuid.UUID, startByte, endByte int64) *Chunk {
 		StartByte:          startByte,
 		EndByte:            endByte,
 		Status:             Pending,
-		progressCh:         make(chan Progress),
+		progressCh:         make(chan Progress, 100),
 		lastProgressUpdate: time.Now(),
 	}
 }
@@ -101,17 +103,57 @@ func (c *Chunk) Download(ctx context.Context) error {
 		}
 	}
 
-	return c.downloadLoop(ctx)
+	return c.downloadLoop(ctx, file)
 }
 
-func (c *Chunk) downloadLoop(ctx context.Context) error {
+func (c *Chunk) downloadLoop(ctx context.Context, file *os.File) error {
+	buffer := make([]byte, 32*1024)
+
 	for {
 		select {
 		case <-ctx.Done():
 			c.Status = Paused
 			return ctx.Err()
 		default:
-			// read from conn
+			n, err := c.Connection.Read(buffer)
+
+			c.LastActive = time.Now()
+
+			if n > 0 {
+				if _, writeErr := file.Write(buffer[:n]); writeErr != nil {
+					return c.handleError(writeErr)
+				}
+
+				// Update progress
+				newDownloaded := atomic.AddInt64(&c.Downloaded, int64(n))
+
+				// Send progress update (throttled to avoid flooding)
+				if time.Since(c.lastProgressUpdate) > 250*time.Millisecond ||
+					newDownloaded >= c.Size() {
+					c.lastProgressUpdate = time.Now()
+
+					select {
+					case c.progressCh <- Progress{
+						ChunkID:        c.ID,
+						BytesCompleted: newDownloaded,
+						TotalBytes:     c.Size(),
+						Timestamp:      time.Now(),
+						Status:         c.Status,
+					}:
+					default:
+					}
+				}
+			}
+
+			if err != nil {
+				if err == io.EOF {
+					c.Status = Completed
+					return nil
+				}
+
+				return c.handleError(err)
+			}
+
 		}
 	}
 }
