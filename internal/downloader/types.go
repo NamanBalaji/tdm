@@ -1,8 +1,9 @@
 package downloader
 
 import (
-	"github.com/google/uuid"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // DownloadStatus represents the current state of a download

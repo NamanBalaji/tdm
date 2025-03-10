@@ -4,12 +4,13 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
-	"github.com/google/uuid"
 	"io"
 	"math"
 	"os"
 	"path/filepath"
 	"sync"
+
+	"github.com/google/uuid"
 )
 
 const (
@@ -40,10 +41,10 @@ func NewManager(tempDir string) *Manager {
 		tempDir = filepath.Join(os.TempDir(), "tdm-chunks")
 	}
 
-	if err := os.MkdirAll(tempDir, 0755); err != nil {
+	if err := os.MkdirAll(tempDir, 0o755); err != nil {
 		// Fall back to system temp dir if creation fails
 		tempDir = filepath.Join(os.TempDir(), "tdm-chunks")
-		_ = os.MkdirAll(tempDir, 0755)
+		_ = os.MkdirAll(tempDir, 0o755)
 	}
 
 	return &Manager{
@@ -72,7 +73,7 @@ func (m *Manager) CreateChunks(downloadID uuid.UUID, filesize int64, supportsRan
 
 	// Create download-specific temp directory
 	downloadTempDir := filepath.Join(m.tempDir, downloadID.String())
-	if err := os.MkdirAll(downloadTempDir, 0755); err != nil {
+	if err := os.MkdirAll(downloadTempDir, 0o755); err != nil {
 		return nil, fmt.Errorf("failed to create temp directory: %w", err)
 	}
 
@@ -127,7 +128,7 @@ func (m *Manager) MergeChunks(chunks []*Chunk, targetPath string) error {
 
 	// Ensure target directory exists
 	targetDir := filepath.Dir(targetPath)
-	if err := os.MkdirAll(targetDir, 0755); err != nil {
+	if err := os.MkdirAll(targetDir, 0o755); err != nil {
 		return fmt.Errorf("failed to create target directory: %w", err)
 	}
 
@@ -194,14 +195,15 @@ func calculateOptimalChunkCount(fileSize int64, maxConnections int) int {
 		return maxConnections
 	}
 
-	if fileSize < 10*1024*1024 { // Less than 10MB
+	switch {
+	case fileSize < 10*1024*1024:
 		return 2
-	} else if fileSize < 100*1024*1024 { // Less than 100MB
+	case fileSize < 100*1024*1024:
 		return 4
-	} else if fileSize < 1024*1024*1024 { // Less than 1GB
+	case fileSize < 1024*1024*1024:
 		return 8
-	} else {
-		return 16 // Maximum chunks for large files
+	default:
+		return 16
 	}
 }
 

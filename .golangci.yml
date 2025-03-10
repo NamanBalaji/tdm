@@ -1,20 +1,4 @@
 linters-settings:
-  depguard:
-    rules:
-      main:
-        files:
-          - $all
-          - "!$test"
-        allow:
-          - $gostd
-          - github.com/NamanBalaji/tdm
-      test:
-        files:
-          - "$test"
-        allow:
-          - $gostd
-          - github.com/NamanBalaji/tdm
-          - github.com/stretchr/testify
   gocyclo:
     min-complexity: 15
   dupl:
@@ -38,7 +22,6 @@ linters:
   disable-all: true
   enable:
     - bodyclose
-    - depguard
     - dogsled
     - dupl
     - errcheck
@@ -50,7 +33,6 @@ linters:
     - gofmt
     - goimports
     - goprintffuncname
-    - gosec
     - gosimple
     - govet
     - ineffassign

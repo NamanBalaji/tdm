@@ -2,11 +2,12 @@ package downloader
 
 import (
 	"context"
-	"github.com/NamanBalaji/tdm/internal/chunk"
-	"github.com/google/uuid"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/NamanBalaji/tdm/internal/chunk"
+	"github.com/google/uuid"
 )
 
 // Downloader defines the interface for download operations
@@ -52,12 +53,12 @@ type Download struct {
 }
 
 // NewDownload creates a new Download instance
-func NewDownload(url string, filename string, options DownloadOptions) *Download {
+func NewDownload(url, filename string, options *DownloadOptions) *Download {
 	return &Download{
 		ID:             uuid.New(),
 		URL:            url,
 		Filename:       filename,
-		Options:        options,
+		Options:        *options,
 		Status:         StatusPending,
 		progressCh:     make(chan Progress),
 		StartTime:      time.Now(),

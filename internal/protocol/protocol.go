@@ -2,11 +2,12 @@ package protocol
 
 import (
 	"errors"
+	"sync"
+
 	"github.com/NamanBalaji/tdm/internal/chunk"
 	"github.com/NamanBalaji/tdm/internal/connection"
 	"github.com/NamanBalaji/tdm/internal/downloader"
 	"github.com/NamanBalaji/tdm/internal/protocol/http"
-	"sync"
 )
 
 // Protocol defines the interface for handling different protocols

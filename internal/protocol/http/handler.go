@@ -3,9 +3,6 @@ package http
 import (
 	"context"
 	"fmt"
-	"github.com/NamanBalaji/tdm/internal/chunk"
-	"github.com/NamanBalaji/tdm/internal/connection"
-	"github.com/NamanBalaji/tdm/internal/downloader"
 	"io"
 	"net"
 	"net/http"
@@ -13,6 +10,10 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/NamanBalaji/tdm/internal/chunk"
+	"github.com/NamanBalaji/tdm/internal/connection"
+	"github.com/NamanBalaji/tdm/internal/downloader"
 )
 
 const (
@@ -121,6 +122,7 @@ func (h *Handler) initializeWithHEAD(urlStr string, options *downloader.Download
 	if err != nil {
 		return nil, ClassifyError(err)
 	}
+	defer resp.Body.Close()
 
 	if resp.StatusCode >= 400 {
 		return nil, ErrHeadNotSupported
@@ -216,7 +218,7 @@ func (h *Handler) initializeWithRegularGET(urlStr string, options *downloader.Do
 	if err != nil {
 		// If we get "unexpected EOF" or similar, it's expected due to our connection closing
 		// Instead, try again with a normal client but we'll abort the body read
-		tempReq, _ := http.NewRequestWithContext(ctx, "GET", urlStr, nil)
+		tempReq, _ := http.NewRequestWithContext(ctx, "GET", urlStr, http.NoBody)
 		for k, v := range req.Header {
 			tempReq.Header[k] = v
 		}
@@ -321,7 +323,7 @@ func parseLastModified(header string) time.Time {
 }
 
 func generateRequest(ctx context.Context, urlStr, method string, options *downloader.DownloadOptions) (*http.Request, error) {
-	req, err := http.NewRequestWithContext(ctx, method, urlStr, nil)
+	req, err := http.NewRequestWithContext(ctx, method, urlStr, http.NoBody)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}

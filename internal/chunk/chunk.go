@@ -2,12 +2,13 @@ package chunk
 
 import (
 	"context"
-	"github.com/NamanBalaji/tdm/internal/connection"
-	"github.com/google/uuid"
 	"io"
 	"os"
 	"sync/atomic"
 	"time"
+
+	"github.com/NamanBalaji/tdm/internal/connection"
+	"github.com/google/uuid"
 )
 
 // Status represents the current state of a chunk
@@ -91,7 +92,7 @@ func (c *Chunk) Progress() float64 {
 // Download performs the actual download of the chunk data
 func (c *Chunk) Download(ctx context.Context) error {
 	c.Status = Active
-	file, err := os.OpenFile(c.TempFilePath, os.O_WRONLY|os.O_CREATE, 0644)
+	file, err := os.OpenFile(c.TempFilePath, os.O_WRONLY|os.O_CREATE, 0o644)
 	if err != nil {
 		return c.handleError(err)
 	}
@@ -153,7 +154,6 @@ func (c *Chunk) downloadLoop(ctx context.Context, file *os.File) error {
 
 				return c.handleError(err)
 			}
-
 		}
 	}
 }
