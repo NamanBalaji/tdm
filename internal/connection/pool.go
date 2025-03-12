@@ -129,7 +129,7 @@ func (p *Pool) RegisterConnection(conn Connection) {
 
 	p.inUse[key] = append(p.inUse[key], conn)
 
-	p.lastActivity[uintptr(getConnectionPtr(conn))] = time.Now()
+	p.lastActivity[getConnectionPtr(conn)] = time.Now()
 
 	atomic.AddInt64(&p.stats.ConnectionsCreated, 1)
 	p.updateStats()
