@@ -115,6 +115,26 @@ func (p *Pool) GetConnection(url string, headers map[string]string) (Connection,
 	return conn, nil
 }
 
+// RegisterConnection registers a newly created connection with the pool
+// This must be called after creating a new connection not obtained from GetConnection
+func (p *Pool) RegisterConnection(conn Connection) {
+	if conn == nil {
+		return
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	key := hashConnection(conn.GetURL(), conn.GetHeaders())
+
+	p.inUse[key] = append(p.inUse[key], conn)
+
+	p.lastActivity[uintptr(getConnectionPtr(conn))] = time.Now()
+
+	atomic.AddInt64(&p.stats.ConnectionsCreated, 1)
+	p.updateStats()
+}
+
 // ReleaseConnection returns a connection to the pool
 func (p *Pool) ReleaseConnection(conn Connection) {
 	if conn == nil {

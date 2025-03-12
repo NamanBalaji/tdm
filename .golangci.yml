@@ -59,10 +59,7 @@ output:
   print-linter-name: true
 
 issues:
-  exclude-rules:
-    - path: .*_test\.go$
-      linters:
-        - dupl
-        - gosec
+  exclude-files:
+   - ".*_test\\.go$"
   max-issues-per-linter: 0
   max-same-issues: 0

@@ -21,6 +21,8 @@ const (
 	defaultReadTimeout    = 30 * time.Second
 	defaultIdleTimeout    = 90 * time.Second
 	defaultUserAgent      = "TDM/1.0"
+
+	defaultDownloadName = "download"
 )
 
 // Handler implements the Protocol interface for HTTP/HTTPS
@@ -292,7 +294,7 @@ func parseContentDisposition(header string) string {
 func extractFilenameFromURL(urlStr string) string {
 	u, err := url.Parse(urlStr)
 	if err != nil {
-		return "download"
+		return defaultDownloadName
 	}
 
 	path := u.Path
@@ -304,7 +306,7 @@ func extractFilenameFromURL(urlStr string) string {
 		}
 	}
 
-	return "download"
+	return defaultDownloadName
 }
 
 // parseLastModified parses the Last-Modified header
