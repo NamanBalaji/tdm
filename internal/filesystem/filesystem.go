@@ -18,7 +18,7 @@ func NewOSFileSystem() *OSFileSystem {
 func (fs *OSFileSystem) CreateFile(path string) (io.WriteCloser, error) {
 	// Ensure directory exists
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
 	}
 
@@ -37,7 +37,7 @@ func (fs *OSFileSystem) DeleteFile(path string) error {
 
 // EnsureDirectory ensures a directory exists
 func (fs *OSFileSystem) EnsureDirectory(path string) error {
-	return os.MkdirAll(path, 0755)
+	return os.MkdirAll(path, 0o755)
 }
 
 // FileExists checks if a file exists
