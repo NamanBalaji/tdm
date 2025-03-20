@@ -11,7 +11,10 @@ import (
 
 func TestNewManager(t *testing.T) {
 	tempDir := t.TempDir()
-	mgr := chunk.NewManager(tempDir)
+	mgr, err := chunk.NewManager(tempDir)
+	if err != nil {
+		t.Fatalf("failed to create chunk manager: %v", err)
+	}
 	if mgr == nil {
 		t.Fatal("NewManager returned nil")
 	}
@@ -32,9 +35,12 @@ func TestNewManager(t *testing.T) {
 
 func TestSetDefaultChunkSize(t *testing.T) {
 	tempDir := t.TempDir()
-	mgr := chunk.NewManager(tempDir)
+	mgr, err := chunk.NewManager(tempDir)
+	if err != nil {
+		t.Fatalf("failed to create chunk manager: %v", err)
+	}
 
-	err := mgr.SetDefaultChunkSize(chunk.MinChunkSize - 1)
+	err = mgr.SetDefaultChunkSize(chunk.MinChunkSize - 1)
 	if err == nil {
 		t.Error("expected error for chunk size below minimum")
 	}
@@ -52,7 +58,10 @@ func TestSetDefaultChunkSize(t *testing.T) {
 
 func TestCreateChunks_SingleChunk(t *testing.T) {
 	tempDir := t.TempDir()
-	mgr := chunk.NewManager(tempDir)
+	mgr, err := chunk.NewManager(tempDir)
+	if err != nil {
+		t.Fatalf("failed to create chunk manager: %v", err)
+	}
 	downloadID := uuid.New()
 	filesize := int64(100 * 1024) // 100 KB (< 256 KB)
 	chunks, err := mgr.CreateChunks(downloadID, filesize, true, 4)
@@ -72,7 +81,10 @@ func TestCreateChunks_SingleChunk(t *testing.T) {
 
 func TestCreateChunks_MultipleChunks(t *testing.T) {
 	tempDir := t.TempDir()
-	mgr := chunk.NewManager(tempDir)
+	mgr, err := chunk.NewManager(tempDir)
+	if err != nil {
+		t.Fatalf("failed to create chunk manager: %v", err)
+	}
 	downloadID := uuid.New()
 	filesize := int64(10 * 1024 * 1024) // 10 MB
 	maxConns := 4
@@ -99,7 +111,10 @@ func TestCreateChunks_MultipleChunks(t *testing.T) {
 
 func TestMergeChunks_Success(t *testing.T) {
 	tempDir := t.TempDir()
-	mgr := chunk.NewManager(tempDir)
+	mgr, err := chunk.NewManager(tempDir)
+	if err != nil {
+		t.Fatalf("failed to create chunk manager: %v", err)
+	}
 	downloadID := uuid.New()
 
 	data1 := []byte("Hello ")
@@ -108,7 +123,7 @@ func TestMergeChunks_Success(t *testing.T) {
 	chunk2 := chunk.NewChunk(downloadID, int64(len(data1)), int64(len(data1)+len(data2))-1)
 
 	downloadTempDir := filepath.Join(tempDir, downloadID.String())
-	err := os.MkdirAll(downloadTempDir, 0755)
+	err = os.MkdirAll(downloadTempDir, 0755)
 	if err != nil {
 		t.Fatalf("failed to create download temp directory: %v", err)
 	}
@@ -147,12 +162,15 @@ func TestMergeChunks_Success(t *testing.T) {
 
 func TestMergeChunks_IncompleteChunk(t *testing.T) {
 	tempDir := t.TempDir()
-	mgr := chunk.NewManager(tempDir)
+	mgr, err := chunk.NewManager(tempDir)
+	if err != nil {
+		t.Fatalf("failed to create chunk manager: %v", err)
+	}
 	downloadID := uuid.New()
 	data := []byte("Incomplete data")
 	chunk1 := chunk.NewChunk(downloadID, 0, int64(len(data))-1)
 	downloadTempDir := filepath.Join(tempDir, downloadID.String())
-	err := os.MkdirAll(downloadTempDir, 0755)
+	err = os.MkdirAll(downloadTempDir, 0755)
 	if err != nil {
 		t.Fatalf("failed to create download temp directory: %v", err)
 	}
@@ -172,11 +190,14 @@ func TestMergeChunks_IncompleteChunk(t *testing.T) {
 
 func TestCleanupChunks(t *testing.T) {
 	tempDir := t.TempDir()
-	mgr := chunk.NewManager(tempDir)
+	mgr, err := chunk.NewManager(tempDir)
+	if err != nil {
+		t.Fatalf("failed to create chunk manager: %v", err)
+	}
 	downloadID := uuid.New()
 	downloadTempDir := filepath.Join(tempDir, downloadID.String())
 
-	err := os.MkdirAll(downloadTempDir, 0755)
+	err = os.MkdirAll(downloadTempDir, 0755)
 	if err != nil {
 		t.Fatalf("failed to create download temp directory: %v", err)
 	}
@@ -201,8 +222,11 @@ func TestCleanupChunks(t *testing.T) {
 
 func TestCleanupChunks_Empty(t *testing.T) {
 	tempDir := t.TempDir()
-	mgr := chunk.NewManager(tempDir)
-	err := mgr.CleanupChunks(nil)
+	mgr, err := chunk.NewManager(tempDir)
+	if err != nil {
+		t.Fatalf("failed to create chunk manager: %v", err)
+	}
+	err = mgr.CleanupChunks(nil)
 	if err != nil {
 		t.Errorf("expected nil error when cleaning up empty chunk slice, got %v", err)
 	}

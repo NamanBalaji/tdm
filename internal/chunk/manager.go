@@ -36,7 +36,7 @@ type Manager struct {
 }
 
 // NewManager creates a new chunk manager
-func NewManager(tempDir string) *Manager {
+func NewManager(tempDir string) (*Manager, error) {
 	if tempDir == "" {
 		tempDir = filepath.Join(os.TempDir(), "tdm-chunks")
 	}
@@ -44,13 +44,15 @@ func NewManager(tempDir string) *Manager {
 	if err := os.MkdirAll(tempDir, 0o755); err != nil {
 		// Fall back to system temp dir if creation fails
 		tempDir = filepath.Join(os.TempDir(), "tdm-chunks")
-		_ = os.MkdirAll(tempDir, 0o755)
+		if err := os.MkdirAll(tempDir, 0o755); err != nil {
+			return nil, fmt.Errorf("failed to create temp directory %s: %w", tempDir, err)
+		}
 	}
 
 	return &Manager{
 		tempDir:          tempDir,
 		defaultChunkSize: DefaultChunkSize,
-	}
+	}, nil
 }
 
 // SetDefaultChunkSize sets the default chunk size
