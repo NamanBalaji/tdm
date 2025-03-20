@@ -2,11 +2,12 @@ package chunk
 
 import (
 	"context"
-	"github.com/NamanBalaji/tdm/internal/common"
 	"io"
 	"os"
 	"sync/atomic"
 	"time"
+
+	"github.com/NamanBalaji/tdm/internal/common"
 
 	"github.com/NamanBalaji/tdm/internal/connection"
 	"github.com/google/uuid"
@@ -27,10 +28,6 @@ type Chunk struct {
 	progressFn   func(int64)
 	// Special flags
 	SequentialDownload bool `json:"SequentialDownload"` // True if server doesn't support ranges and we need sequential download
-
-	// For progress reporting
-	progressCh         chan<- Progress
-	lastProgressUpdate time.Time `json:"-"`
 }
 
 // Progress represents a progress update event for the chunk

@@ -4,17 +4,18 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
+	"os"
+	"path/filepath"
+	"sync"
+	"time"
+
 	"github.com/NamanBalaji/tdm/internal/chunk"
 	"github.com/NamanBalaji/tdm/internal/common"
 	"github.com/NamanBalaji/tdm/internal/connection"
 	"github.com/NamanBalaji/tdm/internal/downloader"
 	"github.com/NamanBalaji/tdm/internal/protocol"
 	"github.com/google/uuid"
-	"log"
-	"os"
-	"path/filepath"
-	"sync"
-	"time"
 )
 
 var (
@@ -82,7 +83,10 @@ func New(config *Config) (*Engine, error) {
 
 	protocolHandler := protocol.NewHandler()
 	connectionPool := connection.NewPool(10, 5*time.Minute)
-	chunkManager := chunk.NewManager(config.TempDir)
+	chunkManager, err := chunk.NewManager(config.TempDir)
+	if err != nil {
+		return nil, err
+	}
 
 	engine := &Engine{
 		downloads:       make(map[uuid.UUID]*downloader.Download),
@@ -161,7 +165,7 @@ func (e *Engine) AddDownload(url string, opts *downloader.DownloadOptions) (uuid
 	}
 
 	// Ensure directory exists
-	if err := os.MkdirAll(opts.Directory, 0755); err != nil {
+	if err := os.MkdirAll(opts.Directory, 0o755); err != nil {
 		return uuid.Nil, fmt.Errorf("failed to create directory: %w", err)
 	}
 
@@ -222,13 +226,19 @@ func (e *Engine) RemoveDownload(id uuid.UUID, removeFiles bool) error {
 
 	// Cancel download if active
 	if download.Status == common.StatusActive {
-		e.CancelDownload(id, removeFiles)
+		err := e.CancelDownload(id, removeFiles)
+		if err != nil {
+			return err
+		}
 	}
 
 	// Remove temporary files
 	if removeFiles {
 		// Remove chunk files
-		e.chunkManager.CleanupChunks(download.Chunks)
+		err := e.chunkManager.CleanupChunks(download.Chunks)
+		if err != nil {
+			return err
+		}
 
 		// Remove output file if it exists
 		outputPath := filepath.Join(download.Options.Directory, download.Filename)
@@ -358,13 +368,7 @@ func (e *Engine) CancelDownload(id uuid.UUID, removeFiles bool) error {
 			log.Printf("Warning: Failed to clean up chunks: %v", err)
 		}
 
-		//targetPath := filepath.Join(download.Options.Directory, download.Filename)
-		//exists, _ := e.fileSystem.FileExists(targetPath)
-		//if exists {
-		//	if err := e.fileSystem.DeleteFile(targetPath); err != nil {
-		//		log.Printf("Warning: Failed to delete output file: %v", err)
-		//	}
-		//}
+		// delete files
 	}
 
 	// Save updated state

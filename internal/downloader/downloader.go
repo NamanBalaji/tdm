@@ -2,10 +2,11 @@ package downloader
 
 import (
 	"context"
-	"github.com/NamanBalaji/tdm/internal/common"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/NamanBalaji/tdm/internal/common"
 
 	"github.com/NamanBalaji/tdm/internal/chunk"
 	"github.com/google/uuid"
@@ -17,7 +18,7 @@ type Download struct {
 	URL            string          `json:"url"`
 	Filename       string          `json:"filename"`
 	Options        DownloadOptions `json:"options"`
-	Status          common.Status  `json:"status"`
+	Status         common.Status   `json:"status"`
 	Error          error           `json:"-"`
 	TotalSize      int64           `json:"total_size"`
 	Downloaded     int64           `json:"downloaded"`

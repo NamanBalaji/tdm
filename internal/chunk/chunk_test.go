@@ -85,15 +85,6 @@ func TestNewChunk_Size(t *testing.T) {
 	}
 }
 
-func TestBytesRemaining(t *testing.T) {
-	downloadID := uuid.New()
-	c := chunk.NewChunk(downloadID, 0, 99, fakeProgress)
-	atomic.StoreInt64(&c.Downloaded, 30)
-	if remaining != 70 {
-		t.Errorf("expected bytes remaining 70, got %d", remaining)
-	}
-}
-
 func TestReset(t *testing.T) {
 	downloadID := uuid.New()
 	c := chunk.NewChunk(downloadID, 0, 99, fakeProgress)

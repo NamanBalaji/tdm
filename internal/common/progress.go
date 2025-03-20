@@ -1,8 +1,9 @@
 package common
 
 import (
-	"github.com/google/uuid"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // Progress represents a progress update event for the chunk

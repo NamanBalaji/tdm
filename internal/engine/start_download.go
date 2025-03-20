@@ -4,14 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
+	"path/filepath"
+	"time"
+
 	"github.com/NamanBalaji/tdm/internal/chunk"
 	"github.com/NamanBalaji/tdm/internal/common"
 	"github.com/NamanBalaji/tdm/internal/downloader"
 	"github.com/google/uuid"
 	"golang.org/x/sync/errgroup"
-	"log"
-	"path/filepath"
-	"time"
 )
 
 // StartDownload initiates a download
@@ -46,7 +47,9 @@ func (e *Engine) processDownload(download *downloader.Download) {
 
 	// If all chunks are already complete, just finish the download
 	if len(chunks) == 0 {
-		e.finishDownload(download)
+		if err := e.finishDownload(download); err != nil {
+			log.Printf("error finishing download: %s", err)
+		}
 		return
 	}
 
@@ -56,8 +59,6 @@ func (e *Engine) processDownload(download *downloader.Download) {
 
 	// Launch each chunk download
 	for _, chunk := range chunks {
-		chunk := chunk
-
 		g.Go(func() error {
 			select {
 			case sem <- struct{}{}:
@@ -77,7 +78,9 @@ func (e *Engine) processDownload(download *downloader.Download) {
 			e.handleDownloadFailure(download, err)
 		}
 	} else {
-		e.finishDownload(download)
+		if err := e.finishDownload(download); err != nil {
+			log.Printf("error finishing download: %s", err)
+		}
 	}
 }
 

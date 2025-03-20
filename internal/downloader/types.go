@@ -1,8 +1,9 @@
 package downloader
 
 import (
-	"github.com/NamanBalaji/tdm/internal/common"
 	"time"
+
+	"github.com/NamanBalaji/tdm/internal/common"
 )
 
 // DownloadOptions contains configurable settings for a download
