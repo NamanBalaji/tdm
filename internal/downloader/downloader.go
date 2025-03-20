@@ -2,6 +2,7 @@ package downloader
 
 import (
 	"context"
+	"github.com/NamanBalaji/tdm/internal/common"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -10,29 +11,13 @@ import (
 	"github.com/google/uuid"
 )
 
-// Downloader defines the interface for download operations
-type Downloader interface {
-	// Start initiates the download with the given context
-	Start(ctx context.Context) error
-	// Pause temporarily halts the download while maintaining progress
-	Pause() error
-	// Resume continues a paused download
-	Resume(ctx context.Context) error
-	// Cancel aborts the download and optionally removes partial files
-	Cancel(removePartialFiles bool) error
-	// GetStats returns current statistics about the download
-	GetStats() DownloadStats
-	// GetProgressChan returns a channel for real-time progress updates
-	GetProgressChan() <-chan Progress
-}
-
 // Download represents a file download job
 type Download struct {
 	ID             uuid.UUID       `json:"id"`
 	URL            string          `json:"url"`
 	Filename       string          `json:"filename"`
 	Options        DownloadOptions `json:"options"`
-	Status         DownloadStatus  `json:"status"`
+	Status          common.Status  `json:"status"`
 	Error          error           `json:"-"`
 	TotalSize      int64           `json:"total_size"`
 	Downloaded     int64           `json:"downloaded"`
@@ -49,7 +34,7 @@ type Download struct {
 	cancelFunc context.CancelFunc `json:"-"`
 
 	// Channel for real-time progress updates
-	progressCh chan Progress `json:"-"`
+	progressCh chan common.Progress `json:"-"`
 }
 
 // NewDownload creates a new Download instance
@@ -59,84 +44,11 @@ func NewDownload(url, filename string, options *DownloadOptions) *Download {
 		URL:            url,
 		Filename:       filename,
 		Options:        *options,
-		Status:         StatusPending,
-		progressCh:     make(chan Progress),
+		Status:         common.StatusPending,
+		progressCh:     make(chan common.Progress),
 		StartTime:      time.Now(),
 		LastSpeedCheck: time.Now(),
 	}
-}
-
-// Start initiates the download
-func (d *Download) Start(ctx context.Context) error {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	// Create a cancellable context
-	d.ctx, d.cancelFunc = context.WithCancel(ctx)
-
-	// Update status
-	d.Status = StatusActive
-	d.StartTime = time.Now()
-
-	// This is just a stub - actual implementation will be in the download manager
-	return nil
-}
-
-// Pause temporarily stops the download but keeps progress
-func (d *Download) Pause() error {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	if d.Status != StatusActive {
-		return nil // No-op if not active
-	}
-
-	d.Status = StatusPaused
-
-	// Cancel ongoing operations (will be implemented later)
-	if d.cancelFunc != nil {
-		d.cancelFunc()
-	}
-
-	return nil
-}
-
-// Resume continues a paused download
-func (d *Download) Resume(ctx context.Context) error {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	if d.Status != StatusPaused {
-		return nil // No-op if not paused
-	}
-
-	// Create a new cancellable context
-	d.ctx, d.cancelFunc = context.WithCancel(ctx)
-	d.Status = StatusActive
-
-	// Actual resume logic will be implemented later
-	return nil
-}
-
-// Cancel stops the download and optionally removes partial files
-func (d *Download) Cancel(removePartialFiles bool) error {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	// Cannot cancel completed downloads
-	if d.Status == StatusCompleted {
-		return nil
-	}
-
-	d.Status = StatusFailed
-
-	// Cancel ongoing operations
-	if d.cancelFunc != nil {
-		d.cancelFunc()
-	}
-
-	// Actual cleanup logic will be implemented later
-	return nil
 }
 
 // GetStats returns the current download statistics
@@ -159,9 +71,9 @@ func (d *Download) GetStats() DownloadStats {
 	totalChunks := len(d.Chunks)
 
 	for _, c := range d.Chunks {
-		if c.Status == chunk.Active {
+		if c.Status == common.StatusActive {
 			activeChunks++
-		} else if c.Status == chunk.Completed {
+		} else if c.Status == common.StatusCompleted {
 			completedChunks++
 		}
 	}
@@ -199,8 +111,24 @@ func (d *Download) GetStats() DownloadStats {
 	}
 }
 
+// SetContext sets the download context and cancel function
+func (d *Download) SetContext(ctx context.Context, cancelFunc context.CancelFunc) {
+	d.ctx = ctx
+	d.cancelFunc = cancelFunc
+}
+
+// Context returns the download context
+func (d *Download) Context() context.Context {
+	return d.ctx
+}
+
+// CancelFunc returns the cancel function
+func (d *Download) CancelFunc() context.CancelFunc {
+	return d.cancelFunc
+}
+
 // GetProgressChannel returns the channel for progress updates
-func (d *Download) GetProgressChannel() <-chan Progress {
+func (d *Download) GetProgressChannel() chan common.Progress {
 	return d.progressCh
 }
 
@@ -211,7 +139,7 @@ func (d *Download) AddProgress(bytes int64) {
 
 	// Send progress update
 	select {
-	case d.progressCh <- Progress{
+	case d.progressCh <- common.Progress{
 		DownloadID:     d.ID,
 		BytesCompleted: atomic.LoadInt64(&d.Downloaded),
 		TotalBytes:     d.TotalSize,
@@ -278,7 +206,7 @@ func (d *Download) countActiveConnections() int {
 	count := 0
 	for _, c := range d.Chunks {
 		// @TODO: check if chunk conn != nil
-		if c.Status == chunk.Active {
+		if c.Status == common.StatusActive {
 			count++
 		}
 	}

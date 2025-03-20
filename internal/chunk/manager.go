@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
+	"github.com/NamanBalaji/tdm/internal/common"
 	"io"
 	"math"
 	"os"
@@ -69,7 +70,7 @@ func (m *Manager) SetDefaultChunkSize(size int64) error {
 }
 
 // CreateChunks divides a download into chunks and returns them
-func (m *Manager) CreateChunks(downloadID uuid.UUID, filesize int64, supportsRange bool, maxConnections int) ([]*Chunk, error) {
+func (m *Manager) CreateChunks(downloadID uuid.UUID, filesize int64, supportsRange bool, maxConnections int, progressFn func(int64)) ([]*Chunk, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -80,7 +81,7 @@ func (m *Manager) CreateChunks(downloadID uuid.UUID, filesize int64, supportsRan
 	}
 
 	if !supportsRange || filesize < MinChunkSize {
-		chunk := NewChunk(downloadID, 0, filesize-1)
+		chunk := NewChunk(downloadID, 0, filesize-1, progressFn)
 		chunk.TempFilePath = filepath.Join(downloadTempDir, chunk.ID.String())
 		if !supportsRange {
 			chunk.SequentialDownload = true
@@ -105,7 +106,7 @@ func (m *Manager) CreateChunks(downloadID uuid.UUID, filesize int64, supportsRan
 		if i == numChunks-1 || endByte >= filesize-1 {
 			endByte = filesize - 1
 		}
-		chunk := NewChunk(downloadID, startByte, endByte)
+		chunk := NewChunk(downloadID, startByte, endByte, progressFn)
 		chunk.TempFilePath = filepath.Join(downloadTempDir, chunk.ID.String())
 		chunks = append(chunks, chunk)
 
@@ -122,9 +123,8 @@ func (m *Manager) CreateChunks(downloadID uuid.UUID, filesize int64, supportsRan
 // MergeChunks combines downloaded chunks into the final file
 func (m *Manager) MergeChunks(chunks []*Chunk, targetPath string) error {
 	for _, chunk := range chunks {
-		if chunk.Status != Completed {
-			return fmt.Errorf("cannot merge incomplete download: chunk %s is in status %s",
-				chunk.ID, chunk.Status)
+		if chunk.Status != common.StatusCompleted {
+			return fmt.Errorf("cannot merge incomplete download: chunk %s is in status %s", chunk.ID, chunk.Status)
 		}
 	}
 
@@ -156,7 +156,7 @@ func (m *Manager) MergeChunks(chunks []*Chunk, targetPath string) error {
 		}
 
 		chunkFile.Close()
-		chunk.Status = Merging
+		chunk.Status = common.StatusMerging
 	}
 
 	if err := bufWriter.Flush(); err != nil {

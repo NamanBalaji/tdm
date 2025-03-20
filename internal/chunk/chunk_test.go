@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"github.com/NamanBalaji/tdm/internal/common"
 	"io"
 	"os"
 	"sync/atomic"
@@ -73,9 +74,12 @@ func (s *slowConnection) GetURL() string                   { return "dummy://slo
 func (s *slowConnection) GetHeaders() map[string]string    { return map[string]string{} }
 func (s *slowConnection) SetTimeout(timeout time.Duration) {}
 
+func fakeProgress(i int64) {
+
+}
 func TestNewChunk_Size(t *testing.T) {
 	downloadID := uuid.New()
-	c := chunk.NewChunk(downloadID, 0, 99) // Should be 100 bytes (0..99)
+	c := chunk.NewChunk(downloadID, 0, 99, fakeProgress) // Should be 100 bytes (0..99)
 	if c.Size() != 100 {
 		t.Errorf("expected size 100, got %d", c.Size())
 	}
@@ -83,34 +87,23 @@ func TestNewChunk_Size(t *testing.T) {
 
 func TestBytesRemaining(t *testing.T) {
 	downloadID := uuid.New()
-	c := chunk.NewChunk(downloadID, 0, 99)
+	c := chunk.NewChunk(downloadID, 0, 99, fakeProgress)
 	atomic.StoreInt64(&c.Downloaded, 30)
-	remaining := c.BytesRemaining()
 	if remaining != 70 {
 		t.Errorf("expected bytes remaining 70, got %d", remaining)
 	}
 }
 
-func TestProgress(t *testing.T) {
-	downloadID := uuid.New()
-	c := chunk.NewChunk(downloadID, 0, 99)
-	atomic.StoreInt64(&c.Downloaded, 50)
-	progress := c.Progress()
-	if progress != 50.0 {
-		t.Errorf("expected progress 50.0, got %f", progress)
-	}
-}
-
 func TestReset(t *testing.T) {
 	downloadID := uuid.New()
-	c := chunk.NewChunk(downloadID, 0, 99)
+	c := chunk.NewChunk(downloadID, 0, 99, fakeProgress)
 	atomic.StoreInt64(&c.Downloaded, 50)
-	c.Status = chunk.Failed
+	c.Status = common.StatusFailed
 	c.Error = errors.New("dummy error")
 	prevRetry := c.RetryCount
 	c.Reset()
-	if c.Status != chunk.Pending {
-		t.Errorf("expected status %q, got %q", chunk.Pending, c.Status)
+	if c.Status != common.StatusPending {
+		t.Errorf("expected status %q, got %q", common.StatusPending, c.Status)
 	}
 	if c.Error != nil {
 		t.Error("expected error to be nil after reset")
@@ -122,7 +115,7 @@ func TestReset(t *testing.T) {
 
 func TestVerifyIntegrity(t *testing.T) {
 	downloadID := uuid.New()
-	c := chunk.NewChunk(downloadID, 0, 99)
+	c := chunk.NewChunk(downloadID, 0, 99, fakeProgress)
 	atomic.StoreInt64(&c.Downloaded, 50)
 	if c.VerifyIntegrity() {
 		t.Error("expected integrity check to fail when downloaded != size")
@@ -143,7 +136,7 @@ func TestDownload_Success(t *testing.T) {
 	defer os.Remove(tmpFile.Name())
 	tmpFile.Close()
 
-	c := chunk.NewChunk(downloadID, 0, int64(len(data))-1)
+	c := chunk.NewChunk(downloadID, 0, int64(len(data))-1, fakeProgress)
 	c.TempFilePath = tmpFile.Name()
 	c.Connection = &dummyConnection{data: data}
 
@@ -151,8 +144,8 @@ func TestDownload_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Download returned error: %v", err)
 	}
-	if c.Status != chunk.Completed {
-		t.Errorf("expected status %q, got %q", chunk.Completed, c.Status)
+	if c.Status != common.StatusCompleted {
+		t.Errorf("expected status %q, got %q", common.StatusCompleted, c.Status)
 	}
 
 	content, err := os.ReadFile(tmpFile.Name())
@@ -174,7 +167,7 @@ func TestDownload_CtxCancel(t *testing.T) {
 	defer os.Remove(tmpFile.Name())
 	tmpFile.Close()
 
-	c := chunk.NewChunk(downloadID, 0, int64(len(data))-1)
+	c := chunk.NewChunk(downloadID, 0, int64(len(data))-1, fakeProgress)
 	c.TempFilePath = tmpFile.Name()
 	c.Connection = &slowConnection{data: data}
 
@@ -185,8 +178,8 @@ func TestDownload_CtxCancel(t *testing.T) {
 	if err == nil {
 		t.Error("expected error due to context cancellation, got nil")
 	}
-	if c.Status != chunk.Paused {
-		t.Errorf("expected status %q due to cancellation, got %q", chunk.Paused, c.Status)
+	if c.Status != common.StatusPaused {
+		t.Errorf("expected status %q due to cancellation, got %q", common.StatusPaused, c.Status)
 	}
 }
 
@@ -199,7 +192,7 @@ func TestDownload_Error(t *testing.T) {
 	defer os.Remove(tmpFile.Name())
 	tmpFile.Close()
 
-	c := chunk.NewChunk(downloadID, 0, 99)
+	c := chunk.NewChunk(downloadID, 0, 99, fakeProgress)
 	c.TempFilePath = tmpFile.Name()
 	expectedErr := errors.New("dummy read error")
 	c.Connection = &errorConnection{err: expectedErr}
@@ -211,7 +204,7 @@ func TestDownload_Error(t *testing.T) {
 	if err.Error() != expectedErr.Error() {
 		t.Errorf("expected error %q, got %q", expectedErr, err)
 	}
-	if c.Status != chunk.Failed {
-		t.Errorf("expected status %q, got %q", chunk.Failed, c.Status)
+	if c.Status != common.StatusFailed {
+		t.Errorf("expected status %q, got %q", common.StatusFailed, c.Status)
 	}
 }

@@ -1,21 +1,8 @@
 package downloader
 
 import (
+	"github.com/NamanBalaji/tdm/internal/common"
 	"time"
-
-	"github.com/google/uuid"
-)
-
-// DownloadStatus represents the current state of a download
-type DownloadStatus string
-
-const (
-	StatusPending   DownloadStatus = "pending"
-	StatusActive    DownloadStatus = "active"
-	StatusPaused    DownloadStatus = "paused"
-	StatusCompleted DownloadStatus = "completed"
-	StatusFailed    DownloadStatus = "failed"
-	StatusQueued    DownloadStatus = "queued"
 )
 
 // DownloadOptions contains configurable settings for a download
@@ -37,7 +24,7 @@ type DownloadOptions struct {
 
 // DownloadStats represents real-time statistics about a download
 type DownloadStats struct {
-	Status           DownloadStatus
+	Status           common.Status
 	TotalSize        int64
 	Downloaded       int64
 	Speed            int64
@@ -69,15 +56,4 @@ type DownloadInfo struct {
 	ContentEncoding string
 	Server          string
 	CanBeResumed    bool
-}
-
-// Progress represents a progress update event
-type Progress struct {
-	DownloadID     uuid.UUID
-	BytesCompleted int64
-	TotalBytes     int64
-	Speed          int64 // Current speed in bytes/sec
-	Status         DownloadStatus
-	Error          error
-	Timestamp      time.Time
 }

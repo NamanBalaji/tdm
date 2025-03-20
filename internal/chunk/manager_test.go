@@ -2,6 +2,7 @@ package chunk_test
 
 import (
 	"github.com/NamanBalaji/tdm/internal/chunk"
+	"github.com/NamanBalaji/tdm/internal/common"
 	"github.com/google/uuid"
 	"os"
 	"path/filepath"
@@ -21,7 +22,7 @@ func TestNewManager(t *testing.T) {
 
 	downloadID := uuid.New()
 	filesize := int64(100 * 1024)
-	chunks, err := mgr.CreateChunks(downloadID, filesize, true, 4)
+	chunks, err := mgr.CreateChunks(downloadID, filesize, true, 4, nil)
 	if err != nil {
 		t.Fatalf("CreateChunks returned error: %v", err)
 	}
@@ -64,7 +65,7 @@ func TestCreateChunks_SingleChunk(t *testing.T) {
 	}
 	downloadID := uuid.New()
 	filesize := int64(100 * 1024) // 100 KB (< 256 KB)
-	chunks, err := mgr.CreateChunks(downloadID, filesize, true, 4)
+	chunks, err := mgr.CreateChunks(downloadID, filesize, true, 4, nil)
 	if err != nil {
 		t.Fatalf("CreateChunks returned error: %v", err)
 	}
@@ -88,7 +89,7 @@ func TestCreateChunks_MultipleChunks(t *testing.T) {
 	downloadID := uuid.New()
 	filesize := int64(10 * 1024 * 1024) // 10 MB
 	maxConns := 4
-	chunks, err := mgr.CreateChunks(downloadID, filesize, true, maxConns)
+	chunks, err := mgr.CreateChunks(downloadID, filesize, true, maxConns, nil)
 	if err != nil {
 		t.Fatalf("CreateChunks returned error: %v", err)
 	}
@@ -119,8 +120,8 @@ func TestMergeChunks_Success(t *testing.T) {
 
 	data1 := []byte("Hello ")
 	data2 := []byte("World!")
-	chunk1 := chunk.NewChunk(downloadID, 0, int64(len(data1))-1)
-	chunk2 := chunk.NewChunk(downloadID, int64(len(data1)), int64(len(data1)+len(data2))-1)
+	chunk1 := chunk.NewChunk(downloadID, 0, int64(len(data1))-1, nil)
+	chunk2 := chunk.NewChunk(downloadID, int64(len(data1)), int64(len(data1)+len(data2))-1, nil)
 
 	downloadTempDir := filepath.Join(tempDir, downloadID.String())
 	err = os.MkdirAll(downloadTempDir, 0755)
@@ -140,8 +141,8 @@ func TestMergeChunks_Success(t *testing.T) {
 
 	chunk1.TempFilePath = file1
 	chunk2.TempFilePath = file2
-	chunk1.Status = chunk.Completed
-	chunk2.Status = chunk.Completed
+	chunk1.Status = common.StatusCompleted
+	chunk2.Status = common.StatusCompleted
 
 	chunks := []*chunk.Chunk{chunk1, chunk2}
 	targetFile := filepath.Join(tempDir, "merged.txt")
@@ -168,7 +169,7 @@ func TestMergeChunks_IncompleteChunk(t *testing.T) {
 	}
 	downloadID := uuid.New()
 	data := []byte("Incomplete data")
-	chunk1 := chunk.NewChunk(downloadID, 0, int64(len(data))-1)
+	chunk1 := chunk.NewChunk(downloadID, 0, int64(len(data))-1, nil)
 	downloadTempDir := filepath.Join(tempDir, downloadID.String())
 	err = os.MkdirAll(downloadTempDir, 0755)
 	if err != nil {
@@ -179,7 +180,7 @@ func TestMergeChunks_IncompleteChunk(t *testing.T) {
 		t.Fatalf("failed to write chunk file: %v", err)
 	}
 	chunk1.TempFilePath = file1
-	chunk1.Status = chunk.Failed
+	chunk1.Status = common.StatusFailed
 	chunks := []*chunk.Chunk{chunk1}
 	targetFile := filepath.Join(tempDir, "merged.txt")
 	err = mgr.MergeChunks(chunks, targetFile)
@@ -201,7 +202,7 @@ func TestCleanupChunks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create download temp directory: %v", err)
 	}
-	chunk1 := chunk.NewChunk(downloadID, 0, 99)
+	chunk1 := chunk.NewChunk(downloadID, 0, 99, nil)
 	file1 := filepath.Join(downloadTempDir, chunk1.ID.String())
 	if err := os.WriteFile(file1, []byte("dummy"), 0644); err != nil {
 		t.Fatalf("failed to write dummy chunk file: %v", err)

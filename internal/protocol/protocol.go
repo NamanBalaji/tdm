@@ -75,3 +75,17 @@ func (h *Handler) getProtocol(url string) (Protocol, error) {
 
 	return nil, ErrUnsupportedProtocol
 }
+
+// GetHandler returns a handler that can handle the given URL
+func (h *Handler) GetHandler(url string) (Protocol, error) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	for _, handler := range h.protocols {
+		if handler.CanHandle(url) {
+			return handler, nil
+		}
+	}
+
+	return nil, ErrUnsupportedProtocol
+}
