@@ -28,28 +28,28 @@ type Downloader interface {
 
 // Download represents a file download job
 type Download struct {
-	ID             uuid.UUID
-	URL            string
-	Filename       string
-	Options        DownloadOptions
-	Status         DownloadStatus
-	Error          error
-	TotalSize      int64
-	Downloaded     int64 // Atomic
-	Chunks         []*chunk.Chunk
-	StartTime      time.Time
-	EndTime        time.Time
-	SpeedSamples   []int64
-	LastSpeedCheck time.Time
-	BytesSinceLast int64 // Atomic
+	ID             uuid.UUID       `json:"id"`
+	URL            string          `json:"url"`
+	Filename       string          `json:"filename"`
+	Options        DownloadOptions `json:"options"`
+	Status         DownloadStatus  `json:"status"`
+	Error          error           `json:"-"`
+	TotalSize      int64           `json:"total_size"`
+	Downloaded     int64           `json:"downloaded"`
+	Chunks         []*chunk.Chunk  `json:"chunks"`
+	StartTime      time.Time       `json:"start_time,omitempty"`
+	EndTime        time.Time       `json:"end_time,omitempty"`
+	SpeedSamples   []int64         `json:"_"`
+	LastSpeedCheck time.Time       `json:"-"`
+	BytesSinceLast int64           `json:"-"`
 
 	// Concurrency control
-	mu         sync.RWMutex
-	ctx        context.Context
-	cancelFunc context.CancelFunc
+	mu         sync.RWMutex       `json:"-"`
+	ctx        context.Context    `json:"-"`
+	cancelFunc context.CancelFunc `json:"-"`
 
 	// Channel for real-time progress updates
-	progressCh chan Progress
+	progressCh chan Progress `json:"-"`
 }
 
 // NewDownload creates a new Download instance

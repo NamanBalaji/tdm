@@ -20,19 +20,19 @@ const (
 
 // DownloadOptions contains configurable settings for a download
 type DownloadOptions struct {
-	URL                string
-	Filename           string            // Target filename (optional, extracted from URL if empty)
-	Directory          string            // Target directory for downloaded file
-	Connections        int               // Number of parallel connections (0 = use default)
-	Headers            map[string]string // Custom headers for the request
-	MaxRetries         int               // Maximum number of retries for failed chunks/connections
-	RetryDelay         time.Duration     // Delay between retries
-	ThrottleSpeed      int64             // Bandwidth throttle in bytes/sec (0 = no limit)
-	Checksum           string            // Optional checksum to verify download integrity
-	ChecksumAlgorithm  string            // Algorithm for checksum (md5, sha256, etc.)
-	Priority           int               // Priority level (higher = more important)
-	UseExistingFile    bool              // Resume from existing partial download
-	DisableParallelism bool              // Force single connection download
+	URL                string            `json:"url"`
+	Filename           string            `json:"filename"`                     // Target filename (optional, extracted from URL if empty)
+	Directory          string            `json:"directory"`                    // Target directory for downloaded file
+	Connections        int               `json:"connections"`                  // Number of parallel connections (0 = use default)
+	Headers            map[string]string `json:"headers,omitempty"`            // Custom headers for the request
+	MaxRetries         int               `json:"maxRetries"`                   // Maximum number of retries for failed chunks/connections
+	RetryDelay         time.Duration     `json:"retryDelay"`                   // Delay between retries
+	ThrottleSpeed      int64             `json:"throttle_speed,omitempty"`     // Bandwidth throttle in bytes/sec (0 = no limit)
+	Checksum           string            `json:"checksum,omitempty"`           // Optional checksum to verify download integrity
+	ChecksumAlgorithm  string            `json:"checksum_algorithm,omitempty"` // Algorithm for checksum (md5, sha256, etc.)
+	Priority           int               `json:"priority"`                     // Priority level (higher = more important)
+	UseExistingFile    bool              `json:"use_existing_file"`            // Resume from existing partial download
+	DisableParallelism bool              `json:"disable_parallelism"`          // Force single connection download
 }
 
 // DownloadStats represents real-time statistics about a download

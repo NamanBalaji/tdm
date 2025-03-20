@@ -25,24 +25,24 @@ const (
 )
 
 type Chunk struct {
-	ID           uuid.UUID // Unique identifier
-	DownloadID   uuid.UUID // ID of the parent download
-	StartByte    int64     // Starting byte position in the original file
-	EndByte      int64     // Ending byte position in the original file
-	Downloaded   int64     // Number of bytes downloaded (atomic)
-	Status       Status    // Current status
-	TempFilePath string    // Path to temporary file for this chunk
-	Error        error     // Last error encountered
-	Connection   connection.Connection
-	RetryCount   int       // Number of times this chunk has been retried
-	LastActive   time.Time // Last time data was received
+	ID           uuid.UUID             `json:"ID"`           // Unique identifier
+	DownloadID   uuid.UUID             `json:"DownloadID"`   // ID of the parent download
+	StartByte    int64                 `json:"StartByte"`    // Starting byte position in the original file
+	EndByte      int64                 `json:"EndByte"`      // Ending byte position in the original file
+	Downloaded   int64                 `json:"Downloaded"`   // Number of bytes downloaded (atomic)
+	Status       Status                `json:"Status"`       // Current status
+	TempFilePath string                `json:"TempFilePath"` // Path to temporary file for this chunk
+	Error        error                 `json:"_"`            // Last error encountered
+	Connection   connection.Connection `json:"-"`
+	RetryCount   int                   `json:"RetryCount"`           // Number of times this chunk has been retried
+	LastActive   time.Time             `json:"LastActive,omitempty"` // Last time data was received
 
 	// Special flags
-	SequentialDownload bool // True if server doesn't support ranges and we need sequential download
+	SequentialDownload bool `json:"SequentialDownload"` // True if server doesn't support ranges and we need sequential download
 
 	// For progress reporting
 	progressCh         chan<- Progress
-	lastProgressUpdate time.Time
+	lastProgressUpdate time.Time `json:"-"`
 }
 
 // Progress represents a progress update event for the chunk
