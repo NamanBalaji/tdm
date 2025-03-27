@@ -58,7 +58,7 @@ func TestInitialize_HeadSuccess(t *testing.T) {
 	defer ts.Close()
 
 	h := NewHandler()
-	info, err := h.Initialize(ts.URL, &downloader.DownloadOptions{})
+	info, err := h.Initialize(ts.URL, &downloader.Config{})
 	if err != nil {
 		t.Fatalf("Initialize returned error: %v", err)
 	}
@@ -100,7 +100,7 @@ func TestInitialize_RangeGET_Fallback(t *testing.T) {
 	defer ts.Close()
 
 	h := NewHandler()
-	info, err := h.Initialize(ts.URL, &downloader.DownloadOptions{})
+	info, err := h.Initialize(ts.URL, &downloader.Config{})
 	if err != nil {
 		t.Fatalf("Initialize (range GET) returned error: %v", err)
 	}
@@ -134,7 +134,7 @@ func TestInitialize_RegularGET_Fallback(t *testing.T) {
 	defer ts.Close()
 
 	h := NewHandler()
-	info, err := h.Initialize(ts.URL, &downloader.DownloadOptions{})
+	info, err := h.Initialize(ts.URL, &downloader.Config{})
 	if err != nil {
 		t.Fatalf("Initialize (regular GET) returned error: %v", err)
 	}
@@ -158,7 +158,7 @@ func TestCreateConnection(t *testing.T) {
 		EndByte:    100,
 		Downloaded: 0,
 	}
-	options := &downloader.DownloadOptions{
+	options := &downloader.Config{
 		Headers: map[string]string{
 			"Custom-Header": "custom",
 		},

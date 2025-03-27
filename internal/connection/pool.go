@@ -3,6 +3,7 @@ package connection
 import (
 	"crypto/md5"
 	"encoding/hex"
+	"fmt"
 	"reflect"
 	"sync"
 	"sync/atomic"
@@ -94,7 +95,6 @@ func (p *Pool) GetConnection(url string, headers map[string]string) (Connection,
 	// If connection is not alive, reset it
 	if !conn.IsAlive() {
 		if err := conn.Reset(); err != nil {
-			// If reset fails, close it and return nil so a new one will be created
 			conn.Close()
 
 			// Remove from in-use
@@ -102,10 +102,8 @@ func (p *Pool) GetConnection(url string, headers map[string]string) (Connection,
 				p.inUse[key] = append(p.inUse[key][:idx], p.inUse[key][idx+1:]...)
 			}
 
-			// Update lastActivity for accurate stats
 			delete(p.lastActivity, getConnectionPtr(conn))
-
-			return nil, nil
+			return nil, fmt.Errorf("connection reset failed: %w", err)
 		}
 	}
 
@@ -176,12 +174,11 @@ func (p *Pool) ReleaseConnection(conn Connection) {
 
 // CloseAll closes all connections in the pool
 func (p *Pool) CloseAll() {
+	close(p.cleanupCancel)
+	<-p.cleanupDone
+
 	p.mu.Lock()
 	defer p.mu.Unlock()
-
-	close(p.cleanupCancel)
-
-	<-p.cleanupDone
 
 	for _, connections := range p.available {
 		for _, conn := range connections {

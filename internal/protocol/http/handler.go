@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/NamanBalaji/tdm/internal/common"
+
 	"github.com/NamanBalaji/tdm/internal/chunk"
 	"github.com/NamanBalaji/tdm/internal/connection"
 	"github.com/NamanBalaji/tdm/internal/downloader"
@@ -65,27 +67,27 @@ func (h *Handler) CanHandle(urlStr string) bool {
 	return u.Scheme == "http" || u.Scheme == "https"
 }
 
-func (h *Handler) Initialize(urlStr string, options *downloader.DownloadOptions) (*downloader.DownloadInfo, error) {
-	info, err := h.initializeWithHEAD(urlStr, options)
+func (h *Handler) Initialize(urlStr string, config *downloader.Config) (*common.DownloadInfo, error) {
+	info, err := h.initializeWithHEAD(urlStr, config)
 	if err == nil {
 		return info, nil
 	}
 
 	if IsFallbackError(err) {
-		info, err = h.initializeWithRangeGET(urlStr, options)
+		info, err = h.initializeWithRangeGET(urlStr, config)
 		if err == nil {
 			return info, nil
 		}
 	}
 
 	if IsFallbackError(err) {
-		return h.initializeWithRegularGET(urlStr, options)
+		return h.initializeWithRegularGET(urlStr, config)
 	}
 
 	return nil, err
 }
 
-func (h *Handler) CreateConnection(urlString string, chunk *chunk.Chunk, options *downloader.DownloadOptions) (connection.Connection, error) {
+func (h *Handler) CreateConnection(urlString string, chunk *chunk.Chunk, downloadConfig *downloader.Config) (connection.Connection, error) {
 	conn := &Connection{
 		url:       urlString,
 		headers:   make(map[string]string),
@@ -101,8 +103,9 @@ func (h *Handler) CreateConnection(urlString string, chunk *chunk.Chunk, options
 		conn.headers["Range"] = fmt.Sprintf("bytes=%d-%d", conn.startByte, chunk.EndByte)
 	}
 
-	if options.Headers != nil {
-		for key, value := range options.Headers {
+	// Apply headers from the download config
+	if downloadConfig.Headers != nil {
+		for key, value := range downloadConfig.Headers {
 			conn.headers[key] = value
 		}
 	}
@@ -111,11 +114,11 @@ func (h *Handler) CreateConnection(urlString string, chunk *chunk.Chunk, options
 }
 
 // initializeWithHEAD attempts to initialize using a HEAD request
-func (h *Handler) initializeWithHEAD(urlStr string, options *downloader.DownloadOptions) (*downloader.DownloadInfo, error) {
+func (h *Handler) initializeWithHEAD(urlStr string, config *downloader.Config) (*common.DownloadInfo, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), defaultConnectTimeout)
 	defer cancel()
 
-	req, err := generateRequest(ctx, urlStr, http.MethodHead, options)
+	req, err := generateRequest(ctx, urlStr, http.MethodHead, config)
 	if err != nil {
 		return nil, err
 	}
@@ -134,11 +137,11 @@ func (h *Handler) initializeWithHEAD(urlStr string, options *downloader.Download
 }
 
 // initializeWithRangeGET tries to get file info using Range headers
-func (h *Handler) initializeWithRangeGET(urlStr string, options *downloader.DownloadOptions) (*downloader.DownloadInfo, error) {
+func (h *Handler) initializeWithRangeGET(urlStr string, config *downloader.Config) (*common.DownloadInfo, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), defaultConnectTimeout)
 	defer cancel()
 
-	req, err := generateRequest(ctx, urlStr, http.MethodGet, options)
+	req, err := generateRequest(ctx, urlStr, http.MethodGet, config)
 	if err != nil {
 		return nil, err
 	}
@@ -181,11 +184,11 @@ func (h *Handler) initializeWithRangeGET(urlStr string, options *downloader.Down
 
 // initializeWithRegularGET gets file info using a regular GET request
 // This is the final fallback when both HEAD and Range requests fail
-func (h *Handler) initializeWithRegularGET(urlStr string, options *downloader.DownloadOptions) (*downloader.DownloadInfo, error) {
+func (h *Handler) initializeWithRegularGET(urlStr string, config *downloader.Config) (*common.DownloadInfo, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), defaultConnectTimeout)
 	defer cancel()
 
-	req, err := generateRequest(ctx, urlStr, http.MethodGet, options)
+	req, err := generateRequest(ctx, urlStr, http.MethodGet, config)
 	if err != nil {
 		return nil, err
 	}
@@ -324,7 +327,7 @@ func parseLastModified(header string) time.Time {
 	return t
 }
 
-func generateRequest(ctx context.Context, urlStr, method string, options *downloader.DownloadOptions) (*http.Request, error) {
+func generateRequest(ctx context.Context, urlStr, method string, config *downloader.Config) (*http.Request, error) {
 	req, err := http.NewRequestWithContext(ctx, method, urlStr, http.NoBody)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
@@ -332,8 +335,8 @@ func generateRequest(ctx context.Context, urlStr, method string, options *downlo
 
 	req.Header.Set("User-Agent", defaultUserAgent)
 
-	if options != nil && options.Headers != nil {
-		for key, value := range options.Headers {
+	if config != nil && config.Headers != nil {
+		for key, value := range config.Headers {
 			req.Header.Set(key, value)
 		}
 	}
@@ -341,8 +344,8 @@ func generateRequest(ctx context.Context, urlStr, method string, options *downlo
 	return req, nil
 }
 
-func generateInfo(urlStr string, resp *http.Response, canRange bool, totalSize int64) *downloader.DownloadInfo {
-	info := &downloader.DownloadInfo{
+func generateInfo(urlStr string, resp *http.Response, canRange bool, totalSize int64) *common.DownloadInfo {
+	info := &common.DownloadInfo{
 		URL:             urlStr,
 		MimeType:        resp.Header.Get("Content-Type"),
 		TotalSize:       totalSize,

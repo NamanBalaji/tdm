@@ -118,6 +118,9 @@ func (c *Chunk) handleError(err error) error {
 
 // Reset prepares a Chunk so it can be retried
 func (c *Chunk) Reset() {
+	if c.Connection != nil {
+		c.Connection.Close()
+	}
 	c.Status = common.StatusPending
 	c.Error = nil
 	c.Connection = nil
@@ -132,4 +135,9 @@ func (c *Chunk) VerifyIntegrity() bool {
 		return false
 	}
 	return true
+}
+
+// SetProgressFunc is a helper method for setting the progress function on a chunk
+func (c *Chunk) SetProgressFunc(progressFn func(int64)) {
+	c.progressFn = progressFn
 }

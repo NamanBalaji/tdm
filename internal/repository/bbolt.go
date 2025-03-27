@@ -18,6 +18,11 @@ const (
 	schemaVersion   = 1 // For future schema migrations
 )
 
+var (
+	// ErrDownloadNotFound is returned when a download cannot be found
+	ErrDownloadNotFound = errors.New("download not found")
+)
+
 // BboltRepository implements the downloader.DownloadRepository interface
 type BboltRepository struct {
 	db *bbolt.DB
@@ -83,13 +88,16 @@ func (r *BboltRepository) Save(download *downloader.Download) error {
 		return errors.New("cannot save nil download")
 	}
 
+	// Prepare the download for serialization
+	download.PrepareForSerialization()
+
 	return r.db.Update(func(tx *bbolt.Tx) error {
 		bucket := tx.Bucket([]byte(downloadsBucket))
 		if bucket == nil {
 			return fmt.Errorf("bucket not found: %s", downloadsBucket)
 		}
 
-		// Serialize the download - errors handled by marshaling methods
+		// Serialize the download
 		data, err := json.Marshal(download)
 		if err != nil {
 			return fmt.Errorf("failed to marshal download: %w", err)
@@ -121,7 +129,7 @@ func (r *BboltRepository) Find(id uuid.UUID) (*downloader.Download, error) {
 		// Get data from the database
 		data = bucket.Get([]byte(id.String()))
 		if data == nil {
-			return errors.New("download not found")
+			return ErrDownloadNotFound
 		}
 
 		return nil
@@ -138,6 +146,9 @@ func (r *BboltRepository) Find(id uuid.UUID) (*downloader.Download, error) {
 	if err := json.Unmarshal(data, download); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal download: %w", err)
 	}
+
+	// Restore runtime fields
+	download.RestoreFromSerialization()
 
 	return download, nil
 }
@@ -161,6 +172,9 @@ func (r *BboltRepository) FindAll() ([]*downloader.Download, error) {
 			if err := json.Unmarshal(v, download); err != nil {
 				return fmt.Errorf("failed to unmarshal download: %w", err)
 			}
+
+			// Restore runtime fields
+			download.RestoreFromSerialization()
 
 			// Add to results
 			downloads = append(downloads, download)

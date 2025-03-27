@@ -81,6 +81,13 @@ func (m *Manager) CreateChunks(downloadID uuid.UUID, filesize int64, supportsRan
 		return nil, fmt.Errorf("failed to create temp directory: %w", err)
 	}
 
+	if filesize <= 0 {
+		chunk := NewChunk(downloadID, 0, 0, progressFn)
+		chunk.TempFilePath = filepath.Join(downloadTempDir, chunk.ID.String())
+		chunk.Status = common.StatusCompleted // Auto-complete empty files
+		return []*Chunk{chunk}, nil
+	}
+
 	if !supportsRange || filesize < MinChunkSize {
 		chunk := NewChunk(downloadID, 0, filesize-1, progressFn)
 		chunk.TempFilePath = filepath.Join(downloadTempDir, chunk.ID.String())

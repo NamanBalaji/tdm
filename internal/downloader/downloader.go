@@ -2,69 +2,80 @@ package downloader
 
 import (
 	"context"
+	"errors"
+	"github.com/NamanBalaji/tdm/internal/chunk"
+	"github.com/NamanBalaji/tdm/internal/common"
+	"github.com/google/uuid"
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/NamanBalaji/tdm/internal/common"
-
-	"github.com/NamanBalaji/tdm/internal/chunk"
-	"github.com/google/uuid"
 )
 
-// Download represents a file download job
+// Download represents a file download task
 type Download struct {
-	ID             uuid.UUID       `json:"id"`
-	URL            string          `json:"url"`
-	Filename       string          `json:"filename"`
-	Options        DownloadOptions `json:"options"`
-	Status         common.Status   `json:"status"`
-	Error          error           `json:"-"`
-	TotalSize      int64           `json:"total_size"`
-	Downloaded     int64           `json:"downloaded"`
-	Chunks         []*chunk.Chunk  `json:"chunks"`
-	StartTime      time.Time       `json:"start_time,omitempty"`
-	EndTime        time.Time       `json:"end_time,omitempty"`
-	SpeedSamples   []int64         `json:"_"`
-	LastSpeedCheck time.Time       `json:"-"`
-	BytesSinceLast int64           `json:"-"`
+	// Core identifying information
+	ID       uuid.UUID `json:"id"`
+	URL      string    `json:"url"`      // Source URL
+	Filename string    `json:"filename"` // Target filename
 
-	// Concurrency control
-	mu         sync.RWMutex       `json:"-"`
-	ctx        context.Context    `json:"-"`
-	cancelFunc context.CancelFunc `json:"-"`
+	// Persistent properties
+	Config    Config        `json:"config"`     // Download configuration
+	Status    common.Status `json:"status"`     // Current status
+	TotalSize int64         `json:"total_size"` // Total file size in bytes
 
-	// Channel for real-time progress updates
-	progressCh chan common.Progress `json:"-"`
+	// Progress tracking (persistent)
+	Downloaded int64     `json:"downloaded"` // Downloaded bytes so far
+	StartTime  time.Time `json:"start_time,omitempty"`
+	EndTime    time.Time `json:"end_time,omitempty"`
+
+	// Chunk management
+	ChunkInfos []common.ChunkInfo `json:"chunk_infos"` // Chunk data for serialization
+	Chunks     []*chunk.Chunk     `json:"-"`           // Actual chunks (runtime only)
+
+	// Error tracking
+	ErrorMessage string `json:"error_message,omitempty"` // For persistent storage
+	Error        error  `json:"-"`                       // Runtime only
+
+	// Runtime-only state (not serialized)
+	mu              sync.RWMutex         `json:"-"`
+	ctx             context.Context      `json:"-"`
+	cancelFunc      context.CancelFunc   `json:"-"`
+	progressCh      chan common.Progress `json:"-"`
+	speedCalculator *SpeedCalculator     `json:"-"`
 }
 
 // NewDownload creates a new Download instance
-func NewDownload(url, filename string, options *DownloadOptions) *Download {
+func NewDownload(url, filename string, config Config) *Download {
 	return &Download{
-		ID:             uuid.New(),
-		URL:            url,
-		Filename:       filename,
-		Options:        *options,
-		Status:         common.StatusPending,
-		progressCh:     make(chan common.Progress),
-		StartTime:      time.Now(),
-		LastSpeedCheck: time.Now(),
+		ID:              uuid.New(),
+		URL:             url,
+		Filename:        filename,
+		Config:          config,
+		Status:          common.StatusPending,
+		ChunkInfos:      make([]common.ChunkInfo, 0),
+		Chunks:          make([]*chunk.Chunk, 0),
+		progressCh:      make(chan common.Progress, 10),
+		speedCalculator: NewSpeedCalculator(5),
+		StartTime:       time.Now(),
 	}
 }
 
-// GetStats returns the current download statistics
-func (d *Download) GetStats() DownloadStats {
+// GetStats returns current download statistics
+func (d *Download) GetStats() Stats {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
 	// Calculate progress percentage
-	var progress float64 = 0
+	var progress float64
 	if d.TotalSize > 0 {
 		progress = float64(atomic.LoadInt64(&d.Downloaded)) / float64(d.TotalSize) * 100
 	}
 
 	// Calculate current speed
-	currentSpeed := d.calculateSpeed()
+	var speed int64
+	if d.speedCalculator != nil {
+		speed = d.speedCalculator.GetSpeed()
+	}
 
 	// Count chunks by status
 	activeChunks := 0
@@ -79,64 +90,84 @@ func (d *Download) GetStats() DownloadStats {
 		}
 	}
 
-	// Calculate time remaining
+	// Calculate time elapsed and remaining
+	timeElapsed := time.Since(d.StartTime)
 	var timeRemaining time.Duration
-	if currentSpeed > 0 {
+	if speed > 0 {
 		bytesRemaining := d.TotalSize - atomic.LoadInt64(&d.Downloaded)
 		if bytesRemaining > 0 {
-			timeRemaining = time.Duration(bytesRemaining/currentSpeed) * time.Second
+			timeRemaining = time.Duration(bytesRemaining/speed) * time.Second
 		}
 	}
 
-	// Create and return stats
-	errorStr := ""
+	// Get error message if any
+	errorMsg := ""
 	if d.Error != nil {
-		errorStr = d.Error.Error()
+		errorMsg = d.Error.Error()
+	} else if d.ErrorMessage != "" {
+		errorMsg = d.ErrorMessage
 	}
 
-	return DownloadStats{
+	return Stats{
+		ID:              d.ID,
 		Status:          d.Status,
 		TotalSize:       d.TotalSize,
 		Downloaded:      atomic.LoadInt64(&d.Downloaded),
-		Speed:           currentSpeed,
 		Progress:        progress,
+		Speed:           speed,
+		TimeElapsed:     timeElapsed,
+		TimeRemaining:   timeRemaining,
 		ActiveChunks:    activeChunks,
 		CompletedChunks: completedChunks,
 		TotalChunks:     totalChunks,
-		TimeElapsed:     time.Since(d.StartTime),
-		TimeRemaining:   timeRemaining,
-		Error:           errorStr,
-		StartTime:       d.StartTime,
+		Error:           errorMsg,
 		LastUpdated:     time.Now(),
-		Connections:     d.countActiveConnections(),
 	}
 }
 
 // SetContext sets the download context and cancel function
 func (d *Download) SetContext(ctx context.Context, cancelFunc context.CancelFunc) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
 	d.ctx = ctx
 	d.cancelFunc = cancelFunc
 }
 
 // Context returns the download context
 func (d *Download) Context() context.Context {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
 	return d.ctx
 }
 
 // CancelFunc returns the cancel function
 func (d *Download) CancelFunc() context.CancelFunc {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
 	return d.cancelFunc
 }
 
-// GetProgressChannel returns the channel for progress updates
+func (d *Download) SetProgressFunction() {
+	for _, c := range d.Chunks {
+		c.SetProgressFunc(d.AddProgress)
+	}
+}
+
+// GetProgressChannel returns the progress channel
 func (d *Download) GetProgressChannel() chan common.Progress {
 	return d.progressCh
 }
 
-// AddProgress adds the specified number of bytes to the download progress
+// AddProgress adds progress to the download
 func (d *Download) AddProgress(bytes int64) {
 	atomic.AddInt64(&d.Downloaded, bytes)
-	atomic.AddInt64(&d.BytesSinceLast, bytes)
+
+	if d.speedCalculator != nil {
+		d.speedCalculator.AddBytes(bytes)
+	}
 
 	// Send progress update
 	select {
@@ -144,72 +175,53 @@ func (d *Download) AddProgress(bytes int64) {
 		DownloadID:     d.ID,
 		BytesCompleted: atomic.LoadInt64(&d.Downloaded),
 		TotalBytes:     d.TotalSize,
-		Speed:          d.calculateSpeed(),
+		Speed:          d.speedCalculator.GetSpeed(),
 		Status:         d.Status,
 		Timestamp:      time.Now(),
 	}:
-		// Update sent successfully
+		// Successfully sent
 	default:
 		// Channel buffer is full, skip this update
 	}
 }
 
-// calculateSpeed calculates the current download speed in bytes/sec
-func (d *Download) calculateSpeed() int64 {
-	now := time.Now()
-	elapsed := now.Sub(d.LastSpeedCheck)
-
-	// Only recalculate speed after a reasonable interval (e.g., 1 second)
-	if elapsed < time.Second {
-		// Return the last calculated speed if available
-		if len(d.SpeedSamples) > 0 {
-			return d.SpeedSamples[len(d.SpeedSamples)-1]
-		}
-		return 0
-	}
-
-	// Calculate bytes per second
-	bytesSinceLast := atomic.SwapInt64(&d.BytesSinceLast, 0)
-	speed := int64(float64(bytesSinceLast) / elapsed.Seconds())
-
-	// Update speed samples (keep last 5 samples for smoothing)
+// PrepareForSerialization prepares the download for storage
+func (d *Download) PrepareForSerialization() {
 	d.mu.Lock()
-	d.SpeedSamples = append(d.SpeedSamples, speed)
-	if len(d.SpeedSamples) > 5 {
-		d.SpeedSamples = d.SpeedSamples[1:]
-	}
-	d.LastSpeedCheck = now
-	d.mu.Unlock()
+	defer d.mu.Unlock()
 
-	// Return the average of recent samples for smoother readings
-	return d.getAverageSpeed()
-}
-
-// getAverageSpeed calculates the average of recent speed samples
-func (d *Download) getAverageSpeed() int64 {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
-
-	if len(d.SpeedSamples) == 0 {
-		return 0
-	}
-
-	var sum int64
-	for _, speed := range d.SpeedSamples {
-		sum += speed
-	}
-
-	return sum / int64(len(d.SpeedSamples))
-}
-
-// countActiveConnections counts the number of active connections across all chunks
-func (d *Download) countActiveConnections() int {
-	count := 0
-	for _, c := range d.Chunks {
-		// @TODO: check if chunk conn != nil
-		if c.Status == common.StatusActive {
-			count++
+	// Save chunk information for serialization
+	d.ChunkInfos = make([]common.ChunkInfo, len(d.Chunks))
+	for i, c := range d.Chunks {
+		d.ChunkInfos[i] = common.ChunkInfo{
+			ID:                 c.ID.String(),
+			StartByte:          c.StartByte,
+			EndByte:            c.EndByte,
+			Downloaded:         c.Downloaded,
+			Status:             c.Status,
+			RetryCount:         c.RetryCount,
+			TempFilePath:       c.TempFilePath,
+			SequentialDownload: c.SequentialDownload,
+			LastActive:         c.LastActive,
 		}
 	}
-	return count
+
+	// Save error message if there's an error
+	if d.Error != nil {
+		d.ErrorMessage = d.Error.Error()
+	}
+}
+
+// RestoreFromSerialization restores runtime fields after loading from storage
+func (d *Download) RestoreFromSerialization() {
+	d.progressCh = make(chan common.Progress, 10)
+	d.speedCalculator = NewSpeedCalculator(5)
+
+	// Convert error message back to error if present
+	if d.ErrorMessage != "" && d.Error == nil {
+		d.Error = errors.New(d.ErrorMessage)
+	}
+
+	// Note: Chunks need to be recreated by the Engine using ChunkInfos
+	// This is handled separately in the Engine.restoreChunks method
 }

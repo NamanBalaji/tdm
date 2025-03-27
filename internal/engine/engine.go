@@ -4,18 +4,19 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
-	"os"
-	"path/filepath"
-	"sync"
-	"time"
-
 	"github.com/NamanBalaji/tdm/internal/chunk"
 	"github.com/NamanBalaji/tdm/internal/common"
 	"github.com/NamanBalaji/tdm/internal/connection"
 	"github.com/NamanBalaji/tdm/internal/downloader"
 	"github.com/NamanBalaji/tdm/internal/protocol"
+	"github.com/NamanBalaji/tdm/internal/repository"
 	"github.com/google/uuid"
+	"golang.org/x/sync/errgroup"
+	"log"
+	"os"
+	"path/filepath"
+	"sync"
+	"time"
 )
 
 var (
@@ -27,17 +28,10 @@ var (
 
 	// ErrDownloadExists is returned when trying to add a duplicate download
 	ErrDownloadExists = errors.New("download already exists")
-)
 
-// Config contains download manager configuration
-type Config struct {
-	DownloadDir               string
-	MaxConcurrentDownloads    int
-	MaxConnectionsPerDownload int
-	ChunkSize                 int64
-	UserAgent                 string
-	TempDir                   string
-}
+	// ErrEngineNotRunning is returned when an operation requires the engine to be running
+	ErrEngineNotRunning = errors.New("engine is not running")
+)
 
 type Engine struct {
 	mu sync.RWMutex
@@ -47,46 +41,52 @@ type Engine struct {
 	connectionPool  *connection.Pool
 	chunkManager    *chunk.Manager
 	config          *Config
+	repository      *repository.BboltRepository
+	queueProcessor  *QueueProcessor
+	progressMonitor *ProgressMonitor
 
-	// Context for downloads
 	ctx        context.Context
 	cancelFunc context.CancelFunc
+	wg         sync.WaitGroup
 
-	// Channel for global progress updates
 	progressCh chan common.Progress
 
-	// Is the manager running
 	running bool
+
+	saveTicker *time.Ticker
 }
 
-func DefaultConfig() *Config {
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		homeDir = "."
-	}
-	downloadDir := filepath.Join(homeDir, "Downloads")
-
-	return &Config{
-		DownloadDir:               downloadDir,
-		MaxConcurrentDownloads:    3,
-		MaxConnectionsPerDownload: 8,
-		ChunkSize:                 4 * 1024 * 1024, // 4MB
-		UserAgent:                 "TDM/1.0",
-		TempDir:                   filepath.Join(os.TempDir(), "tdm"),
-	}
+// runTask runs a function in a goroutine tracked by the WaitGroup
+func (e *Engine) runTask(task func()) {
+	e.wg.Add(1)
+	go func() {
+		defer e.wg.Done()
+		task()
+	}()
 }
 
+// New creates a new Engine instance
 func New(config *Config) (*Engine, error) {
 	if config == nil {
 		config = DefaultConfig()
+	}
+
+	if err := os.MkdirAll(config.DownloadDir, 0o755); err != nil {
+		return nil, fmt.Errorf("failed to create download directory: %w", err)
+	}
+
+	if err := os.MkdirAll(config.TempDir, 0o755); err != nil {
+		return nil, fmt.Errorf("failed to create temp directory: %w", err)
 	}
 
 	protocolHandler := protocol.NewHandler()
 	connectionPool := connection.NewPool(10, 5*time.Minute)
 	chunkManager, err := chunk.NewManager(config.TempDir)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to create chunk manager: %w", err)
 	}
+
+	ctx, cancelFunc := context.WithCancel(context.Background())
 
 	engine := &Engine{
 		downloads:       make(map[uuid.UUID]*downloader.Download),
@@ -95,9 +95,9 @@ func New(config *Config) (*Engine, error) {
 		chunkManager:    chunkManager,
 		config:          config,
 		progressCh:      make(chan common.Progress, 1000),
+		ctx:             ctx,
+		cancelFunc:      cancelFunc,
 	}
-
-	engine.ctx, engine.cancelFunc = context.WithCancel(context.Background())
 
 	return engine, nil
 }
@@ -105,89 +105,234 @@ func New(config *Config) (*Engine, error) {
 func (e *Engine) Init() error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+
 	if e.running {
 		return nil
 	}
 
-	// load downloads
-	// start progress monitoring
+	if err := e.initRepository(); err != nil {
+		return fmt.Errorf("failed to initalize repository: %w", err)
+	}
+
+	if err := e.loadDownloads(); err != nil {
+		return fmt.Errorf("failed to load download: %w", err)
+	}
+
+	e.queueProcessor = NewQueueProcessor(
+		e.config.MaxConcurrentDownloads,
+		func(ctx context.Context, download *downloader.Download) error {
+			return e.StartDownload(ctx, download.ID)
+		},
+	)
+
+	// Start queue processor
+	e.runTask(func() {
+		e.queueProcessor.Start(e.ctx)
+	})
+
+	e.progressMonitor = NewProgressMonitor(e.progressCh)
+	e.runTask(func() {
+		e.progressMonitor.Start(e.ctx)
+	})
+
+	e.runTask(func() {
+		e.startPeriodicSave(e.ctx)
+	})
+
+	if err := e.restoreDownloadStates(); err != nil {
+		log.Printf("some download states could not be restored: %v", err)
+	}
+
+	for _, download := range e.downloads {
+		if download.Status == common.StatusQueued {
+			e.queueProcessor.EnqueueDownload(download, download.Config.Priority)
+		}
+	}
 
 	e.running = true
 	return nil
 }
 
-func (e *Engine) Shutdown() error {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
-	if !e.running {
-		return nil
+// initRepository initializes the download repository
+func (e *Engine) initRepository() error {
+	configDir := e.config.ConfigDir
+	if configDir == "" {
+		homeDir, err := os.UserHomeDir()
+		if err != nil {
+			return fmt.Errorf("could not determine home directory: %w", err)
+		}
+		configDir = filepath.Join(homeDir, ".tdm")
 	}
 
-	e.cancelFunc()
-	// save all downloads
-	e.connectionPool.CloseAll()
-	close(e.progressCh)
-	e.running = false
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		return fmt.Errorf("failed to create config directory: %w", err)
+	}
+
+	dbPath := filepath.Join(configDir, "tdm.db")
+	repo, err := repository.NewBboltRepository(dbPath)
+	if err != nil {
+		return fmt.Errorf("failed to create repository: %w", err)
+	}
+
+	e.repository = repo
 	return nil
 }
 
-func (e *Engine) AddDownload(url string, opts *downloader.DownloadOptions) (uuid.UUID, error) {
+// loadDownloads loads existing downloads from the repository
+func (e *Engine) loadDownloads() error {
+	downloads, err := e.repository.FindAll()
+	if err != nil {
+		return fmt.Errorf("failed to retrieve downloads: %w", err)
+	}
+
+	for _, download := range downloads {
+		download.RestoreFromSerialization()
+
+		downloadCtx, cancelFunc := context.WithCancel(e.ctx)
+		download.SetContext(downloadCtx, cancelFunc)
+
+		if err := e.restoreChunks(download); err != nil {
+			log.Printf("Warning: Failed to restore chunks for download %s: %v", download.ID, err)
+		}
+
+		e.downloads[download.ID] = download
+	}
+
+	log.Printf("Loaded %d download(s) from repository", len(e.downloads))
+	return nil
+}
+
+// restoreChunks recreates chunk objects from serialized chunk info
+func (e *Engine) restoreChunks(download *downloader.Download) error {
+	if len(download.ChunkInfos) == 0 {
+		return nil
+	}
+
+	chunks := make([]*chunk.Chunk, len(download.ChunkInfos))
+
+	for i, info := range download.ChunkInfos {
+		chunkID, err := uuid.Parse(info.ID)
+		if err != nil {
+			return err
+		}
+
+		newChunk := &chunk.Chunk{
+			ID:                 chunkID,
+			DownloadID:         download.ID,
+			StartByte:          info.StartByte,
+			EndByte:            info.EndByte,
+			Downloaded:         info.Downloaded,
+			Status:             info.Status,
+			RetryCount:         info.RetryCount,
+			TempFilePath:       info.TempFilePath,
+			SequentialDownload: info.SequentialDownload,
+			LastActive:         info.LastActive,
+		}
+
+		if _, err := os.Stat(newChunk.TempFilePath); os.IsNotExist(err) {
+			chunkDir := filepath.Dir(newChunk.TempFilePath)
+			if _, err := os.Stat(chunkDir); os.IsNotExist(err) {
+				if err := os.MkdirAll(chunkDir, 0755); err != nil {
+					log.Printf("Warning: Failed to create chunk directory %s: %v", chunkDir, err)
+				}
+			}
+
+			if newChunk.Status == common.StatusCompleted {
+				newChunk.Status = common.StatusPending
+				newChunk.Downloaded = 0
+			}
+		}
+
+		chunks[i] = newChunk
+	}
+
+	download.Chunks = chunks
+
+	download.SetProgressFunction()
+
+	return nil
+}
+
+// AddDownload adds a new download to the engine
+func (e *Engine) AddDownload(url string, config *downloader.Config) (uuid.UUID, error) {
 	if url == "" {
 		return uuid.Nil, ErrInvalidURL
 	}
+
+	if !e.running {
+		return uuid.Nil, ErrEngineNotRunning
+	}
+
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
 	// Check for duplicate URL
 	for _, download := range e.downloads {
-		if download.URL == url && download.Status != common.StatusCompleted && download.Status != common.StatusFailed {
+		if download.URL == url &&
+			download.Status != common.StatusCompleted &&
+			download.Status != common.StatusFailed &&
+			download.Status != common.StatusCancelled {
 			return uuid.Nil, ErrDownloadExists
 		}
 	}
 
-	if opts.Directory == "" {
-		opts.Directory = e.config.DownloadDir
+	dConfig := config
+	if dConfig == nil {
+		dConfig = &downloader.Config{}
 	}
-	if opts.Connections <= 0 {
-		opts.Connections = e.config.MaxConnectionsPerDownload
-	}
-	opts.URL = url
 
-	info, err := e.protocolHandler.Initialize(url, opts)
+	if dConfig.Directory == "" {
+		dConfig.Directory = e.config.DownloadDir
+	}
+	if dConfig.Connections <= 0 {
+		dConfig.Connections = e.config.MaxConnectionsPerDownload
+	}
+	if dConfig.MaxRetries <= 0 {
+		dConfig.MaxRetries = e.config.MaxRetries
+	}
+	if dConfig.RetryDelay <= 0 {
+		dConfig.RetryDelay = time.Duration(e.config.RetryDelay) * time.Second
+	}
+
+	info, err := e.protocolHandler.Initialize(url, dConfig)
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("failed to initialize download: %w", err)
 	}
 
-	filename := opts.Filename
-	if filename == "" {
-		filename = info.Filename
-	}
-
-	// Ensure directory exists
-	if err := os.MkdirAll(opts.Directory, 0o755); err != nil {
+	if err := os.MkdirAll(dConfig.Directory, 0o755); err != nil {
 		return uuid.Nil, fmt.Errorf("failed to create directory: %w", err)
 	}
 
-	// Create download object
-	download := downloader.NewDownload(url, filename, opts)
+	download := downloader.NewDownload(url, info.Filename, *dConfig)
 	download.TotalSize = info.TotalSize
 
-	// Create chunks
-	chunks, err := e.chunkManager.CreateChunks(download.ID, info.TotalSize, info.SupportsRanges, opts.Connections, download.AddProgress)
+	downloadCtx, cancelFunc := context.WithCancel(e.ctx)
+	download.SetContext(downloadCtx, cancelFunc)
+
+	chunks, err := e.chunkManager.CreateChunks(download.ID, info.TotalSize, info.SupportsRanges, dConfig.Connections, download.AddProgress)
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("failed to create chunks: %w", err)
 	}
 	download.Chunks = chunks
 
-	e.downloads[download.ID] = download
+	if err := e.saveDownload(download); err != nil {
+		return uuid.Nil, fmt.Errorf("failed to save download: %w", err)
+	}
 
-	// save download
+	e.downloads[download.ID] = download
+	if e.config.AutoStartDownloads {
+		e.queueProcessor.EnqueueDownload(download, download.Config.Priority)
+	} else {
+		download.Status = common.StatusPending
+		if err := e.saveDownload(download); err != nil {
+			log.Printf("Warning: Failed to save download %s: %v", download.ID, err)
+		}
+	}
 
 	return download.ID, nil
 }
 
-// GetDownload retrieves a download by ID
+// GetDownload retrieves a download by ID string
 func (e *Engine) GetDownload(id uuid.UUID) (*downloader.Download, error) {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
@@ -215,10 +360,13 @@ func (e *Engine) ListDownloads() []*downloader.Download {
 
 // RemoveDownload removes a download from the manager
 func (e *Engine) RemoveDownload(id uuid.UUID, removeFiles bool) error {
+	if !e.running {
+		return ErrEngineNotRunning
+	}
+
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	// Check if download exists
 	download, ok := e.downloads[id]
 	if !ok {
 		return ErrDownloadNotFound
@@ -228,20 +376,16 @@ func (e *Engine) RemoveDownload(id uuid.UUID, removeFiles bool) error {
 	if download.Status == common.StatusActive {
 		err := e.CancelDownload(id, removeFiles)
 		if err != nil {
-			return err
+			return fmt.Errorf("failed to cancel download: %w", err)
 		}
 	}
 
-	// Remove temporary files
 	if removeFiles {
-		// Remove chunk files
-		err := e.chunkManager.CleanupChunks(download.Chunks)
-		if err != nil {
-			return err
+		if err := e.chunkManager.CleanupChunks(download.Chunks); err != nil {
+			log.Printf("Warning: Failed to clean up chunks: %v", err)
 		}
 
-		// Remove output file if it exists
-		outputPath := filepath.Join(download.Options.Directory, download.Filename)
+		outputPath := filepath.Join(download.Config.Directory, download.Filename)
 		if _, err := os.Stat(outputPath); err == nil {
 			if err := os.Remove(outputPath); err != nil {
 				log.Printf("Warning: Failed to remove output file: %v", err)
@@ -249,22 +393,26 @@ func (e *Engine) RemoveDownload(id uuid.UUID, removeFiles bool) error {
 		}
 	}
 
-	// Remove from downloads map
+	if e.repository != nil {
+		if err := e.repository.Delete(id); err != nil && !errors.Is(err, repository.ErrDownloadNotFound) {
+			return fmt.Errorf("failed to delete download from repository: %w", err)
+		}
+	}
+
 	delete(e.downloads, id)
 
 	return nil
 }
 
 // GetGlobalStats returns global download statistics
-func (e *Engine) GetGlobalStats() GlobalStats {
+func (e *Engine) GetGlobalStats() common.GlobalStats {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 
-	stats := GlobalStats{
+	stats := common.GlobalStats{
 		MaxConcurrent: e.config.MaxConcurrentDownloads,
 	}
 
-	// Count downloads by status
 	for _, download := range e.downloads {
 		switch download.Status {
 		case common.StatusActive:
@@ -274,7 +422,7 @@ func (e *Engine) GetGlobalStats() GlobalStats {
 			stats.QueuedDownloads++
 		case common.StatusCompleted:
 			stats.CompletedDownloads++
-		case common.StatusFailed:
+		case common.StatusFailed, common.StatusCancelled:
 			stats.FailedDownloads++
 		case common.StatusPaused:
 			stats.PausedDownloads++
@@ -288,7 +436,6 @@ func (e *Engine) GetGlobalStats() GlobalStats {
 		}
 	}
 
-	// Calculate average speed
 	if stats.ActiveDownloads > 0 {
 		stats.AverageSpeed = stats.CurrentSpeed / int64(stats.ActiveDownloads)
 	}
@@ -298,9 +445,13 @@ func (e *Engine) GetGlobalStats() GlobalStats {
 
 // PauseDownload pauses an active download
 func (e *Engine) PauseDownload(id uuid.UUID) error {
+	if !e.running {
+		return ErrEngineNotRunning
+	}
+
 	download, err := e.GetDownload(id)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to get download: %w", err)
 	}
 
 	// Can only pause active downloads
@@ -314,7 +465,9 @@ func (e *Engine) PauseDownload(id uuid.UUID) error {
 
 	download.Status = common.StatusPaused
 
-	// Save updated state
+	if err := e.saveDownload(download); err != nil {
+		return fmt.Errorf("failed to save download: %w", err)
+	}
 
 	return nil
 }
@@ -323,55 +476,390 @@ func (e *Engine) PauseDownload(id uuid.UUID) error {
 func (e *Engine) ResumeDownload(ctx context.Context, id uuid.UUID) error {
 	download, err := e.GetDownload(id)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to get download: %w", err)
 	}
 
-	// Can only resume paused downloads
-	if download.Status != common.StatusPaused {
+	if download.Status != common.StatusPaused && download.Status != common.StatusFailed {
 		return nil
 	}
 
-	// Create new context with cancellation
-	downloadCtx, cancelFunc := context.WithCancel(ctx)
-	download.SetContext(downloadCtx, cancelFunc)
-
-	// Update status
-	download.Status = common.StatusActive
-
-	// Save updated state
-
-	go e.processDownload(download)
+	e.queueProcessor.EnqueueDownload(download, download.Config.Priority)
 
 	return nil
 }
 
 // CancelDownload cancels a download
 func (e *Engine) CancelDownload(id uuid.UUID, removeFiles bool) error {
+	if !e.running {
+		return ErrEngineNotRunning
+	}
+
 	download, err := e.GetDownload(id)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to get download: %w", err)
 	}
 
 	if download.Status == common.StatusCompleted {
 		return nil
 	}
 
-	// Cancel the download operation
 	if download.CancelFunc() != nil {
 		download.CancelFunc()()
 	}
 
-	download.Status = common.StatusFailed
-
+	download.Status = common.StatusCancelled
 	if removeFiles {
 		if err := e.chunkManager.CleanupChunks(download.Chunks); err != nil {
 			log.Printf("Warning: Failed to clean up chunks: %v", err)
 		}
-
-		// delete files
 	}
 
-	// Save updated state
+	if err := e.saveDownload(download); err != nil {
+		return fmt.Errorf("failed to save download: %w", err)
+	}
 
 	return nil
+}
+
+// StartDownload initiates a download
+func (e *Engine) StartDownload(ctx context.Context, id uuid.UUID) error {
+	download, err := e.GetDownload(id)
+	if err != nil {
+		return err
+	}
+
+	stats := download.GetStats()
+	if stats.Status == common.StatusActive {
+		return nil
+	}
+
+	downloadCtx, cancelFunc := context.WithCancel(ctx)
+	download.SetContext(downloadCtx, cancelFunc)
+
+	download.Status = common.StatusActive
+	download.StartTime = time.Now()
+
+	if err := e.saveDownload(download); err != nil {
+		return fmt.Errorf("failed to save download: %w", err)
+	}
+
+	e.runTask(func() {
+		e.processDownload(download)
+	})
+
+	return nil
+}
+
+// processDownload handles the actual download process
+func (e *Engine) processDownload(download *downloader.Download) {
+	chunks := e.getPendingChunks(download)
+	defer e.queueProcessor.NotifyDownloadCompletion(download.ID)
+
+	if len(chunks) == 0 {
+		if err := e.finishDownload(download); err != nil {
+			log.Printf("error finishing download: %s", err)
+		}
+		return
+	}
+
+	g, ctx := errgroup.WithContext(download.Context())
+
+	sem := make(chan struct{}, download.Config.Connections)
+
+	for _, chunk := range chunks {
+		chunkCopy := chunk
+		g.Go(func() error {
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+
+			return e.downloadChunkWithRetries(ctx, download, chunkCopy)
+		})
+	}
+
+	err := g.Wait()
+
+	if err != nil {
+		if !errors.Is(err, context.Canceled) {
+			e.handleDownloadFailure(download, err)
+		} else {
+			download.Status = common.StatusPaused
+			if err := e.saveDownload(download); err != nil {
+				log.Printf("Failed to save download: %s", err)
+			}
+		}
+	} else {
+		if err := e.finishDownload(download); err != nil {
+			log.Printf("error finishing download: %s", err)
+		}
+	}
+}
+
+// downloadChunkWithRetries downloads a chunk with intelligent retry logic
+func (e *Engine) downloadChunkWithRetries(ctx context.Context, download *downloader.Download, chunk *chunk.Chunk) error {
+	err := e.downloadChunk(ctx, download, chunk)
+
+	if err == nil || errors.Is(err, context.Canceled) {
+		return err
+	}
+
+	// Wrap the error with context
+	downloadErr := NewDownloadError(err, fmt.Sprintf("chunk %s initial download", chunk.ID))
+	log.Printf("Download error: %v (retryable: %v)", downloadErr, downloadErr.Retryable)
+
+	// Retry logic
+	for chunk.RetryCount < download.Config.MaxRetries {
+		// Reset the chunk for retry
+		chunk.Reset()
+
+		backoff := calculateBackoff(chunk.RetryCount, download.Config.RetryDelay)
+
+		select {
+		case <-time.After(backoff):
+			log.Printf("Retrying chunk %s (attempt %d/%d)", chunk.ID, chunk.RetryCount+1, download.Config.MaxRetries)
+
+			err = e.downloadChunk(ctx, download, chunk)
+			if err == nil || errors.Is(err, context.Canceled) {
+				return err
+			}
+
+			downloadErr = NewDownloadError(err, fmt.Sprintf("chunk %s retry %d", chunk.ID, chunk.RetryCount))
+			log.Printf("Download retry failed: %v (retryable: %v)", downloadErr, downloadErr.Retryable)
+
+			if !downloadErr.Retryable {
+				return downloadErr
+			}
+
+		case <-ctx.Done():
+			chunk.Status = common.StatusPaused
+			return ctx.Err()
+		}
+	}
+
+	return fmt.Errorf("chunk %s failed after %d attempts: %w", chunk.ID, download.Config.MaxRetries, downloadErr)
+}
+
+// downloadChunk downloads a single chunk
+func (e *Engine) downloadChunk(ctx context.Context, download *downloader.Download, chunk *chunk.Chunk) error {
+	chunk.Status = common.StatusActive
+
+	handler, err := e.protocolHandler.GetHandler(download.URL)
+	if err != nil {
+		chunk.Status = common.StatusFailed
+		chunk.Error = err
+		return fmt.Errorf("failed to get protocol handler: %w", err)
+	}
+
+	conn, err := handler.CreateConnection(download.URL, chunk, &download.Config)
+	if err != nil {
+		chunk.Status = common.StatusFailed
+		chunk.Error = err
+		return fmt.Errorf("failed to create connection: %w", err)
+	}
+
+	e.connectionPool.RegisterConnection(conn)
+	defer e.connectionPool.ReleaseConnection(conn)
+
+	chunk.Connection = conn
+	return chunk.Download(ctx)
+}
+
+// getPendingChunks returns chunks that need downloading
+func (e *Engine) getPendingChunks(download *downloader.Download) []*chunk.Chunk {
+	var pending []*chunk.Chunk
+	for _, chunk := range download.Chunks {
+		if chunk.Status != common.StatusCompleted {
+			pending = append(pending, chunk)
+		}
+	}
+	return pending
+}
+
+// handleDownloadFailure updates download state on failure
+func (e *Engine) handleDownloadFailure(download *downloader.Download, err error) {
+	download.Status = common.StatusFailed
+	download.Error = err
+	download.ErrorMessage = err.Error()
+
+	if err := e.saveDownload(download); err != nil {
+		log.Printf("failed to save download: %s", err)
+	}
+}
+
+func (e *Engine) finishDownload(download *downloader.Download) error {
+	for _, chunk := range download.Chunks {
+		if chunk.Status != common.StatusCompleted {
+			err := fmt.Errorf("cannot finish download : chunk %s is in state %s", chunk.ID, chunk.Status)
+			e.handleDownloadFailure(download, err)
+			return err
+		}
+	}
+
+	targetPath := filepath.Join(download.Config.Directory, download.Filename)
+	if err := e.chunkManager.MergeChunks(download.Chunks, targetPath); err != nil {
+		e.handleDownloadFailure(download, err)
+		return fmt.Errorf("failed to merge chunks: %w", err)
+	}
+
+	download.Status = common.StatusCompleted
+	download.EndTime = time.Now()
+
+	if err := e.chunkManager.CleanupChunks(download.Chunks); err != nil {
+		log.Printf("failed to cleanup chunks: %s", err)
+	}
+
+	if err := e.saveDownload(download); err != nil {
+		log.Printf("failed to save download: %s", err)
+	}
+	return nil
+}
+
+// restoreDownloadStates restores the state of downloads based on their status
+func (e *Engine) restoreDownloadStates() error {
+	var lastErr error
+
+	for _, download := range e.downloads {
+		switch download.Status {
+		case common.StatusActive:
+			// Downloads that were active should be paused on restart
+			download.Status = common.StatusPaused
+			if err := e.saveDownload(download); err != nil {
+				lastErr = err
+				log.Printf("Error setting download %s to paused: %v", download.ID, err)
+			}
+
+		case common.StatusQueued:
+			download.Status = common.StatusQueued
+
+		case common.StatusFailed, common.StatusCancelled:
+			continue
+
+		case common.StatusPaused:
+			continue
+
+		case common.StatusCompleted:
+			outputPath := filepath.Join(download.Config.Directory, download.Filename)
+			if _, err := os.Stat(outputPath); os.IsNotExist(err) {
+				download.Status = common.StatusFailed
+				download.Error = fmt.Errorf("output file missing")
+				if err := e.saveDownload(download); err != nil {
+					lastErr = err
+					log.Printf("Error updating download %s status: %v", download.ID, err)
+				}
+			}
+		}
+	}
+
+	return lastErr
+}
+
+// Shutdown gracefully stops the engine, saving all download states
+func (e *Engine) Shutdown() error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if !e.running {
+		return nil
+	}
+
+	log.Println("Starting engine shutdown...")
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	e.cancelFunc()
+
+	for _, download := range e.downloads {
+		if download.Status == common.StatusActive {
+			download.Status = common.StatusPaused
+		}
+	}
+
+	e.saveAllDownloads()
+
+	waitChan := make(chan struct{})
+	go func() {
+		e.wg.Wait()
+		close(waitChan)
+	}()
+
+	select {
+	case <-waitChan:
+		log.Println("All tasks completed gracefully")
+	case <-shutdownCtx.Done():
+		log.Println("WARNING: Shutdown timed out, some tasks may not have completed")
+	}
+
+	log.Println("Closing connection pool...")
+	e.connectionPool.CloseAll()
+
+	if e.repository != nil {
+		log.Println("Closing repository...")
+		if err := e.repository.Close(); err != nil {
+			log.Printf("Error closing repository: %v", err)
+		}
+	}
+
+	close(e.progressCh)
+
+	e.running = false
+	log.Println("Engine shutdown complete")
+	return nil
+}
+
+// startPeriodicSave starts a ticker to save download states periodically
+func (e *Engine) startPeriodicSave(ctx context.Context) {
+	interval := time.Duration(e.config.SaveInterval) * time.Second
+	if interval <= 0 {
+		interval = 30 * time.Second
+	}
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			e.saveAllDownloads()
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+// stopPeriodicSave stops the periodic save ticker
+func (e *Engine) stopPeriodicSave() {
+	if e.saveTicker != nil {
+		e.saveTicker.Stop()
+	}
+}
+
+// saveAllDownloads saves the state of all downloads
+func (e *Engine) saveAllDownloads() {
+	if e.repository == nil {
+		return
+	}
+
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	for _, download := range e.downloads {
+		if err := e.saveDownload(download); err != nil {
+			log.Printf("Error saving download %s: %v", download.ID, err)
+		}
+	}
+}
+
+// saveDownload persists a download to the repository
+func (e *Engine) saveDownload(download *downloader.Download) error {
+	if e.repository == nil {
+		return fmt.Errorf("repository not initialized")
+	}
+
+	download.PrepareForSerialization()
+
+	return e.repository.Save(download)
 }

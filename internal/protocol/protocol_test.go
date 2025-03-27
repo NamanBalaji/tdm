@@ -1,6 +1,7 @@
 package protocol_test
 
 import (
+	"github.com/NamanBalaji/tdm/internal/common"
 	"testing"
 	"time"
 
@@ -27,22 +28,22 @@ func (d *dummyConn) SetTimeout(timeout time.Duration) {}
 type fakeProtocol struct {
 	canHandle        bool
 	initializeCalled bool
-	info             *downloader.DownloadInfo
+	info             *common.DownloadInfo
 	initErr          error
 	// createConnFunc allows custom behavior for CreateConnection.
-	createConnFunc func(urlStr string, ck *chunk.Chunk, options *downloader.DownloadOptions) (connection.Connection, error)
+	createConnFunc func(urlStr string, ck *chunk.Chunk, options *downloader.Config) (connection.Connection, error)
 }
 
 func (f *fakeProtocol) CanHandle(url string) bool {
 	return f.canHandle
 }
 
-func (f *fakeProtocol) Initialize(url string, options *downloader.DownloadOptions) (*downloader.DownloadInfo, error) {
+func (f *fakeProtocol) Initialize(url string, options *downloader.Config) (*common.DownloadInfo, error) {
 	f.initializeCalled = true
 	return f.info, f.initErr
 }
 
-func (f *fakeProtocol) CreateConnection(urlStr string, ck *chunk.Chunk, options *downloader.DownloadOptions) (connection.Connection, error) {
+func (f *fakeProtocol) CreateConnection(urlStr string, ck *chunk.Chunk, options *downloader.Config) (connection.Connection, error) {
 	if f.createConnFunc != nil {
 		return f.createConnFunc(urlStr, ck, options)
 	}
@@ -54,7 +55,7 @@ func TestNewHandler(t *testing.T) {
 	if h == nil {
 		t.Fatal("expected non-nil handler")
 	}
-	_, err := h.Initialize("http://127.0.0.1:0", &downloader.DownloadOptions{})
+	_, err := h.Initialize("http://127.0.0.1:0", &downloader.Config{})
 	if err == nil {
 		t.Error("expected error from HTTP handler in test environment, got nil")
 	}
@@ -64,7 +65,7 @@ func TestRegisterProtocol(t *testing.T) {
 	h := proto.NewHandler()
 	fp := &fakeProtocol{canHandle: true}
 	h.RegisterProtocol(fp)
-	_, err := h.Initialize("custom://example.com", &downloader.DownloadOptions{})
+	_, err := h.Initialize("custom://example.com", &downloader.Config{})
 	if err != nil {
 		t.Errorf("expected fake protocol to handle the URL, got error: %v", err)
 	}
@@ -72,7 +73,7 @@ func TestRegisterProtocol(t *testing.T) {
 
 func TestInitialize_EmptyURL(t *testing.T) {
 	h := proto.NewHandler()
-	_, err := h.Initialize("", &downloader.DownloadOptions{})
+	_, err := h.Initialize("", &downloader.Config{})
 	if err == nil || err.Error() != proto.ErrInvalidURL.Error() {
 		t.Errorf("expected error %q for empty URL, got %v", proto.ErrInvalidURL, err)
 	}
@@ -80,7 +81,7 @@ func TestInitialize_EmptyURL(t *testing.T) {
 
 func TestInitialize_Unsupported(t *testing.T) {
 	h := proto.NewHandler()
-	_, err := h.Initialize("ftp://example.com/file", &downloader.DownloadOptions{})
+	_, err := h.Initialize("ftp://example.com/file", &downloader.Config{})
 	if err == nil || err.Error() != proto.ErrUnsupportedProtocol.Error() {
 		t.Errorf("expected error %q for unsupported protocol, got %v", proto.ErrUnsupportedProtocol, err)
 	}
@@ -90,14 +91,14 @@ func TestInitialize_UsesFakeProtocol(t *testing.T) {
 	h := proto.NewHandler()
 	fp := &fakeProtocol{
 		canHandle: true,
-		info: &downloader.DownloadInfo{
+		info: &common.DownloadInfo{
 			URL:       "custom://example.com/file",
 			MimeType:  "application/fake",
 			TotalSize: 999,
 		},
 	}
 	h.RegisterProtocol(fp)
-	info, err := h.Initialize("custom://example.com/file", &downloader.DownloadOptions{})
+	info, err := h.Initialize("custom://example.com/file", &downloader.Config{})
 	if err != nil {
 		t.Fatalf("Initialize returned unexpected error: %v", err)
 	}
@@ -117,7 +118,7 @@ func TestInitialize_UsesFakeProtocol(t *testing.T) {
 
 func TestInitialize_UsesHTTPHandler(t *testing.T) {
 	h := proto.NewHandler()
-	_, err := h.Initialize("http://127.0.0.1:0", &downloader.DownloadOptions{})
+	_, err := h.Initialize("http://127.0.0.1:0", &downloader.Config{})
 	if err == nil {
 		t.Error("expected error from HTTP handler in test environment, got nil")
 	}
@@ -128,12 +129,12 @@ func TestCreateConnection_Delegation(t *testing.T) {
 	dummy := &dummyConn{}
 	fp := &fakeProtocol{
 		canHandle: true,
-		createConnFunc: func(urlStr string, ck *chunk.Chunk, options *downloader.DownloadOptions) (connection.Connection, error) {
+		createConnFunc: func(urlStr string, ck *chunk.Chunk, options *downloader.Config) (connection.Connection, error) {
 			return dummy, nil
 		},
 	}
 	h.RegisterProtocol(fp)
-	conn, err := fp.CreateConnection("custom://example.com/file", &chunk.Chunk{}, &downloader.DownloadOptions{})
+	conn, err := fp.CreateConnection("custom://example.com/file", &chunk.Chunk{}, &downloader.Config{})
 	if err != nil {
 		t.Fatalf("CreateConnection returned unexpected error: %v", err)
 	}

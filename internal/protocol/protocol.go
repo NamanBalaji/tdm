@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"errors"
+	"github.com/NamanBalaji/tdm/internal/common"
 	"sync"
 
 	"github.com/NamanBalaji/tdm/internal/chunk"
@@ -15,9 +16,9 @@ type Protocol interface {
 	// CanHandle checks if this handler can handle the given URL
 	CanHandle(url string) bool
 	// Initialize gathers information about the download resource
-	Initialize(url string, options *downloader.DownloadOptions) (*downloader.DownloadInfo, error)
+	Initialize(url string, config *downloader.Config) (*common.DownloadInfo, error)
 	// CreateConnection creates a new connection for chunk download
-	CreateConnection(urlStr string, chunk *chunk.Chunk, options *downloader.DownloadOptions) (connection.Connection, error)
+	CreateConnection(urlStr string, chunk *chunk.Chunk, downloadConfig *downloader.Config) (connection.Connection, error)
 }
 
 var (
@@ -49,17 +50,16 @@ func (h *Handler) RegisterProtocol(p Protocol) {
 }
 
 // Initialize initializes a download by finding the appropriate handler and gathering information
-func (h *Handler) Initialize(url string, options *downloader.DownloadOptions) (*downloader.DownloadInfo, error) {
-	handler, err := h.getProtocol(url)
+func (h *Handler) Initialize(url string, config *downloader.Config) (*common.DownloadInfo, error) {
+	handler, err := h.getProtocolHandler(url)
 	if err != nil {
 		return nil, err
 	}
 
-	return handler.Initialize(url, options)
+	return handler.Initialize(url, config)
 }
 
-// getProtocol returns the appropriate handler for the URL
-func (h *Handler) getProtocol(url string) (Protocol, error) {
+func (h *Handler) getProtocolHandler(url string) (Protocol, error) {
 	if url == "" {
 		return nil, ErrInvalidURL
 	}
@@ -78,14 +78,5 @@ func (h *Handler) getProtocol(url string) (Protocol, error) {
 
 // GetHandler returns a handler that can handle the given URL
 func (h *Handler) GetHandler(url string) (Protocol, error) {
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-
-	for _, handler := range h.protocols {
-		if handler.CanHandle(url) {
-			return handler, nil
-		}
-	}
-
-	return nil, ErrUnsupportedProtocol
+	return h.getProtocolHandler(url)
 }
