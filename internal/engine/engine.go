@@ -4,6 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
+	"os"
+	"path/filepath"
+	"sync"
+	"time"
+
 	"github.com/NamanBalaji/tdm/internal/chunk"
 	"github.com/NamanBalaji/tdm/internal/common"
 	"github.com/NamanBalaji/tdm/internal/connection"
@@ -12,11 +18,6 @@ import (
 	"github.com/NamanBalaji/tdm/internal/repository"
 	"github.com/google/uuid"
 	"golang.org/x/sync/errgroup"
-	"log"
-	"os"
-	"path/filepath"
-	"sync"
-	"time"
 )
 
 var (
@@ -52,8 +53,6 @@ type Engine struct {
 	progressCh chan common.Progress
 
 	running bool
-
-	saveTicker *time.Ticker
 }
 
 // runTask runs a function in a goroutine tracked by the WaitGroup
@@ -111,7 +110,7 @@ func (e *Engine) Init() error {
 	}
 
 	if err := e.initRepository(); err != nil {
-		return fmt.Errorf("failed to initalize repository: %w", err)
+		return fmt.Errorf("failed to initialize repository: %w", err)
 	}
 
 	if err := e.loadDownloads(); err != nil {
@@ -232,7 +231,7 @@ func (e *Engine) restoreChunks(download *downloader.Download) error {
 		if _, err := os.Stat(newChunk.TempFilePath); os.IsNotExist(err) {
 			chunkDir := filepath.Dir(newChunk.TempFilePath)
 			if _, err := os.Stat(chunkDir); os.IsNotExist(err) {
-				if err := os.MkdirAll(chunkDir, 0755); err != nil {
+				if err := os.MkdirAll(chunkDir, 0o755); err != nil {
 					log.Printf("Warning: Failed to create chunk directory %s: %v", chunkDir, err)
 				}
 			}
@@ -303,7 +302,7 @@ func (e *Engine) AddDownload(url string, config *downloader.Config) (uuid.UUID, 
 		return uuid.Nil, fmt.Errorf("failed to create directory: %w", err)
 	}
 
-	download := downloader.NewDownload(url, info.Filename, *dConfig)
+	download := downloader.NewDownload(url, info.Filename, dConfig)
 	download.TotalSize = info.TotalSize
 
 	downloadCtx, cancelFunc := context.WithCancel(e.ctx)
@@ -653,7 +652,7 @@ func (e *Engine) downloadChunk(ctx context.Context, download *downloader.Downloa
 		return fmt.Errorf("failed to get protocol handler: %w", err)
 	}
 
-	conn, err := handler.CreateConnection(download.URL, chunk, &download.Config)
+	conn, err := handler.CreateConnection(download.URL, chunk, download.Config)
 	if err != nil {
 		chunk.Status = common.StatusFailed
 		chunk.Error = err
@@ -827,13 +826,6 @@ func (e *Engine) startPeriodicSave(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		}
-	}
-}
-
-// stopPeriodicSave stops the periodic save ticker
-func (e *Engine) stopPeriodicSave() {
-	if e.saveTicker != nil {
-		e.saveTicker.Stop()
 	}
 }
 

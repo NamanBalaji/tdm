@@ -3,12 +3,13 @@ package downloader
 import (
 	"context"
 	"errors"
-	"github.com/NamanBalaji/tdm/internal/chunk"
-	"github.com/NamanBalaji/tdm/internal/common"
-	"github.com/google/uuid"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/NamanBalaji/tdm/internal/chunk"
+	"github.com/NamanBalaji/tdm/internal/common"
+	"github.com/google/uuid"
 )
 
 // Download represents a file download task
@@ -19,7 +20,7 @@ type Download struct {
 	Filename string    `json:"filename"` // Target filename
 
 	// Persistent properties
-	Config    Config        `json:"config"`     // Download configuration
+	Config    *Config       `json:"config"`     // Download configuration
 	Status    common.Status `json:"status"`     // Current status
 	TotalSize int64         `json:"total_size"` // Total file size in bytes
 
@@ -45,7 +46,7 @@ type Download struct {
 }
 
 // NewDownload creates a new Download instance
-func NewDownload(url, filename string, config Config) *Download {
+func NewDownload(url, filename string, config *Config) *Download {
 	return &Download{
 		ID:              uuid.New(),
 		URL:             url,

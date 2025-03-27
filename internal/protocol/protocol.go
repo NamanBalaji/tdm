@@ -2,8 +2,9 @@ package protocol
 
 import (
 	"errors"
-	"github.com/NamanBalaji/tdm/internal/common"
 	"sync"
+
+	"github.com/NamanBalaji/tdm/internal/common"
 
 	"github.com/NamanBalaji/tdm/internal/chunk"
 	"github.com/NamanBalaji/tdm/internal/connection"
