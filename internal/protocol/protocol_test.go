@@ -2,6 +2,7 @@ package protocol_test
 
 import (
 	"github.com/NamanBalaji/tdm/internal/common"
+	"github.com/NamanBalaji/tdm/internal/errors"
 	"testing"
 	"time"
 
@@ -12,7 +13,6 @@ import (
 	httpProtocol "github.com/NamanBalaji/tdm/internal/protocol/http"
 )
 
-// dummyConn is a dummy implementation of connection.Connection.
 type dummyConn struct{}
 
 func (d *dummyConn) Connect() error                   { return nil }
@@ -24,14 +24,12 @@ func (d *dummyConn) GetURL() string                   { return "http://dummy" }
 func (d *dummyConn) GetHeaders() map[string]string    { return map[string]string{} }
 func (d *dummyConn) SetTimeout(timeout time.Duration) {}
 
-// fakeProtocol is a simple implementation of the Protocol interface for testing.
 type fakeProtocol struct {
 	canHandle        bool
 	initializeCalled bool
 	info             *common.DownloadInfo
 	initErr          error
-	// createConnFunc allows custom behavior for CreateConnection.
-	createConnFunc func(urlStr string, ck *chunk.Chunk, options *downloader.Config) (connection.Connection, error)
+	createConnFunc   func(urlStr string, ck *chunk.Chunk, options *downloader.Config) (connection.Connection, error)
 }
 
 func (f *fakeProtocol) CanHandle(url string) bool {
@@ -74,16 +72,16 @@ func TestRegisterProtocol(t *testing.T) {
 func TestInitialize_EmptyURL(t *testing.T) {
 	h := proto.NewHandler()
 	_, err := h.Initialize("", &downloader.Config{})
-	if err == nil || err.Error() != proto.ErrInvalidURL.Error() {
-		t.Errorf("expected error %q for empty URL, got %v", proto.ErrInvalidURL, err)
+	if err == nil || err.Error() != errors.ErrInvalidURL.Error() {
+		t.Errorf("expected error %q for empty URL, got %v", errors.ErrInvalidURL, err)
 	}
 }
 
 func TestInitialize_Unsupported(t *testing.T) {
 	h := proto.NewHandler()
 	_, err := h.Initialize("ftp://example.com/file", &downloader.Config{})
-	if err == nil || err.Error() != proto.ErrUnsupportedProtocol.Error() {
-		t.Errorf("expected error %q for unsupported protocol, got %v", proto.ErrUnsupportedProtocol, err)
+	if err == nil || err.Error() != errors.ErrUnsupportedProtocol.Error() {
+		t.Errorf("expected error %q for unsupported protocol, got %v", errors.ErrUnsupportedProtocol, err)
 	}
 }
 

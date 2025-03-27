@@ -2,7 +2,6 @@ package engine
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -14,6 +13,7 @@ import (
 	"github.com/NamanBalaji/tdm/internal/common"
 	"github.com/NamanBalaji/tdm/internal/connection"
 	"github.com/NamanBalaji/tdm/internal/downloader"
+	"github.com/NamanBalaji/tdm/internal/errors"
 	"github.com/NamanBalaji/tdm/internal/protocol"
 	"github.com/NamanBalaji/tdm/internal/repository"
 	"github.com/google/uuid"
@@ -572,7 +572,7 @@ func (e *Engine) processDownload(download *downloader.Download) {
 			case sem <- struct{}{}:
 				defer func() { <-sem }()
 			case <-ctx.Done():
-				return ctx.Err()
+				return errors.NewContextError(ctx.Err(), download.URL)
 			}
 
 			return e.downloadChunkWithRetries(ctx, download, chunkCopy)
@@ -582,13 +582,14 @@ func (e *Engine) processDownload(download *downloader.Download) {
 	err := g.Wait()
 
 	if err != nil {
-		if !errors.Is(err, context.Canceled) {
-			e.handleDownloadFailure(download, err)
-		} else {
+		var downloadErr *errors.DownloadError
+		if errors.As(err, &downloadErr) && downloadErr.Category == errors.CategoryContext {
 			download.Status = common.StatusPaused
-			if err := e.saveDownload(download); err != nil {
-				log.Printf("Failed to save download: %s", err)
+			if saveErr := e.saveDownload(download); saveErr != nil {
+				log.Printf("Failed to save download: %s", saveErr)
 			}
+		} else {
+			e.handleDownloadFailure(download, err)
 		}
 	} else {
 		if err := e.finishDownload(download); err != nil {
@@ -605,9 +606,8 @@ func (e *Engine) downloadChunkWithRetries(ctx context.Context, download *downloa
 		return err
 	}
 
-	// Wrap the error with context
-	downloadErr := NewDownloadError(err, fmt.Sprintf("chunk %s initial download", chunk.ID))
-	log.Printf("Download error: %v (retryable: %v)", downloadErr, downloadErr.Retryable)
+	// Log the error with retryability information
+	log.Printf("Download error: %v (retryable: %v)", err, errors.IsRetryable(err))
 
 	// Retry logic
 	for chunk.RetryCount < download.Config.MaxRetries {
@@ -625,20 +625,19 @@ func (e *Engine) downloadChunkWithRetries(ctx context.Context, download *downloa
 				return err
 			}
 
-			downloadErr = NewDownloadError(err, fmt.Sprintf("chunk %s retry %d", chunk.ID, chunk.RetryCount))
-			log.Printf("Download retry failed: %v (retryable: %v)", downloadErr, downloadErr.Retryable)
+			log.Printf("Download retry failed: %v (retryable: %v)", err, errors.IsRetryable(err))
 
-			if !downloadErr.Retryable {
-				return downloadErr
+			if !errors.IsRetryable(err) {
+				return err
 			}
 
 		case <-ctx.Done():
 			chunk.Status = common.StatusPaused
-			return ctx.Err()
+			return errors.NewContextError(ctx.Err(), fmt.Sprintf("chunk %s", chunk.ID))
 		}
 	}
 
-	return fmt.Errorf("chunk %s failed after %d attempts: %w", chunk.ID, download.Config.MaxRetries, downloadErr)
+	return fmt.Errorf("chunk %s failed after %d attempts: %w", chunk.ID, download.Config.MaxRetries, err)
 }
 
 // downloadChunk downloads a single chunk
@@ -649,21 +648,32 @@ func (e *Engine) downloadChunk(ctx context.Context, download *downloader.Downloa
 	if err != nil {
 		chunk.Status = common.StatusFailed
 		chunk.Error = err
-		return fmt.Errorf("failed to get protocol handler: %w", err)
+		return errors.NewNetworkError(err, download.URL, false)
 	}
 
 	conn, err := handler.CreateConnection(download.URL, chunk, download.Config)
 	if err != nil {
 		chunk.Status = common.StatusFailed
 		chunk.Error = err
-		return fmt.Errorf("failed to create connection: %w", err)
+		return err // Already classified by protocol handler
 	}
 
 	e.connectionPool.RegisterConnection(conn)
 	defer e.connectionPool.ReleaseConnection(conn)
 
 	chunk.Connection = conn
-	return chunk.Download(ctx)
+	err = chunk.Download(ctx)
+
+	if err != nil {
+		// If we received a context cancellation, wrap it with our error system
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return errors.NewContextError(err, download.URL)
+		}
+		// Other errors are already properly categorized
+		return err
+	}
+
+	return nil
 }
 
 // getPendingChunks returns chunks that need downloading
@@ -681,10 +691,11 @@ func (e *Engine) getPendingChunks(download *downloader.Download) []*chunk.Chunk 
 func (e *Engine) handleDownloadFailure(download *downloader.Download, err error) {
 	download.Status = common.StatusFailed
 	download.Error = err
+
 	download.ErrorMessage = err.Error()
 
-	if err := e.saveDownload(download); err != nil {
-		log.Printf("failed to save download: %s", err)
+	if saveErr := e.saveDownload(download); saveErr != nil {
+		log.Printf("failed to save download: %s", saveErr)
 	}
 }
 

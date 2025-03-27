@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/NamanBalaji/tdm/internal/common"
+	"github.com/NamanBalaji/tdm/internal/errors"
 
 	"github.com/NamanBalaji/tdm/internal/chunk"
 	"github.com/NamanBalaji/tdm/internal/connection"
@@ -120,17 +121,17 @@ func (h *Handler) initializeWithHEAD(urlStr string, config *downloader.Config) (
 
 	req, err := generateRequest(ctx, urlStr, http.MethodHead, config)
 	if err != nil {
-		return nil, err
+		return nil, errors.NewNetworkError(err, urlStr, false)
 	}
 
 	resp, err := h.client.Do(req)
 	if err != nil {
-		return nil, ClassifyError(err)
+		return nil, ClassifyError(err, urlStr)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 400 {
-		return nil, ErrHeadNotSupported
+		return nil, ClassifyHTTPError(resp.StatusCode, urlStr)
 	}
 
 	return generateInfo(urlStr, resp, resp.Header.Get("Accept-Ranges") == "bytes", resp.ContentLength), nil
@@ -143,7 +144,7 @@ func (h *Handler) initializeWithRangeGET(urlStr string, config *downloader.Confi
 
 	req, err := generateRequest(ctx, urlStr, http.MethodGet, config)
 	if err != nil {
-		return nil, err
+		return nil, errors.NewNetworkError(err, urlStr, false)
 	}
 
 	// Set range header to get just the first byte
@@ -152,17 +153,17 @@ func (h *Handler) initializeWithRangeGET(urlStr string, config *downloader.Confi
 	// Execute the GET request
 	resp, err := h.client.Do(req)
 	if err != nil {
-		return nil, ClassifyError(err)
+		return nil, ClassifyError(err, urlStr)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 400 {
-		return nil, ClassifyHTTPError(resp.StatusCode)
+		return nil, ClassifyHTTPError(resp.StatusCode, urlStr)
 	}
 
 	// Check if range request was rejected or returned an error
 	if resp.StatusCode != 206 {
-		return nil, ErrRangesNotSupported
+		return nil, errors.NewHTTPError(ErrRangesNotSupported, urlStr, resp.StatusCode)
 	}
 
 	// Try to parse Content-Range header to get total size
@@ -190,7 +191,7 @@ func (h *Handler) initializeWithRegularGET(urlStr string, config *downloader.Con
 
 	req, err := generateRequest(ctx, urlStr, http.MethodGet, config)
 	if err != nil {
-		return nil, err
+		return nil, errors.NewNetworkError(err, urlStr, false)
 	}
 
 	// Execute the GET request
@@ -223,14 +224,18 @@ func (h *Handler) initializeWithRegularGET(urlStr string, config *downloader.Con
 	if err != nil {
 		// If we get "unexpected EOF" or similar, it's expected due to our connection closing
 		// Instead, try again with a normal client but we'll abort the body read
-		tempReq, _ := http.NewRequestWithContext(ctx, "GET", urlStr, http.NoBody)
+		tempReq, tempErr := http.NewRequestWithContext(ctx, "GET", urlStr, http.NoBody)
+		if tempErr != nil {
+			return nil, errors.NewNetworkError(tempErr, urlStr, false)
+		}
+
 		for k, v := range req.Header {
 			tempReq.Header[k] = v
 		}
 
 		resp, err = h.client.Do(tempReq)
 		if err != nil {
-			return nil, ClassifyError(err)
+			return nil, ClassifyError(err, urlStr)
 		}
 		// We'll close the body immediately after getting headers
 		resp.Body.Close()
@@ -240,7 +245,7 @@ func (h *Handler) initializeWithRegularGET(urlStr string, config *downloader.Con
 
 	// Check if the server returned an error status
 	if resp.StatusCode >= 400 {
-		return nil, ClassifyHTTPError(resp.StatusCode)
+		return nil, ClassifyHTTPError(resp.StatusCode, urlStr)
 	}
 
 	return generateInfo(urlStr, resp, false, resp.ContentLength), nil

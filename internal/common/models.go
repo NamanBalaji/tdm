@@ -3,7 +3,6 @@ package common
 import "time"
 
 // DownloadInfo contains information about a download resource
-// Moved from protocol package to common to prevent cyclic dependencies
 type DownloadInfo struct {
 	URL             string
 	Filename        string

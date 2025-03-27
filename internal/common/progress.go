@@ -12,7 +12,7 @@ type Progress struct {
 	ChunkID        uuid.UUID
 	BytesCompleted int64
 	TotalBytes     int64
-	Speed          int64 // Current speed in bytes/sec
+	Speed          int64
 	Status         Status
 	Error          error
 	Timestamp      time.Time

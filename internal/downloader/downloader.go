@@ -19,25 +19,20 @@ type Download struct {
 	URL      string    `json:"url"`      // Source URL
 	Filename string    `json:"filename"` // Target filename
 
-	// Persistent properties
 	Config    *Config       `json:"config"`     // Download configuration
 	Status    common.Status `json:"status"`     // Current status
 	TotalSize int64         `json:"total_size"` // Total file size in bytes
 
-	// Progress tracking (persistent)
 	Downloaded int64     `json:"downloaded"` // Downloaded bytes so far
 	StartTime  time.Time `json:"start_time,omitempty"`
 	EndTime    time.Time `json:"end_time,omitempty"`
 
-	// Chunk management
 	ChunkInfos []common.ChunkInfo `json:"chunk_infos"` // Chunk data for serialization
 	Chunks     []*chunk.Chunk     `json:"-"`           // Actual chunks (runtime only)
 
-	// Error tracking
 	ErrorMessage string `json:"error_message,omitempty"` // For persistent storage
 	Error        error  `json:"-"`                       // Runtime only
 
-	// Runtime-only state (not serialized)
 	mu              sync.RWMutex         `json:"-"`
 	ctx             context.Context      `json:"-"`
 	cancelFunc      context.CancelFunc   `json:"-"`
@@ -66,19 +61,16 @@ func (d *Download) GetStats() Stats {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
-	// Calculate progress percentage
 	var progress float64
 	if d.TotalSize > 0 {
 		progress = float64(atomic.LoadInt64(&d.Downloaded)) / float64(d.TotalSize) * 100
 	}
 
-	// Calculate current speed
 	var speed int64
 	if d.speedCalculator != nil {
 		speed = d.speedCalculator.GetSpeed()
 	}
 
-	// Count chunks by status
 	activeChunks := 0
 	completedChunks := 0
 	totalChunks := len(d.Chunks)
@@ -91,7 +83,6 @@ func (d *Download) GetStats() Stats {
 		}
 	}
 
-	// Calculate time elapsed and remaining
 	timeElapsed := time.Since(d.StartTime)
 	var timeRemaining time.Duration
 	if speed > 0 {
@@ -101,7 +92,6 @@ func (d *Download) GetStats() Stats {
 		}
 	}
 
-	// Get error message if any
 	errorMsg := ""
 	if d.Error != nil {
 		errorMsg = d.Error.Error()
@@ -170,7 +160,6 @@ func (d *Download) AddProgress(bytes int64) {
 		d.speedCalculator.AddBytes(bytes)
 	}
 
-	// Send progress update
 	select {
 	case d.progressCh <- common.Progress{
 		DownloadID:     d.ID,
@@ -180,9 +169,7 @@ func (d *Download) AddProgress(bytes int64) {
 		Status:         d.Status,
 		Timestamp:      time.Now(),
 	}:
-		// Successfully sent
 	default:
-		// Channel buffer is full, skip this update
 	}
 }
 
@@ -207,7 +194,6 @@ func (d *Download) PrepareForSerialization() {
 		}
 	}
 
-	// Save error message if there's an error
 	if d.Error != nil {
 		d.ErrorMessage = d.Error.Error()
 	}
@@ -218,7 +204,6 @@ func (d *Download) RestoreFromSerialization() {
 	d.progressCh = make(chan common.Progress, 10)
 	d.speedCalculator = NewSpeedCalculator(5)
 
-	// Convert error message back to error if present
 	if d.ErrorMessage != "" && d.Error == nil {
 		d.Error = errors.New(d.ErrorMessage)
 	}

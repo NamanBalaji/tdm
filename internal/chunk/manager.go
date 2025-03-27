@@ -44,7 +44,6 @@ func NewManager(tempDir string) (*Manager, error) {
 	}
 
 	if err := os.MkdirAll(tempDir, 0o755); err != nil {
-		// Fall back to system temp dir if creation fails
 		tempDir = filepath.Join(os.TempDir(), "tdm-chunks")
 		if err := os.MkdirAll(tempDir, 0o755); err != nil {
 			return nil, fmt.Errorf("failed to create temp directory %s: %w", tempDir, err)
@@ -75,7 +74,6 @@ func (m *Manager) CreateChunks(downloadID uuid.UUID, filesize int64, supportsRan
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// Create download-specific temp directory
 	downloadTempDir := filepath.Join(m.tempDir, downloadID.String())
 	if err := os.MkdirAll(downloadTempDir, 0o755); err != nil {
 		return nil, fmt.Errorf("failed to create temp directory: %w", err)
@@ -219,7 +217,6 @@ func calculateOptimalChunkCount(fileSize int64, maxConnections int) int {
 
 // sortChunksByStartByte sorts chunks by their start byte position
 func sortChunksByStartByte(chunks []*Chunk) []*Chunk {
-	// Create a copy to avoid modifying the original slice
 	sortedChunks := make([]*Chunk, len(chunks))
 	copy(sortedChunks, chunks)
 

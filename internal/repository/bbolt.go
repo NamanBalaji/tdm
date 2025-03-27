@@ -15,7 +15,7 @@ import (
 const (
 	downloadsBucket = "downloads"
 	metadataBucket  = "metadata"
-	schemaVersion   = 1 // For future schema migrations
+	schemaVersion   = 1
 )
 
 var (
@@ -30,25 +30,20 @@ type BboltRepository struct {
 
 // NewBboltRepository creates a new bbolt repository
 func NewBboltRepository(dbPath string) (*BboltRepository, error) {
-	// Create options for bbolt
 	options := &bbolt.Options{
 		Timeout: 1 * time.Second,
 	}
 
-	// Open the database with bbolt
 	db, err := bbolt.Open(dbPath, 0o600, options)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
 
-	// Initialize the repository
 	repo := &BboltRepository{
 		db: db,
 	}
 
-	// Create buckets and initialize schema
 	if err := repo.initialize(); err != nil {
-		// Close DB if initialization fails
 		db.Close()
 		return nil, err
 	}
@@ -59,19 +54,16 @@ func NewBboltRepository(dbPath string) (*BboltRepository, error) {
 // initialize sets up buckets and schema
 func (r *BboltRepository) initialize() error {
 	return r.db.Update(func(tx *bbolt.Tx) error {
-		// Create downloads bucket
 		_, err := tx.CreateBucketIfNotExists([]byte(downloadsBucket))
 		if err != nil {
 			return fmt.Errorf("failed to create downloads bucket: %w", err)
 		}
 
-		// Create metadata bucket
 		metadataBucket, err := tx.CreateBucketIfNotExists([]byte(metadataBucket))
 		if err != nil {
 			return fmt.Errorf("failed to create metadata bucket: %w", err)
 		}
 
-		// Store schema version in metadata
 		versionBytes := []byte(fmt.Sprintf("%d", schemaVersion))
 		err = metadataBucket.Put([]byte("schema_version"), versionBytes)
 		if err != nil {
@@ -88,7 +80,6 @@ func (r *BboltRepository) Save(download *downloader.Download) error {
 		return errors.New("cannot save nil download")
 	}
 
-	// Prepare the download for serialization
 	download.PrepareForSerialization()
 
 	return r.db.Update(func(tx *bbolt.Tx) error {
@@ -97,13 +88,11 @@ func (r *BboltRepository) Save(download *downloader.Download) error {
 			return fmt.Errorf("bucket not found: %s", downloadsBucket)
 		}
 
-		// Serialize the download
 		data, err := json.Marshal(download)
 		if err != nil {
 			return fmt.Errorf("failed to marshal download: %w", err)
 		}
 
-		// Save to the database
 		err = bucket.Put([]byte(download.ID.String()), data)
 		if err != nil {
 			return fmt.Errorf("failed to save download: %w", err)
@@ -139,15 +128,12 @@ func (r *BboltRepository) Find(id uuid.UUID) (*downloader.Download, error) {
 		return nil, err
 	}
 
-	// Create new download instance
 	download := &downloader.Download{}
 
-	// Deserialize the download
 	if err := json.Unmarshal(data, download); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal download: %w", err)
 	}
 
-	// Restore runtime fields
 	download.RestoreFromSerialization()
 
 	return download, nil
@@ -163,20 +149,15 @@ func (r *BboltRepository) FindAll() ([]*downloader.Download, error) {
 			return fmt.Errorf("bucket not found: %s", downloadsBucket)
 		}
 
-		// Iterate through all downloads
 		return bucket.ForEach(func(k, v []byte) error {
-			// Create a new download for each entry
 			download := &downloader.Download{}
 
-			// Deserialize
 			if err := json.Unmarshal(v, download); err != nil {
 				return fmt.Errorf("failed to unmarshal download: %w", err)
 			}
 
-			// Restore runtime fields
 			download.RestoreFromSerialization()
 
-			// Add to results
 			downloads = append(downloads, download)
 			return nil
 		})
@@ -201,7 +182,6 @@ func (r *BboltRepository) Delete(id uuid.UUID) error {
 			return fmt.Errorf("bucket not found: %s", downloadsBucket)
 		}
 
-		// Check if it exists first
 		if bucket.Get([]byte(id.String())) == nil {
 			return errors.New("download not found")
 		}

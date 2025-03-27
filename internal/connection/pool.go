@@ -12,23 +12,16 @@ import (
 
 // Pool is a struct that provides a reusable connection pool
 type Pool struct {
-	// Available connections (keyed by connection hash)
-	available map[string][]Connection
-	// Connections currently in use (keyed by connection hash)
-	inUse map[string][]Connection
-	// Store last activity times for connections (keyed by connection pointer address)
+	available    map[string][]Connection
+	inUse        map[string][]Connection
 	lastActivity map[uintptr]time.Time
-	// Pool statistics
-	stats PoolStats
+	stats        PoolStats
 
-	// Configuration
 	maxIdlePerHost int
 	maxIdleTime    time.Duration
 
-	// Protects the maps
 	mu sync.Mutex
 
-	// For clean shutdown
 	cleanupDone   chan struct{}
 	cleanupCancel chan struct{}
 }
@@ -60,7 +53,6 @@ func NewPool(maxIdlePerHost int, maxIdleTime time.Duration) *Pool {
 		},
 	}
 
-	// Start background cleanup
 	go pool.cleanup()
 
 	return pool
@@ -81,23 +73,18 @@ func (p *Pool) GetConnection(url string, headers map[string]string) (Connection,
 		return nil, nil
 	}
 
-	// Use the last connection in the slice (more efficient removal)
 	lastIdx := len(connections) - 1
 	conn := connections[lastIdx]
 
-	// Move connection from available to in-use
 	p.available[key] = connections[:lastIdx]
 	p.inUse[key] = append(p.inUse[key], conn)
 
-	// Update stats
 	atomic.AddInt64(&p.stats.ConnectionsReused, 1)
 
-	// If connection is not alive, reset it
 	if !conn.IsAlive() {
 		if err := conn.Reset(); err != nil {
 			conn.Close()
 
-			// Remove from in-use
 			if idx := findConnectionIndex(p.inUse[key], conn); idx >= 0 {
 				p.inUse[key] = append(p.inUse[key][:idx], p.inUse[key][idx+1:]...)
 			}
@@ -107,7 +94,6 @@ func (p *Pool) GetConnection(url string, headers map[string]string) (Connection,
 		}
 	}
 
-	// Update last activity time
 	p.lastActivity[getConnectionPtr(conn)] = time.Now()
 
 	return conn, nil
@@ -284,7 +270,6 @@ func (p *Pool) updateStats() {
 func hashConnection(url string, headers map[string]string) string {
 	key := url
 
-	// Add important headers to the key (auth, proxy, etc.)
 	if headers != nil {
 		if auth, ok := headers["Authorization"]; ok {
 			key += "|auth:" + auth

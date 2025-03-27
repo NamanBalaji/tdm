@@ -1,7 +1,6 @@
 package protocol
 
 import (
-	"errors"
 	"sync"
 
 	"github.com/NamanBalaji/tdm/internal/common"
@@ -9,6 +8,7 @@ import (
 	"github.com/NamanBalaji/tdm/internal/chunk"
 	"github.com/NamanBalaji/tdm/internal/connection"
 	"github.com/NamanBalaji/tdm/internal/downloader"
+	"github.com/NamanBalaji/tdm/internal/errors"
 	"github.com/NamanBalaji/tdm/internal/protocol/http"
 )
 
@@ -21,14 +21,6 @@ type Protocol interface {
 	// CreateConnection creates a new connection for chunk download
 	CreateConnection(urlStr string, chunk *chunk.Chunk, downloadConfig *downloader.Config) (connection.Connection, error)
 }
-
-var (
-	// ErrUnsupportedProtocol is returned when no handler can handle the URL
-	ErrUnsupportedProtocol = errors.New("unsupported protocol")
-
-	// ErrInvalidURL is returned for malformed URLs
-	ErrInvalidURL = errors.New("invalid URL")
-)
 
 type Handler struct {
 	mu        sync.RWMutex
@@ -62,7 +54,7 @@ func (h *Handler) Initialize(url string, config *downloader.Config) (*common.Dow
 
 func (h *Handler) getProtocolHandler(url string) (Protocol, error) {
 	if url == "" {
-		return nil, ErrInvalidURL
+		return nil, errors.ErrInvalidURL
 	}
 
 	h.mu.RLock()
@@ -74,7 +66,7 @@ func (h *Handler) getProtocolHandler(url string) (Protocol, error) {
 		}
 	}
 
-	return nil, ErrUnsupportedProtocol
+	return nil, errors.ErrUnsupportedProtocol
 }
 
 // GetHandler returns a handler that can handle the given URL

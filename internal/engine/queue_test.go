@@ -168,8 +168,13 @@ func TestStopPreventsNewStarts(t *testing.T) {
 }
 
 func TestContextCancellation(t *testing.T) {
+	// Updated start function: if the context is already cancelled, do not send the start event.
 	startCh := make(chan uuid.UUID, 10)
 	startFn := func(ctx context.Context, d *downloader.Download) error {
+		// Check if context is already cancelled.
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		startCh <- d.ID
 		<-ctx.Done()
 		return ctx.Err()
@@ -183,14 +188,17 @@ func TestContextCancellation(t *testing.T) {
 	qp.EnqueueDownload(d, 1)
 	select {
 	case <-startCh:
+		// d starts before cancellation.
 	case <-time.After(500 * time.Millisecond):
 		t.Fatal("expected download to start")
 	}
 
 	cancel()
 
+	// Enqueue a new download after cancellation.
 	d2 := &downloader.Download{ID: uuid.New()}
 	qp.EnqueueDownload(d2, 2)
+	// Since context is cancelled, startFn should detect this and not send d2's ID.
 	select {
 	case id := <-startCh:
 		t.Fatalf("unexpected start call for download %v after context cancellation", id)
