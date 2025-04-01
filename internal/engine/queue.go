@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"log/slog"
 	"sort"
 	"sync"
 
@@ -79,12 +80,12 @@ func (q *QueueProcessor) EnqueueDownload(download *downloader.Download, priority
 
 	download.Status = common.StatusQueued
 
-	// Add to queue
 	q.queuedDownloads = append(q.queuedDownloads, &PrioritizedDownload{
 		Download: download,
 		Priority: priority,
 	})
 
+	slog.Info("Enqueued download", slog.Any("download", download))
 	q.sortQueue()
 
 	q.fillAvailableSlots()

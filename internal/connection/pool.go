@@ -1,6 +1,7 @@
 package connection
 
 import (
+	"context"
 	"crypto/md5"
 	"encoding/hex"
 	"fmt"
@@ -61,7 +62,7 @@ func NewPool(maxIdlePerHost int, maxIdleTime time.Duration) *Pool {
 // GetConnection retrieves a connection from the pool if available
 // in case no suitable connection is found, it returns nil
 // the caller is expected to create a new connection and register it with RegisterConnection
-func (p *Pool) GetConnection(url string, headers map[string]string) (Connection, error) {
+func (p *Pool) GetConnection(ctx context.Context, url string, headers map[string]string) (Connection, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -82,7 +83,7 @@ func (p *Pool) GetConnection(url string, headers map[string]string) (Connection,
 	atomic.AddInt64(&p.stats.ConnectionsReused, 1)
 
 	if !conn.IsAlive() {
-		if err := conn.Reset(); err != nil {
+		if err := conn.Reset(ctx); err != nil {
 			conn.Close()
 
 			if idx := findConnectionIndex(p.inUse[key], conn); idx >= 0 {

@@ -20,10 +20,7 @@ type Connection struct {
 	initialized bool
 }
 
-func (c *Connection) Connect() error {
-	ctx, cancel := context.WithTimeout(context.Background(), c.timeout)
-	defer cancel()
-
+func (c *Connection) Connect(ctx context.Context) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.url, http.NoBody)
 	if err != nil {
 		return fmt.Errorf("failed to create request: %w", err)
@@ -64,9 +61,9 @@ func (c *Connection) Connect() error {
 	return nil
 }
 
-func (c *Connection) Read(p []byte) (n int, err error) {
+func (c *Connection) Read(ctx context.Context, p []byte) (n int, err error) {
 	if !c.initialized || c.resp == nil {
-		if err := c.Connect(); err != nil {
+		if err := c.Connect(ctx); err != nil {
 			return 0, err
 		}
 	}
@@ -90,7 +87,7 @@ func (c *Connection) IsAlive() bool {
 	return c.initialized && c.resp != nil
 }
 
-func (c *Connection) Reset() error {
+func (c *Connection) Reset(ctx context.Context) error {
 	if c.resp != nil {
 		c.resp.Body.Close()
 		c.resp = nil
@@ -98,7 +95,7 @@ func (c *Connection) Reset() error {
 	c.initialized = false
 
 	// Reconnect
-	return c.Connect()
+	return c.Connect(ctx)
 }
 
 func (c *Connection) SetTimeout(timeout time.Duration) {

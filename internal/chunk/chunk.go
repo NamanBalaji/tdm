@@ -79,22 +79,27 @@ func (c *Chunk) Download(ctx context.Context) error {
 
 func (c *Chunk) downloadLoop(ctx context.Context, file *os.File) error {
 	buffer := make([]byte, 32*1024)
+	bytesRemaining := c.Size() - c.Downloaded
 
-	for {
+	for bytesRemaining > 0 {
 		select {
 		case <-ctx.Done():
 			c.Status = common.StatusPaused
 			return ctx.Err()
 		default:
-			n, err := c.Connection.Read(buffer)
-
-			c.LastActive = time.Now()
+			n, err := c.Connection.Read(ctx, buffer)
 
 			if n > 0 {
+				if bytesToWrite := int64(n); bytesToWrite > bytesRemaining {
+					n = int(bytesRemaining)
+				}
+
 				if _, writeErr := file.Write(buffer[:n]); writeErr != nil {
 					return c.handleError(writeErr)
 				}
+
 				c.Downloaded += int64(n)
+				bytesRemaining -= int64(n)
 				c.progressFn(int64(n))
 			}
 
@@ -103,11 +108,13 @@ func (c *Chunk) downloadLoop(ctx context.Context, file *os.File) error {
 					c.Status = common.StatusCompleted
 					return nil
 				}
-
 				return c.handleError(err)
 			}
 		}
 	}
+
+	c.Status = common.StatusCompleted
+	return nil
 }
 
 func (c *Chunk) handleError(err error) error {

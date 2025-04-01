@@ -1,9 +1,11 @@
 package http
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -52,7 +54,6 @@ func NewHandler() *Handler {
 	// Create the client with our custom transport
 	client := &http.Client{
 		Transport: transport,
-		Timeout:   defaultReadTimeout,
 	}
 
 	return &Handler{
@@ -68,27 +69,32 @@ func (h *Handler) CanHandle(urlStr string) bool {
 	return u.Scheme == "http" || u.Scheme == "https"
 }
 
-func (h *Handler) Initialize(urlStr string, config *downloader.Config) (*common.DownloadInfo, error) {
-	info, err := h.initializeWithHEAD(urlStr, config)
+func (h *Handler) Initialize(ctx context.Context, urlStr string, config *downloader.Config) (*common.DownloadInfo, error) {
+	info, err := h.initializeWithHEAD(ctx, urlStr, config)
 	if err == nil {
 		return info, nil
 	}
 
 	if IsFallbackError(err) {
-		info, err = h.initializeWithRangeGET(urlStr, config)
+		info, err = h.initializeWithRangeGET(ctx, urlStr, config)
 		if err == nil {
 			return info, nil
 		}
 	}
 
 	if IsFallbackError(err) {
-		return h.initializeWithRegularGET(urlStr, config)
+		info, err := h.initializeWithRegularGET(ctx, urlStr, config)
+		if err == nil {
+			return info, nil
+		}
 	}
 
 	return nil, err
 }
 
-func (h *Handler) CreateConnection(urlString string, chunk *chunk.Chunk, downloadConfig *downloader.Config) (connection.Connection, error) {
+func (h *Handler) CreateConnection(ctx context.Context, urlString string, chunk *chunk.Chunk, downloadConfig *downloader.Config) (connection.Connection, error) {
+	log.Printf("Starting download for chunk %s (bytes %d-%d, downloaded so far: %d)",
+		chunk.ID, chunk.StartByte, chunk.EndByte, chunk.Downloaded)
 	conn := &Connection{
 		url:       urlString,
 		headers:   make(map[string]string),
@@ -100,9 +106,8 @@ func (h *Handler) CreateConnection(urlString string, chunk *chunk.Chunk, downloa
 
 	conn.headers["User-Agent"] = defaultUserAgent
 
-	if chunk.StartByte > 0 || chunk.EndByte < chunk.Size()-1 {
-		conn.headers["Range"] = fmt.Sprintf("bytes=%d-%d", conn.startByte, chunk.EndByte)
-	}
+	rangeHeader := fmt.Sprintf("bytes=%d-%d", conn.startByte, chunk.EndByte)
+	conn.headers["Range"] = rangeHeader
 
 	// Apply headers from the download config
 	if downloadConfig.Headers != nil {
@@ -115,8 +120,8 @@ func (h *Handler) CreateConnection(urlString string, chunk *chunk.Chunk, downloa
 }
 
 // initializeWithHEAD attempts to initialize using a HEAD request
-func (h *Handler) initializeWithHEAD(urlStr string, config *downloader.Config) (*common.DownloadInfo, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), defaultConnectTimeout)
+func (h *Handler) initializeWithHEAD(ctx context.Context, urlStr string, config *downloader.Config) (*common.DownloadInfo, error) {
+	ctx, cancel := context.WithTimeout(ctx, defaultConnectTimeout)
 	defer cancel()
 
 	req, err := generateRequest(ctx, urlStr, http.MethodHead, config)
@@ -138,8 +143,8 @@ func (h *Handler) initializeWithHEAD(urlStr string, config *downloader.Config) (
 }
 
 // initializeWithRangeGET tries to get file info using Range headers
-func (h *Handler) initializeWithRangeGET(urlStr string, config *downloader.Config) (*common.DownloadInfo, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), defaultConnectTimeout)
+func (h *Handler) initializeWithRangeGET(ctx context.Context, urlStr string, config *downloader.Config) (*common.DownloadInfo, error) {
+	ctx, cancel := context.WithTimeout(ctx, defaultConnectTimeout)
 	defer cancel()
 
 	req, err := generateRequest(ctx, urlStr, http.MethodGet, config)
@@ -185,8 +190,8 @@ func (h *Handler) initializeWithRangeGET(urlStr string, config *downloader.Confi
 
 // initializeWithRegularGET gets file info using a regular GET request
 // This is the final fallback when both HEAD and Range requests fail
-func (h *Handler) initializeWithRegularGET(urlStr string, config *downloader.Config) (*common.DownloadInfo, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), defaultConnectTimeout)
+func (h *Handler) initializeWithRegularGET(ctx context.Context, urlStr string, config *downloader.Config) (*common.DownloadInfo, error) {
+	ctx, cancel := context.WithTimeout(ctx, defaultConnectTimeout)
 	defer cancel()
 
 	req, err := generateRequest(ctx, urlStr, http.MethodGet, config)
@@ -217,7 +222,6 @@ func (h *Handler) initializeWithRegularGET(urlStr string, config *downloader.Con
 	// Create a client with the custom transport
 	client := &http.Client{
 		Transport: transport,
-		Timeout:   defaultConnectTimeout,
 	}
 
 	resp, err := client.Do(req)
@@ -265,13 +269,11 @@ func (c *headerOnlyConn) Read(b []byte) (int, error) {
 	n, err := c.Conn.Read(b)
 
 	// Check if we've read the headers (look for double CRLF)
-	if n > 3 {
-		for i := 0; i < n-3; i++ {
-			if b[i] == '\r' && b[i+1] == '\n' && b[i+2] == '\r' && b[i+3] == '\n' {
-				c.readHeaders = true
-				return i + 4, io.EOF
-			}
-		}
+	headerEnd := bytes.Index(b[:n], []byte("\r\n\r\n"))
+	if headerEnd >= 0 {
+		c.readHeaders = true
+		// Return only up to the end of headers
+		return headerEnd + 4, io.EOF
 	}
 
 	return n, err

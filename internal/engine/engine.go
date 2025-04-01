@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"fmt"
+	"github.com/NamanBalaji/tdm/internal/logger"
 	"log"
 	"os"
 	"path/filepath"
@@ -109,11 +110,15 @@ func (e *Engine) Init() error {
 		return nil
 	}
 
+	logger.Info("Initializing engine")
+
 	if err := e.initRepository(); err != nil {
+		logger.Error("Failed to initialize repository: %v", err)
 		return fmt.Errorf("failed to initialize repository: %w", err)
 	}
 
 	if err := e.loadDownloads(); err != nil {
+		logger.Error("Failed to load downloads: %v", err)
 		return fmt.Errorf("failed to load download: %w", err)
 	}
 
@@ -124,7 +129,6 @@ func (e *Engine) Init() error {
 		},
 	)
 
-	// Start queue processor
 	e.runTask(func() {
 		e.queueProcessor.Start(e.ctx)
 	})
@@ -139,6 +143,7 @@ func (e *Engine) Init() error {
 	})
 
 	if err := e.restoreDownloadStates(); err != nil {
+		logger.Error("Failed to restore download states: %v", err)
 		log.Printf("some download states could not be restored: %v", err)
 	}
 
@@ -149,6 +154,8 @@ func (e *Engine) Init() error {
 	}
 
 	e.running = true
+	logger.Info("Engine initialized and running")
+
 	return nil
 }
 
@@ -174,6 +181,8 @@ func (e *Engine) initRepository() error {
 	}
 
 	e.repository = repo
+	logger.Info("Initializing repository, dbpath: %v", dbPath)
+
 	return nil
 }
 
@@ -191,13 +200,13 @@ func (e *Engine) loadDownloads() error {
 		download.SetContext(downloadCtx, cancelFunc)
 
 		if err := e.restoreChunks(download); err != nil {
-			log.Printf("Warning: Failed to restore chunks for download %s: %v", download.ID, err)
+			logger.Warn("Failed to restore chunks for download %s: %v", download.ID, err)
 		}
 
 		e.downloads[download.ID] = download
 	}
 
-	log.Printf("Loaded %d download(s) from repository", len(e.downloads))
+	logger.Info("Loaded %d download(s) from repository", len(e.downloads))
 	return nil
 }
 
@@ -232,7 +241,7 @@ func (e *Engine) restoreChunks(download *downloader.Download) error {
 			chunkDir := filepath.Dir(newChunk.TempFilePath)
 			if _, err := os.Stat(chunkDir); os.IsNotExist(err) {
 				if err := os.MkdirAll(chunkDir, 0o755); err != nil {
-					log.Printf("Warning: Failed to create chunk directory %s: %v", chunkDir, err)
+					logger.Warn("Failed to create chunk directory %s: %v", chunkDir, err)
 				}
 			}
 
@@ -293,7 +302,7 @@ func (e *Engine) AddDownload(url string, config *downloader.Config) (uuid.UUID, 
 		dConfig.RetryDelay = time.Duration(e.config.RetryDelay) * time.Second
 	}
 
-	info, err := e.protocolHandler.Initialize(url, dConfig)
+	info, err := e.protocolHandler.Initialize(e.ctx, url, dConfig)
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("failed to initialize download: %w", err)
 	}
@@ -606,7 +615,7 @@ func (e *Engine) downloadChunkWithRetries(ctx context.Context, download *downloa
 		return err
 	}
 
-	// Log the error with retryability information
+	// Log the error with retry ability information
 	log.Printf("Download error: %v (retryable: %v)", err, errors.IsRetryable(err))
 
 	// Retry logic
@@ -651,7 +660,7 @@ func (e *Engine) downloadChunk(ctx context.Context, download *downloader.Downloa
 		return errors.NewNetworkError(err, download.URL, false)
 	}
 
-	conn, err := handler.CreateConnection(download.URL, chunk, download.Config)
+	conn, err := handler.CreateConnection(ctx, download.URL, chunk, download.Config)
 	if err != nil {
 		chunk.Status = common.StatusFailed
 		chunk.Error = err
@@ -769,27 +778,59 @@ func (e *Engine) restoreDownloadStates() error {
 // Shutdown gracefully stops the engine, saving all download states
 func (e *Engine) Shutdown() error {
 	e.mu.Lock()
-	defer e.mu.Unlock()
-
 	if !e.running {
+		e.mu.Unlock()
 		return nil
 	}
 
 	log.Println("Starting engine shutdown...")
 
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	// Mark as not running
+	e.running = false
 
-	e.cancelFunc()
-
-	for _, download := range e.downloads {
+	// Get all active downloads while holding the lock
+	activeDownloadIDs := make([]uuid.UUID, 0)
+	for id, download := range e.downloads {
 		if download.Status == common.StatusActive {
-			download.Status = common.StatusPaused
+			activeDownloadIDs = append(activeDownloadIDs, id)
+		}
+	}
+	e.mu.Unlock()
+
+	// Pause all active downloads using the existing PauseDownload function
+	log.Printf("Pausing %d active downloads...", len(activeDownloadIDs))
+	for _, id := range activeDownloadIDs {
+		if err := e.PauseDownload(id); err != nil {
+			log.Printf("Error pausing download %s: %v", id, err)
 		}
 	}
 
+	// Cancel the context to signal all operations to stop
+	if e.cancelFunc != nil {
+		e.cancelFunc()
+	}
+
+	// First stop services that might be starting new tasks
+	log.Println("Stopping queue processor...")
+	if e.queueProcessor != nil {
+		e.queueProcessor.Stop()
+	}
+
+	log.Println("Stopping progress monitor...")
+	if e.progressMonitor != nil {
+		e.progressMonitor.Stop()
+	}
+
+	// Save all downloads
+	log.Println("Saving download states...")
 	e.saveAllDownloads()
 
+	// Create a timeout context for the remaining shutdown operations
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Wait for tasks to complete with a timeout
+	log.Println("Waiting for tasks to complete...")
 	waitChan := make(chan struct{})
 	go func() {
 		e.wg.Wait()
@@ -803,8 +844,11 @@ func (e *Engine) Shutdown() error {
 		log.Println("WARNING: Shutdown timed out, some tasks may not have completed")
 	}
 
+	// Now it's safe to close resources
 	log.Println("Closing connection pool...")
-	e.connectionPool.CloseAll()
+	if e.connectionPool != nil {
+		e.connectionPool.CloseAll()
+	}
 
 	if e.repository != nil {
 		log.Println("Closing repository...")
@@ -813,9 +857,10 @@ func (e *Engine) Shutdown() error {
 		}
 	}
 
+	// Close the progress channel last
+	log.Println("Closing progress channel...")
 	close(e.progressCh)
 
-	e.running = false
 	log.Println("Engine shutdown complete")
 	return nil
 }
@@ -847,7 +892,11 @@ func (e *Engine) saveAllDownloads() {
 	}
 
 	e.mu.RLock()
-	defer e.mu.RUnlock()
+	downloads := make([]*downloader.Download, 0, len(e.downloads))
+	for _, dl := range e.downloads {
+		downloads = append(downloads, dl)
+	}
+	e.mu.RUnlock()
 
 	for _, download := range e.downloads {
 		if err := e.saveDownload(download); err != nil {

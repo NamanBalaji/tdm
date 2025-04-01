@@ -82,6 +82,11 @@ func (m *Manager) CreateChunks(downloadID uuid.UUID, filesize int64, supportsRan
 	if filesize <= 0 {
 		chunk := NewChunk(downloadID, 0, 0, progressFn)
 		chunk.TempFilePath = filepath.Join(downloadTempDir, chunk.ID.String())
+		emptyFile, err := os.Create(chunk.TempFilePath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create empty chunk file: %w", err)
+		}
+		emptyFile.Close()
 		chunk.Status = common.StatusCompleted // Auto-complete empty files
 		return []*Chunk{chunk}, nil
 	}
@@ -89,6 +94,7 @@ func (m *Manager) CreateChunks(downloadID uuid.UUID, filesize int64, supportsRan
 	if !supportsRange || filesize < MinChunkSize {
 		chunk := NewChunk(downloadID, 0, filesize-1, progressFn)
 		chunk.TempFilePath = filepath.Join(downloadTempDir, chunk.ID.String())
+
 		if !supportsRange {
 			chunk.SequentialDownload = true
 		}
