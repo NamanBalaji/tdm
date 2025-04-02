@@ -3,10 +3,11 @@ package downloader
 import (
 	"context"
 	"errors"
-	"github.com/NamanBalaji/tdm/internal/logger"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/NamanBalaji/tdm/internal/logger"
 
 	"github.com/NamanBalaji/tdm/internal/chunk"
 	"github.com/NamanBalaji/tdm/internal/common"
@@ -44,7 +45,7 @@ type Download struct {
 // NewDownload creates a new Download instance
 func NewDownload(url, filename string, config *Config) *Download {
 	id := uuid.New()
-	logger.Info("Creating new download: id=%s, url=%s, filename=%s", id, url, filename)
+	logger.Infof("Creating new download: id=%s, url=%s, filename=%s", id, url, filename)
 
 	download := &Download{
 		ID:              id,
@@ -60,11 +61,11 @@ func NewDownload(url, filename string, config *Config) *Download {
 	}
 
 	if config != nil {
-		logger.Debug("Download %s configuration: connections=%d, maxRetries=%d, retryDelay=%v",
+		logger.Debugf("Download %s configuration: connections=%d, maxRetries=%d, retryDelay=%v",
 			id, config.Connections, config.MaxRetries, config.RetryDelay)
 	}
 
-	logger.Debug("Download %s created with status: %s", id, download.Status)
+	logger.Debugf("Download %s created with status: %s", id, download.Status)
 	return download
 }
 
@@ -74,7 +75,7 @@ func (d *Download) GetStats() Stats {
 	defer d.mu.RUnlock()
 
 	downloadedBytes := atomic.LoadInt64(&d.Downloaded)
-	logger.Debug("Getting stats for download %s: downloaded=%d bytes", d.ID, downloadedBytes)
+	logger.Debugf("Getting stats for download %s: downloaded=%d bytes", d.ID, downloadedBytes)
 
 	var progress float64
 	if d.TotalSize > 0 {
@@ -130,7 +131,7 @@ func (d *Download) GetStats() Stats {
 		LastUpdated:     time.Now(),
 	}
 
-	logger.Debug("Download %s stats: progress=%.2f%%, speed=%d B/s, active=%d, completed=%d, total=%d",
+	logger.Debugf("Download %s stats: progress=%.2f%%, speed=%d B/s, active=%d, completed=%d, total=%d",
 		d.ID, stats.Progress, stats.Speed, stats.ActiveChunks, stats.CompletedChunks, stats.TotalChunks)
 
 	return stats
@@ -138,7 +139,7 @@ func (d *Download) GetStats() Stats {
 
 // SetContext sets the download context and cancel function
 func (d *Download) SetContext(ctx context.Context, cancelFunc context.CancelFunc) {
-	logger.Debug("Setting context for download %s", d.ID)
+	logger.Debugf("Setting context for download %s", d.ID)
 
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -146,7 +147,7 @@ func (d *Download) SetContext(ctx context.Context, cancelFunc context.CancelFunc
 	d.ctx = ctx
 	d.cancelFunc = cancelFunc
 
-	logger.Debug("Context set for download %s", d.ID)
+	logger.Debugf("Context set for download %s", d.ID)
 }
 
 // Context returns the download context
@@ -166,10 +167,10 @@ func (d *Download) CancelFunc() context.CancelFunc {
 }
 
 func (d *Download) SetProgressFunction() {
-	logger.Debug("Setting progress function for %d chunks in download %s", len(d.Chunks), d.ID)
+	logger.Debugf("Setting progress function for %d chunks in download %s", len(d.Chunks), d.ID)
 
 	for i, c := range d.Chunks {
-		logger.Debug("Setting progress function for chunk %d/%d (%s) in download %s",
+		logger.Debugf("Setting progress function for chunk %d/%d (%s) in download %s",
 			i+1, len(d.Chunks), c.ID, d.ID)
 		c.SetProgressFunc(d.AddProgress)
 	}
@@ -204,7 +205,7 @@ func (d *Download) AddProgress(bytes int64) {
 
 // PrepareForSerialization prepares the download for storage
 func (d *Download) PrepareForSerialization() {
-	logger.Debug("Preparing download %s for serialization", d.ID)
+	logger.Debugf("Preparing download %s for serialization", d.ID)
 
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -224,31 +225,31 @@ func (d *Download) PrepareForSerialization() {
 			LastActive:         c.LastActive,
 		}
 
-		logger.Debug("Serialized chunk %d/%d: id=%s, range=%d-%d, downloaded=%d, status=%s",
+		logger.Debugf("Serialized chunk %d/%d: id=%s, range=%d-%d, downloaded=%d, status=%s",
 			i+1, len(d.Chunks), c.ID, c.StartByte, c.EndByte, c.Downloaded, c.Status)
 	}
 
 	if d.Error != nil {
 		d.ErrorMessage = d.Error.Error()
-		logger.Debug("Serialized error message: %s", d.ErrorMessage)
+		logger.Debugf("Serialized error message: %s", d.ErrorMessage)
 	}
 
-	logger.Debug("Download %s prepared for serialization with %d chunks", d.ID, len(d.ChunkInfos))
+	logger.Debugf("Download %s prepared for serialization with %d chunks", d.ID, len(d.ChunkInfos))
 }
 
 // RestoreFromSerialization restores runtime fields after loading from storage
 func (d *Download) RestoreFromSerialization() {
-	logger.Debug("Restoring download %s from serialization", d.ID)
+	logger.Debugf("Restoring download %s from serialization", d.ID)
 
 	d.progressCh = make(chan common.Progress, 10)
 	d.speedCalculator = NewSpeedCalculator(5)
 
 	if d.ErrorMessage != "" && d.Error == nil {
 		d.Error = errors.New(d.ErrorMessage)
-		logger.Debug("Restored error message: %s", d.ErrorMessage)
+		logger.Debugf("Restored error message: %s", d.ErrorMessage)
 	}
 
-	logger.Debug("Download %s restored from serialization (chunks will be restored separately)", d.ID)
+	logger.Debugf("Download %s restored from serialization (chunks will be restored separately)", d.ID)
 	// Note: Chunks need to be recreated by the Engine using ChunkInfos
 	// This is handled separately in the Engine.restoreChunks method
 }

@@ -2,12 +2,13 @@ package main
 
 import (
 	"fmt"
-	"github.com/google/uuid"
 	"os"
 	"os/signal"
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/google/uuid"
 
 	"github.com/NamanBalaji/tdm/internal/engine"
 )
@@ -113,9 +114,9 @@ func main() {
 
 	fmt.Println("Engine started successfully")
 
-	//downloadIDs := make([]uuid.UUID, 0)
+	// downloadIDs := make([]uuid.UUID, 0)
 	//
-	//for _, d := range eng.ListDownloads() {
+	// for _, d := range eng.ListDownloads() {
 	//	err := eng.ResumeDownload(context.Background(), d.ID)
 	//	if err != nil {
 	//		fmt.Printf("Error resuming download: %v\n", err)
@@ -129,9 +130,9 @@ func main() {
 		"https://cdn.jsdelivr.net/npm/bootstrap@5.2.3/dist/css/bootstrap.min.css",
 		"https://archive.org/download/stackexchange/academia.stackexchange.com.7z",
 		"https://sourceforge.net/projects/sevenzip/files/7-Zip/21.07/7z2107-x64.exe/download",
-		//"https://releases.ubuntu.com/22.04/ubuntu-22.04.5-desktop-amd64.iso", // ~10MB file from Apache
-		//"https://cdn.kernel.org/pub/linux/kernel/v5.x/linux-5.15.116.tar.xz", // ~115MB file from kernel.org
-		//"https://github.com/google/googletest/archive/refs/tags/v1.13.0.zip", // ~1MB file from GitHub
+		// "https://releases.ubuntu.com/22.04/ubuntu-22.04.5-desktop-amd64.iso", // ~10MB file from Apache
+		// "https://cdn.kernel.org/pub/linux/kernel/v5.x/linux-5.15.116.tar.xz", // ~115MB file from kernel.org
+		// "https://github.com/google/googletest/archive/refs/tags/v1.13.0.zip", // ~1MB file from GitHub
 	}
 
 	// Start a few downloads to test shutdown behavior

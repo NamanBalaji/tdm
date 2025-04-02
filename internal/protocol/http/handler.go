@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"github.com/NamanBalaji/tdm/internal/logger"
 	"io"
 	"net"
 	"net/http"
@@ -12,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/NamanBalaji/tdm/internal/logger"
 
 	"github.com/NamanBalaji/tdm/internal/common"
 	"github.com/NamanBalaji/tdm/internal/errors"
@@ -37,7 +38,7 @@ type Handler struct {
 
 // NewHandler creates a new HTTP protocol handler
 func NewHandler() *Handler {
-	logger.Debug("Creating new HTTP handler")
+	logger.Debugf("Creating new HTTP handler")
 
 	transport := &http.Transport{
 		Proxy: http.ProxyFromEnvironment,
@@ -57,7 +58,7 @@ func NewHandler() *Handler {
 		Transport: transport,
 	}
 
-	logger.Debug("HTTP handler created with timeout settings: connect=%v, read=%v, idle=%v",
+	logger.Debugf("HTTP handler created with timeout settings: connect=%v, read=%v, idle=%v",
 		defaultConnectTimeout, defaultReadTimeout, defaultIdleTimeout)
 
 	return &Handler{
@@ -68,49 +69,49 @@ func NewHandler() *Handler {
 func (h *Handler) CanHandle(urlStr string) bool {
 	u, err := url.Parse(urlStr)
 	if err != nil {
-		logger.Debug("Cannot parse URL: %s, error: %v", urlStr, err)
+		logger.Debugf("Cannot parse URL: %s, error: %v", urlStr, err)
 		return false
 	}
 	return u.Scheme == "http" || u.Scheme == "https"
 }
 
 func (h *Handler) Initialize(ctx context.Context, urlStr string, config *downloader.Config) (*common.DownloadInfo, error) {
-	logger.Debug("Initializing download for URL: %s", urlStr)
+	logger.Debugf("Initializing download for URL: %s", urlStr)
 
-	logger.Debug("Attempting HEAD request for %s", urlStr)
+	logger.Debugf("Attempting HEAD request for %s", urlStr)
 	info, err := h.initializeWithHEAD(ctx, urlStr, config)
 	if err == nil {
-		logger.Debug("HEAD request successful for %s", urlStr)
+		logger.Debugf("HEAD request successful for %s", urlStr)
 		return info, nil
 	}
-	logger.Debug("HEAD request failed for %s: %v", urlStr, err)
+	logger.Debugf("HEAD request failed for %s: %v", urlStr, err)
 
 	if IsFallbackError(err) {
-		logger.Debug("Falling back to Range GET request for %s", urlStr)
+		logger.Debugf("Falling back to Range GET request for %s", urlStr)
 		info, err = h.initializeWithRangeGET(ctx, urlStr, config)
 		if err == nil {
-			logger.Debug("Range GET request successful for %s", urlStr)
+			logger.Debugf("Range GET request successful for %s", urlStr)
 			return info, nil
 		}
-		logger.Debug("Range GET request failed for %s: %v", urlStr, err)
+		logger.Debugf("Range GET request failed for %s: %v", urlStr, err)
 	}
 
 	if IsFallbackError(err) {
-		logger.Debug("Falling back to regular GET request for %s", urlStr)
+		logger.Debugf("Falling back to regular GET request for %s", urlStr)
 		info, err := h.initializeWithRegularGET(ctx, urlStr, config)
 		if err == nil {
-			logger.Debug("Regular GET request successful for %s", urlStr)
+			logger.Debugf("Regular GET request successful for %s", urlStr)
 			return info, nil
 		}
-		logger.Debug("Regular GET request failed for %s: %v", urlStr, err)
+		logger.Debugf("Regular GET request failed for %s: %v", urlStr, err)
 	}
 
-	logger.Error("All request methods failed for %s", urlStr)
+	logger.Errorf("All request methods failed for %s", urlStr)
 	return nil, err
 }
 
 func (h *Handler) CreateConnection(ctx context.Context, urlString string, chunk *chunk.Chunk, downloadConfig *downloader.Config) (connection.Connection, error) {
-	logger.Debug("Creating connection for chunk %s (bytes %d-%d, downloaded: %d)",
+	logger.Debugf("Creating connection for chunk %s (bytes %d-%d, downloaded: %d)",
 		chunk.ID, chunk.StartByte, chunk.EndByte, chunk.Downloaded)
 
 	conn := &Connection{
@@ -126,12 +127,12 @@ func (h *Handler) CreateConnection(ctx context.Context, urlString string, chunk 
 
 	rangeHeader := fmt.Sprintf("bytes=%d-%d", conn.startByte, chunk.EndByte)
 	conn.headers["Range"] = rangeHeader
-	logger.Debug("Set Range header: %s for chunk %s", rangeHeader, chunk.ID)
+	logger.Debugf("Set Range header: %s for chunk %s", rangeHeader, chunk.ID)
 
 	if downloadConfig != nil && downloadConfig.Headers != nil {
 		for key, value := range downloadConfig.Headers {
 			conn.headers[key] = value
-			logger.Debug("Added custom header: %s for chunk %s", key, chunk.ID)
+			logger.Debugf("Added custom header: %s for chunk %s", key, chunk.ID)
 		}
 	}
 
@@ -140,33 +141,33 @@ func (h *Handler) CreateConnection(ctx context.Context, urlString string, chunk 
 
 // initializeWithHEAD attempts to initialize using a HEAD request
 func (h *Handler) initializeWithHEAD(ctx context.Context, urlStr string, config *downloader.Config) (*common.DownloadInfo, error) {
-	logger.Debug("Initializing with HEAD request: %s", urlStr)
+	logger.Debugf("Initializing with HEAD request: %s", urlStr)
 
 	ctx, cancel := context.WithTimeout(ctx, defaultConnectTimeout)
 	defer cancel()
 
 	req, err := generateRequest(ctx, urlStr, http.MethodHead, config)
 	if err != nil {
-		logger.Error("Failed to create HEAD request for %s: %v", urlStr, err)
+		logger.Errorf("Failed to create HEAD request for %s: %v", urlStr, err)
 		return nil, errors.NewNetworkError(err, urlStr, false)
 	}
 
-	logger.Debug("Sending HEAD request to %s", urlStr)
+	logger.Debugf("Sending HEAD request to %s", urlStr)
 	resp, err := h.client.Do(req)
 	if err != nil {
-		logger.Error("HEAD request failed for %s: %v", urlStr, err)
+		logger.Errorf("HEAD request failed for %s: %v", urlStr, err)
 		return nil, ClassifyError(err, urlStr)
 	}
 	defer resp.Body.Close()
 
-	logger.Debug("HEAD response for %s: status=%d", urlStr, resp.StatusCode)
+	logger.Debugf("HEAD response for %s: status=%d", urlStr, resp.StatusCode)
 	if resp.StatusCode >= 400 {
-		logger.Error("HEAD request returned error status %d for %s", resp.StatusCode, urlStr)
+		logger.Errorf("HEAD request returned error status %d for %s", resp.StatusCode, urlStr)
 		return nil, ClassifyHTTPError(resp.StatusCode, urlStr)
 	}
 
 	supportsRanges := resp.Header.Get("Accept-Ranges") == "bytes"
-	logger.Debug("HEAD request successful, content-length=%d, supports-ranges=%v",
+	logger.Debugf("HEAD request successful, content-length=%d, supports-ranges=%v",
 		resp.ContentLength, supportsRanges)
 
 	return generateInfo(urlStr, resp, supportsRanges, resp.ContentLength), nil
@@ -174,36 +175,36 @@ func (h *Handler) initializeWithHEAD(ctx context.Context, urlStr string, config 
 
 // initializeWithRangeGET tries to get file info using Range headers
 func (h *Handler) initializeWithRangeGET(ctx context.Context, urlStr string, config *downloader.Config) (*common.DownloadInfo, error) {
-	logger.Debug("Initializing with Range GET request: %s", urlStr)
+	logger.Debugf("Initializing with Range GET request: %s", urlStr)
 
 	ctx, cancel := context.WithTimeout(ctx, defaultConnectTimeout)
 	defer cancel()
 
 	req, err := generateRequest(ctx, urlStr, http.MethodGet, config)
 	if err != nil {
-		logger.Error("Failed to create Range GET request for %s: %v", urlStr, err)
+		logger.Errorf("Failed to create Range GET request for %s: %v", urlStr, err)
 		return nil, errors.NewNetworkError(err, urlStr, false)
 	}
 
 	req.Header.Set("Range", "bytes=0-0")
-	logger.Debug("Set Range header: bytes=0-0 for %s", urlStr)
+	logger.Debugf("Set Range header: bytes=0-0 for %s", urlStr)
 
-	logger.Debug("Sending Range GET request to %s", urlStr)
+	logger.Debugf("Sending Range GET request to %s", urlStr)
 	resp, err := h.client.Do(req)
 	if err != nil {
-		logger.Error("Range GET request failed for %s: %v", urlStr, err)
+		logger.Errorf("Range GET request failed for %s: %v", urlStr, err)
 		return nil, ClassifyError(err, urlStr)
 	}
 	defer resp.Body.Close()
 
-	logger.Debug("Range GET response for %s: status=%d", urlStr, resp.StatusCode)
+	logger.Debugf("Range GET response for %s: status=%d", urlStr, resp.StatusCode)
 	if resp.StatusCode >= 400 {
-		logger.Error("Range GET request returned error status %d for %s", resp.StatusCode, urlStr)
+		logger.Errorf("Range GET request returned error status %d for %s", resp.StatusCode, urlStr)
 		return nil, ClassifyHTTPError(resp.StatusCode, urlStr)
 	}
 
 	if resp.StatusCode != 206 {
-		logger.Warn("Server doesn't support ranges for %s (status: %d)", urlStr, resp.StatusCode)
+		logger.Warnf("Server doesn't support ranges for %s (status: %d)", urlStr, resp.StatusCode)
 		return nil, errors.NewHTTPError(ErrRangesNotSupported, urlStr, resp.StatusCode)
 	}
 
@@ -216,28 +217,28 @@ func (h *Handler) initializeWithRangeGET(ctx context.Context, urlStr string, con
 			size, err := strconv.ParseInt(parts[1], 10, 64)
 			if err == nil {
 				totalSize = size
-				logger.Debug("Parsed total size from Content-Range: %d bytes", totalSize)
+				logger.Debugf("Parsed total size from Content-Range: %d bytes", totalSize)
 			} else {
-				logger.Warn("Failed to parse size from Content-Range header: %s", contentRange)
+				logger.Warnf("Failed to parse size from Content-Range header: %s", contentRange)
 			}
 		}
 	}
 
-	logger.Debug("Range GET request successful, supports-ranges=true, content-length=%d", totalSize)
+	logger.Debugf("Range GET request successful, supports-ranges=true, content-length=%d", totalSize)
 	return generateInfo(urlStr, resp, true, totalSize), nil
 }
 
 // initializeWithRegularGET gets file info using a regular GET request
 // This is the final fallback when both HEAD and Range requests fail
 func (h *Handler) initializeWithRegularGET(ctx context.Context, urlStr string, config *downloader.Config) (*common.DownloadInfo, error) {
-	logger.Debug("Initializing with regular GET request: %s", urlStr)
+	logger.Debugf("Initializing with regular GET request: %s", urlStr)
 
 	ctx, cancel := context.WithTimeout(ctx, defaultConnectTimeout)
 	defer cancel()
 
 	req, err := generateRequest(ctx, urlStr, http.MethodGet, config)
 	if err != nil {
-		logger.Error("Failed to create regular GET request for %s: %v", urlStr, err)
+		logger.Errorf("Failed to create regular GET request for %s: %v", urlStr, err)
 		return nil, errors.NewNetworkError(err, urlStr, false)
 	}
 
@@ -246,22 +247,22 @@ func (h *Handler) initializeWithRegularGET(ctx context.Context, urlStr string, c
 	// the download after headers are received (technique to avoid downloading
 	// the entire file just to get metadata)
 	req.Header.Set("X-TDM-Get-Only-Headers", "true")
-	logger.Debug("Set X-TDM-Get-Only-Headers: true for %s", urlStr)
+	logger.Debugf("Set X-TDM-Get-Only-Headers: true for %s", urlStr)
 
 	// Create a custom transport to intercept the response
-	logger.Debug("Creating headerOnlyConn transport for %s", urlStr)
+	logger.Debugf("Creating headerOnlyConn transport for %s", urlStr)
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	originalDialContext := transport.DialContext
 
 	transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
-		logger.Debug("Dialing connection to %s", addr)
+		logger.Debugf("Dialing connection to %s", addr)
 		conn, err := originalDialContext(ctx, network, addr)
 		if err != nil {
-			logger.Error("Failed to dial connection to %s: %v", addr, err)
+			logger.Errorf("Failed to dial connection to %s: %v", addr, err)
 			return nil, err
 		}
 
-		logger.Debug("Wrapping connection with headerOnlyConn")
+		logger.Debugf("Wrapping connection with headerOnlyConn")
 		return &headerOnlyConn{Conn: conn}, nil
 	}
 
@@ -269,15 +270,15 @@ func (h *Handler) initializeWithRegularGET(ctx context.Context, urlStr string, c
 		Transport: transport,
 	}
 
-	logger.Debug("Sending header-only GET request to %s", urlStr)
+	logger.Debugf("Sending header-only GET request to %s", urlStr)
 	resp, err := client.Do(req)
 	if err != nil {
-		logger.Warn("Header-only GET request failed, trying fallback approach: %v", err)
+		logger.Warnf("Header-only GET request failed, trying fallback approach: %v", err)
 		// If we get "unexpected EOF" or similar, it's expected due to our connection closing
 		// Instead, try again with a normal client but we'll abort the body read
 		tempReq, tempErr := http.NewRequestWithContext(ctx, "GET", urlStr, http.NoBody)
 		if tempErr != nil {
-			logger.Error("Failed to create fallback GET request: %v", tempErr)
+			logger.Errorf("Failed to create fallback GET request: %v", tempErr)
 			return nil, errors.NewNetworkError(tempErr, urlStr, false)
 		}
 
@@ -285,26 +286,26 @@ func (h *Handler) initializeWithRegularGET(ctx context.Context, urlStr string, c
 			tempReq.Header[k] = v
 		}
 
-		logger.Debug("Sending fallback GET request to %s", urlStr)
+		logger.Debugf("Sending fallback GET request to %s", urlStr)
 		resp, err = h.client.Do(tempReq)
 		if err != nil {
-			logger.Error("Fallback GET request failed: %v", err)
+			logger.Errorf("Fallback GET request failed: %v", err)
 			return nil, ClassifyError(err, urlStr)
 		}
-		logger.Debug("Closing body immediately for fallback GET request")
+		logger.Debugf("Closing body immediately for fallback GET request")
 		resp.Body.Close()
 	} else if resp.Body != nil {
-		logger.Debug("Header-only GET request successful, closing body")
+		logger.Debugf("Header-only GET request successful, closing body")
 		defer resp.Body.Close()
 	}
 
-	logger.Debug("GET response for %s: status=%d", urlStr, resp.StatusCode)
+	logger.Debugf("GET response for %s: status=%d", urlStr, resp.StatusCode)
 	if resp.StatusCode >= 400 {
-		logger.Error("GET request returned error status %d for %s", resp.StatusCode, urlStr)
+		logger.Errorf("GET request returned error status %d for %s", resp.StatusCode, urlStr)
 		return nil, ClassifyHTTPError(resp.StatusCode, urlStr)
 	}
 
-	logger.Debug("Regular GET request successful, content-length=%d", resp.ContentLength)
+	logger.Debugf("Regular GET request successful, content-length=%d", resp.ContentLength)
 	return generateInfo(urlStr, resp, false, resp.ContentLength), nil
 }
 
@@ -344,7 +345,7 @@ func parseContentDisposition(header string) string {
 			filename := strings.TrimPrefix(part, "filename=")
 			filename = strings.TrimPrefix(filename, "\"")
 			filename = strings.TrimSuffix(filename, "\"")
-			logger.Debug("Extracted filename from Content-Disposition: %s", filename)
+			logger.Debugf("Extracted filename from Content-Disposition: %s", filename)
 			return filename
 		}
 	}
@@ -356,7 +357,7 @@ func parseContentDisposition(header string) string {
 func extractFilenameFromURL(urlStr string) string {
 	u, err := url.Parse(urlStr)
 	if err != nil {
-		logger.Debug("Failed to parse URL for filename extraction: %v", err)
+		logger.Debugf("Failed to parse URL for filename extraction: %v", err)
 		return defaultDownloadName
 	}
 
@@ -365,12 +366,12 @@ func extractFilenameFromURL(urlStr string) string {
 	if len(segments) > 0 {
 		filename := segments[len(segments)-1]
 		if filename != "" {
-			logger.Debug("Extracted filename from URL: %s", filename)
+			logger.Debugf("Extracted filename from URL: %s", filename)
 			return filename
 		}
 	}
 
-	logger.Debug("Could not extract filename from URL, using default: %s", defaultDownloadName)
+	logger.Debugf("Could not extract filename from URL, using default: %s", defaultDownloadName)
 	return defaultDownloadName
 }
 
@@ -383,30 +384,30 @@ func parseLastModified(header string) time.Time {
 	// Try to parse the header (RFC1123 format)
 	t, err := time.Parse(time.RFC1123, header)
 	if err != nil {
-		logger.Debug("Failed to parse Last-Modified header: %s, error: %v", header, err)
+		logger.Debugf("Failed to parse Last-Modified header: %s, error: %v", header, err)
 		return time.Time{}
 	}
 
-	logger.Debug("Parsed Last-Modified: %v", t)
+	logger.Debugf("Parsed Last-Modified: %v", t)
 	return t
 }
 
 func generateRequest(ctx context.Context, urlStr, method string, config *downloader.Config) (*http.Request, error) {
-	logger.Debug("Creating %s request for URL: %s", method, urlStr)
+	logger.Debugf("Creating %s request for URL: %s", method, urlStr)
 
 	req, err := http.NewRequestWithContext(ctx, method, urlStr, http.NoBody)
 	if err != nil {
-		logger.Error("Failed to create %s request for %s: %v", method, urlStr, err)
+		logger.Errorf("Failed to create %s request for %s: %v", method, urlStr, err)
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
 	req.Header.Set("User-Agent", defaultUserAgent)
-	logger.Debug("Set User-Agent: %s", defaultUserAgent)
+	logger.Debugf("Set User-Agent: %s", defaultUserAgent)
 
 	if config != nil && config.Headers != nil {
 		for key, value := range config.Headers {
 			req.Header.Set(key, value)
-			logger.Debug("Set custom header: %s", key)
+			logger.Debugf("Set custom header: %s", key)
 		}
 	}
 
@@ -414,7 +415,7 @@ func generateRequest(ctx context.Context, urlStr, method string, config *downloa
 }
 
 func generateInfo(urlStr string, resp *http.Response, canRange bool, totalSize int64) *common.DownloadInfo {
-	logger.Debug("Generating download info for %s", urlStr)
+	logger.Debugf("Generating download info for %s", urlStr)
 
 	info := &common.DownloadInfo{
 		URL:             urlStr,
@@ -436,7 +437,7 @@ func generateInfo(urlStr string, resp *http.Response, canRange bool, totalSize i
 		info.Filename = extractFilenameFromURL(info.URL)
 	}
 
-	logger.Debug("Download info generated: filename=%s, size=%d, supports-ranges=%v, type=%s",
+	logger.Debugf("Download info generated: filename=%s, size=%d, supports-ranges=%v, type=%s",
 		info.Filename, info.TotalSize, info.SupportsRanges, info.MimeType)
 
 	return info

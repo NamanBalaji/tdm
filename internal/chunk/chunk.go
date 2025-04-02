@@ -2,11 +2,12 @@ package chunk
 
 import (
 	"context"
-	"github.com/NamanBalaji/tdm/internal/logger"
 	"io"
 	"os"
 	"sync/atomic"
 	"time"
+
+	"github.com/NamanBalaji/tdm/internal/logger"
 
 	"github.com/NamanBalaji/tdm/internal/common"
 
@@ -54,7 +55,7 @@ func NewChunk(downloadID uuid.UUID, startByte, endByte int64, progressFn func(in
 		progressFn: progressFn,
 	}
 
-	logger.Debug("Created new chunk %s for download %s (range: %d-%d, size: %d bytes)",
+	logger.Debugf("Created new chunk %s for download %s (range: %d-%d, size: %d bytes)",
 		chunk.ID, downloadID, startByte, endByte, chunk.Size())
 
 	return chunk
@@ -67,28 +68,28 @@ func (c *Chunk) Size() int64 {
 
 // Download performs the actual download of the chunk data
 func (c *Chunk) Download(ctx context.Context) error {
-	logger.Debug("Starting download of chunk %s (range: %d-%d, size: %d bytes)",
+	logger.Debugf("Starting download of chunk %s (range: %d-%d, size: %d bytes)",
 		c.ID, c.StartByte, c.EndByte, c.Size())
 
 	c.Status = common.StatusActive
-	logger.Debug("Opening temp file: %s", c.TempFilePath)
+	logger.Debugf("Opening temp file: %s", c.TempFilePath)
 
 	file, err := os.OpenFile(c.TempFilePath, os.O_WRONLY|os.O_CREATE, 0o644)
 	if err != nil {
-		logger.Error("Failed to open temp file for chunk %s: %v", c.ID, err)
+		logger.Errorf("Failed to open temp file for chunk %s: %v", c.ID, err)
 		return c.handleError(err)
 	}
 	defer file.Close()
 
 	if c.Downloaded > 0 {
-		logger.Debug("Chunk %s resuming from offset %d", c.ID, c.Downloaded)
+		logger.Debugf("Chunk %s resuming from offset %d", c.ID, c.Downloaded)
 		if _, err := file.Seek(c.Downloaded, 0); err != nil {
-			logger.Error("Failed to seek to position %d in file: %v", c.Downloaded, err)
+			logger.Errorf("Failed to seek to position %d in file: %v", c.Downloaded, err)
 			return c.handleError(err)
 		}
 	}
 
-	logger.Debug("Starting download loop for chunk %s", c.ID)
+	logger.Debugf("Starting download loop for chunk %s", c.ID)
 	return c.downloadLoop(ctx, file)
 }
 
@@ -96,12 +97,12 @@ func (c *Chunk) downloadLoop(ctx context.Context, file *os.File) error {
 	buffer := make([]byte, 32*1024)
 	bytesRemaining := c.Size() - c.Downloaded
 
-	logger.Debug("Download loop started for chunk %s, %d bytes remaining", c.ID, bytesRemaining)
+	logger.Debugf("Download loop started for chunk %s, %d bytes remaining", c.ID, bytesRemaining)
 
 	for bytesRemaining > 0 {
 		select {
 		case <-ctx.Done():
-			logger.Debug("Download cancelled for chunk %s", c.ID)
+			logger.Debugf("Download cancelled for chunk %s", c.ID)
 			c.Status = common.StatusPaused
 			return ctx.Err()
 		default:
@@ -109,12 +110,12 @@ func (c *Chunk) downloadLoop(ctx context.Context, file *os.File) error {
 
 			if n > 0 {
 				if bytesToWrite := int64(n); bytesToWrite > bytesRemaining {
-					logger.Debug("Chunk %s received more bytes than needed, truncating", c.ID)
+					logger.Debugf("Chunk %s received more bytes than needed, truncating", c.ID)
 					n = int(bytesRemaining)
 				}
 
 				if _, writeErr := file.Write(buffer[:n]); writeErr != nil {
-					logger.Error("Failed to write to file for chunk %s: %v", c.ID, writeErr)
+					logger.Errorf("Failed to write to file for chunk %s: %v", c.ID, writeErr)
 					return c.handleError(writeErr)
 				}
 
@@ -126,23 +127,23 @@ func (c *Chunk) downloadLoop(ctx context.Context, file *os.File) error {
 
 			if err != nil {
 				if err == io.EOF {
-					logger.Debug("Chunk %s download completed (EOF received)", c.ID)
+					logger.Debugf("Chunk %s download completed (EOF received)", c.ID)
 					c.Status = common.StatusCompleted
 					return nil
 				}
-				logger.Error("Error reading data for chunk %s: %v", c.ID, err)
+				logger.Errorf("Errorf reading data for chunk %s: %v", c.ID, err)
 				return c.handleError(err)
 			}
 		}
 	}
 
-	logger.Debug("Chunk %s download completed successfully", c.ID)
+	logger.Debugf("Chunk %s download completed successfully", c.ID)
 	c.Status = common.StatusCompleted
 	return nil
 }
 
 func (c *Chunk) handleError(err error) error {
-	logger.Error("Chunk %s download failed: %v", c.ID, err)
+	logger.Errorf("Chunk %s download failed: %v", c.ID, err)
 	c.Status = common.StatusFailed
 	c.Error = err
 	return c.Error
@@ -150,10 +151,10 @@ func (c *Chunk) handleError(err error) error {
 
 // Reset prepares a Chunk so it can be retried
 func (c *Chunk) Reset() {
-	logger.Debug("Resetting chunk %s for retry (attempt #%d)", c.ID, c.RetryCount+1)
+	logger.Debugf("Resetting chunk %s for retry (attempt #%d)", c.ID, c.RetryCount+1)
 
 	if c.Connection != nil {
-		logger.Debug("Closing connection for chunk %s", c.ID)
+		logger.Debugf("Closing connection for chunk %s", c.ID)
 		c.Connection.Close()
 	}
 	c.Status = common.StatusPending
@@ -162,28 +163,28 @@ func (c *Chunk) Reset() {
 	c.RetryCount++
 	c.LastActive = time.Now()
 
-	logger.Debug("Chunk %s reset complete, new status: %s", c.ID, c.Status)
+	logger.Debugf("Chunk %s reset complete, new status: %s", c.ID, c.Status)
 }
 
 // VerifyIntegrity checks if the Chunk is completely downloaded and valid
 func (c *Chunk) VerifyIntegrity() bool {
-	logger.Debug("Verifying integrity of chunk %s", c.ID)
+	logger.Debugf("Verifying integrity of chunk %s", c.ID)
 
 	downloadedBytes := atomic.LoadInt64(&c.Downloaded)
 	expectedSize := c.Size()
 
 	if downloadedBytes != expectedSize {
-		logger.Warn("Integrity check failed for chunk %s: downloaded=%d, expected=%d",
+		logger.Warnf("Integrity check failed for chunk %s: downloaded=%d, expected=%d",
 			c.ID, downloadedBytes, expectedSize)
 		return false
 	}
 
-	logger.Debug("Integrity check passed for chunk %s", c.ID)
+	logger.Debugf("Integrity check passed for chunk %s", c.ID)
 	return true
 }
 
 // SetProgressFunc is a helper method for setting the progress function on a chunk
 func (c *Chunk) SetProgressFunc(progressFn func(int64)) {
-	logger.Debug("Setting progress function for chunk %s", c.ID)
+	logger.Debugf("Setting progress function for chunk %s", c.ID)
 	c.progressFn = progressFn
 }

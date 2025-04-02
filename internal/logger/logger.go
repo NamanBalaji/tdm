@@ -21,11 +21,11 @@ func InitLogging(debugMode bool, logPath string) error {
 
 	if DebugEnabled && logPath != "" {
 		logDir := filepath.Dir(logPath)
-		if err := os.MkdirAll(logDir, 0755); err != nil {
+		if err := os.MkdirAll(logDir, 0o755); err != nil {
 			return fmt.Errorf("failed to create log directory: %w", err)
 		}
 
-		f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+		f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 		if err != nil {
 			return fmt.Errorf("failed to open log file: %w", err)
 		}
@@ -44,27 +44,26 @@ func Close() {
 	}
 }
 
-// Info logs an info message to the file if debug mode is enabled
-func Info(format string, v ...interface{}) {
+func Infof(format string, v ...interface{}) {
 	if DebugEnabled && debugLogger != nil {
 		debugLogger.Printf("[INFO] "+format, v...)
 	}
 }
 
-// Error logs an error message to the file if debug mode is enabled
-func Error(format string, v ...interface{}) {
+// Errorf logs an error message to the file if debug mode is enabled
+func Errorf(format string, v ...interface{}) {
 	if DebugEnabled && debugLogger != nil {
 		debugLogger.Printf("[ERROR] "+format, v...)
 	}
 }
 
-func Debug(format string, v ...interface{}) {
+func Debugf(format string, v ...interface{}) {
 	if DebugEnabled && debugLogger != nil {
 		debugLogger.Printf("[DEBUG] "+format, v...)
 	}
 }
 
-func Warn(format string, v ...interface{}) {
+func Warnf(format string, v ...interface{}) {
 	if DebugEnabled && debugLogger != nil {
 		debugLogger.Printf("[WARNING] "+format, v...)
 	}
