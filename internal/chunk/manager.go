@@ -318,12 +318,12 @@ func calculateOptimalChunkCount(fileSize int64, maxConnections int) int {
 
 	var chunks int
 	switch {
-	case fileSize < 10*1024*1024:
-		chunks = 2
-	case fileSize < 100*1024*1024:
-		chunks = 4
-	case fileSize < 1024*1024*1024:
-		chunks = 8
+	//case fileSize < 10*1024*1024:
+	//	chunks = 2
+	//case fileSize < 100*1024*1024:
+	//	chunks = 4
+	//case fileSize < 1024*1024*1024:
+	//	chunks = 8
 	default:
 		chunks = 16
 	}

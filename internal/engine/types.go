@@ -32,8 +32,8 @@ func DefaultConfig() *Config {
 	return &Config{
 		DownloadDir:               downloadDir,
 		ConfigDir:                 configDir,
-		MaxConcurrentDownloads:    3,
-		MaxConnectionsPerDownload: 8,
+		MaxConcurrentDownloads:    4,
+		MaxConnectionsPerDownload: 16,
 		ChunkSize:                 4 * 1024 * 1024, // 4MB
 		UserAgent:                 "TDM/1.0",
 		TempDir:                   filepath.Join(os.TempDir(), "tdm"),
