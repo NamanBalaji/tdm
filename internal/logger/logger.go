@@ -58,6 +58,12 @@ func Error(format string, v ...interface{}) {
 	}
 }
 
+func Debug(format string, v ...interface{}) {
+	if DebugEnabled && debugLogger != nil {
+		debugLogger.Printf("[DEBUG] "+format, v...)
+	}
+}
+
 func Warn(format string, v ...interface{}) {
 	if DebugEnabled && debugLogger != nil {
 		debugLogger.Printf("[WARNING] "+format, v...)

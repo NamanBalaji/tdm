@@ -1,7 +1,7 @@
-package http
+package http_test
 
 import (
-	"io"
+	"context"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -11,282 +11,379 @@ import (
 
 	"github.com/NamanBalaji/tdm/internal/chunk"
 	"github.com/NamanBalaji/tdm/internal/downloader"
+	httpHandler "github.com/NamanBalaji/tdm/internal/protocol/http"
 )
 
+func setupTestServer(t *testing.T, handler http.HandlerFunc) *httptest.Server {
+	server := httptest.NewServer(handler)
+	t.Cleanup(func() {
+		server.Close()
+	})
+	return server
+}
+
 func TestNewHandler(t *testing.T) {
-	h := NewHandler()
+	h := httpHandler.NewHandler()
 	if h == nil {
 		t.Fatal("expected non-nil handler")
-	}
-	if h.client == nil {
-		t.Fatal("expected non-nil http client in handler")
 	}
 }
 
 func TestCanHandle(t *testing.T) {
-	h := NewHandler()
+	h := httpHandler.NewHandler()
 	tests := []struct {
+		name   string
 		urlStr string
-		can    bool
+		want   bool
 	}{
-		{"http://example.com", true},
-		{"https://example.com", true},
-		{"ftp://example.com", false},
-		{"invalid-url", false},
+		{"HTTP URL", "http://example.com", true},
+		{"HTTPS URL", "https://example.com", true},
+		{"FTP URL", "ftp://example.com", false},
+		{"Invalid URL", "invalid-url", false},
 	}
 	for _, tt := range tests {
-		if got := h.CanHandle(tt.urlStr); got != tt.can {
-			t.Errorf("CanHandle(%q) = %v; want %v", tt.urlStr, got, tt.can)
-		}
+		t.Run(tt.name, func(t *testing.T) {
+			if got := h.CanHandle(tt.urlStr); got != tt.want {
+				t.Errorf("CanHandle(%q) = %v; want %v", tt.urlStr, got, tt.want)
+			}
+		})
 	}
 }
 
-func TestInitialize_HeadSuccess(t *testing.T) {
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+func TestInitializeWithHEAD(t *testing.T) {
+	server := setupTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodHead {
 			t.Errorf("expected HEAD method, got %s", r.Method)
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
 		}
+
 		w.Header().Set("Accept-Ranges", "bytes")
 		w.Header().Set("Content-Type", "text/plain")
-		w.Header().Set("Content-Length", "123")
-		now := time.Now().UTC().Truncate(time.Second)
-		w.Header().Set("Last-Modified", now.Format(time.RFC1123))
-		w.Header().Set("ETag", `"abc123"`)
-		w.Header().Set("Content-Disposition", `attachment; filename="test.txt"`)
+		w.Header().Set("Content-Length", "1000")
+		w.Header().Set("Last-Modified", time.Now().UTC().Format(time.RFC1123))
+		w.Header().Set("ETag", "\"test-etag\"")
+		w.Header().Set("Content-Disposition", "attachment; filename=\"test.txt\"")
 		w.WriteHeader(http.StatusOK)
-	}))
-	defer ts.Close()
+	})
 
-	h := NewHandler()
-	info, err := h.Initialize(ts.URL, &downloader.Config{})
+	h := httpHandler.NewHandler()
+	ctx := context.Background()
+	info, err := h.Initialize(ctx, server.URL, nil)
+
 	if err != nil {
 		t.Fatalf("Initialize returned error: %v", err)
 	}
-	if info.URL != ts.URL {
-		t.Errorf("expected URL %q, got %q", ts.URL, info.URL)
+
+	if info.URL != server.URL {
+		t.Errorf("expected URL %q, got %q", server.URL, info.URL)
 	}
 	if info.MimeType != "text/plain" {
 		t.Errorf("expected MimeType text/plain, got %q", info.MimeType)
 	}
-	if info.TotalSize != 123 {
-		t.Errorf("expected TotalSize 123, got %d", info.TotalSize)
+	if info.TotalSize != 1000 {
+		t.Errorf("expected TotalSize 1000, got %d", info.TotalSize)
 	}
 	if !info.SupportsRanges {
-		t.Errorf("expected SupportsRanges true")
+		t.Error("expected SupportsRanges true")
 	}
 	if info.Filename != "test.txt" {
 		t.Errorf("expected Filename test.txt, got %q", info.Filename)
 	}
 }
 
-func TestInitialize_RangeGET_Fallback(t *testing.T) {
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+func TestInitializeWithRangeGET(t *testing.T) {
+	server := setupTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodHead {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
-		if r.Method == http.MethodGet {
-			expectedRange := "bytes=0-0"
-			if r.Header.Get("Range") != expectedRange {
-				t.Errorf("expected Range header %q, got %q", expectedRange, r.Header.Get("Range"))
-			}
-			w.Header().Set("Content-Range", "bytes 0-0/500")
+
+		if r.Method == http.MethodGet && r.Header.Get("Range") == "bytes=0-0" {
+			w.Header().Set("Content-Range", "bytes 0-0/2000")
 			w.Header().Set("Content-Type", "application/octet-stream")
 			w.WriteHeader(http.StatusPartialContent)
-			io.WriteString(w, "a") // one byte content
+			w.Write([]byte("a"))
 			return
 		}
-	}))
-	defer ts.Close()
 
-	h := NewHandler()
-	info, err := h.Initialize(ts.URL, &downloader.Config{})
+		http.Error(w, "Unexpected request", http.StatusBadRequest)
+	})
+
+	h := httpHandler.NewHandler()
+	ctx := context.Background()
+	info, err := h.Initialize(ctx, server.URL, nil)
+
 	if err != nil {
-		t.Fatalf("Initialize (range GET) returned error: %v", err)
+		t.Fatalf("Initialize returned error: %v", err)
 	}
-	if info.TotalSize != 500 {
-		t.Errorf("expected TotalSize 500, got %d", info.TotalSize)
+
+	if info.TotalSize != 2000 {
+		t.Errorf("expected TotalSize 2000, got %d", info.TotalSize)
 	}
 	if !info.SupportsRanges {
-		t.Errorf("expected SupportsRanges true")
+		t.Error("expected SupportsRanges true")
 	}
 }
 
-func TestInitialize_RegularGET_Fallback(t *testing.T) {
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+func TestInitializeWithRegularGET(t *testing.T) {
+	server := setupTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodHead {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
+
 		if r.Method == http.MethodGet && r.Header.Get("Range") != "" {
 			w.WriteHeader(http.StatusOK)
+			w.Write([]byte("Full content"))
 			return
 		}
-		if r.Method == http.MethodGet && r.Header.Get("X-TDM-Get-Only-Headers") == "true" {
-			w.Header().Set("Content-Type", "application/pdf")
-			w.Header().Set("Content-Length", "1000")
-			now := time.Now().UTC().Truncate(time.Second)
-			w.Header().Set("Last-Modified", now.Format(time.RFC1123))
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-	}))
-	defer ts.Close()
 
-	h := NewHandler()
-	info, err := h.Initialize(ts.URL, &downloader.Config{})
+		if r.Method == http.MethodGet {
+			w.Header().Set("Content-Type", "application/pdf")
+			w.Header().Set("Content-Length", "3000")
+			w.WriteHeader(http.StatusOK)
+			if r.Header.Get("X-TDM-Get-Only-Headers") != "true" {
+				w.Write([]byte("Full content"))
+			}
+			return
+		}
+
+		http.Error(w, "Unexpected request", http.StatusBadRequest)
+	})
+
+	h := httpHandler.NewHandler()
+	ctx := context.Background()
+	info, err := h.Initialize(ctx, server.URL, nil)
+
 	if err != nil {
-		t.Fatalf("Initialize (regular GET) returned error: %v", err)
+		t.Fatalf("Initialize returned error: %v", err)
+	}
+
+	if info.TotalSize != 3000 {
+		t.Errorf("expected TotalSize 3000, got %d", info.TotalSize)
+	}
+	if info.SupportsRanges {
+		t.Error("expected SupportsRanges false")
 	}
 	if info.MimeType != "application/pdf" {
 		t.Errorf("expected MimeType application/pdf, got %q", info.MimeType)
 	}
-	if info.TotalSize != 1000 {
-		t.Errorf("expected TotalSize 1000, got %d", info.TotalSize)
+}
+
+func TestInitializeWithServerError(t *testing.T) {
+	server := setupTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "Not Found", http.StatusNotFound)
+	})
+
+	h := httpHandler.NewHandler()
+	ctx := context.Background()
+	_, err := h.Initialize(ctx, server.URL, nil)
+
+	if err == nil {
+		t.Fatal("expected error from Initialize, got nil")
 	}
-	if info.SupportsRanges {
-		t.Errorf("expected SupportsRanges false, got true")
+
+	if !strings.Contains(err.Error(), "404") {
+		t.Errorf("expected error to mention 404, got: %v", err)
+	}
+}
+
+func TestInitializeWithTimeout(t *testing.T) {
+	server := setupTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(200 * time.Millisecond)
+		w.WriteHeader(http.StatusOK)
+	})
+
+	h := httpHandler.NewHandler()
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	_, err := h.Initialize(ctx, server.URL, nil)
+
+	if err == nil {
+		t.Fatal("expected timeout error from Initialize, got nil")
+	}
+
+	if !strings.Contains(strings.ToLower(err.Error()), "context") &&
+		!strings.Contains(strings.ToLower(err.Error()), "deadline") {
+		t.Errorf("expected timeout error, got: %v", err)
+	}
+}
+
+func TestFilenameExtraction(t *testing.T) {
+	tests := []struct {
+		name               string
+		url                string
+		contentDisposition string
+		want               string
+	}{
+		{
+			name:               "From Content-Disposition",
+			url:                "http://example.com/path/to/something.html",
+			contentDisposition: "attachment; filename=\"test-file.zip\"",
+			want:               "test-file.zip",
+		},
+		{
+			name:               "From URL",
+			url:                "http://example.com/downloads/file.txt",
+			contentDisposition: "",
+			want:               "file.txt",
+		},
+		{
+			name:               "Default",
+			url:                "http://example.com/",
+			contentDisposition: "",
+			want:               "download",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := setupTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+				if tt.contentDisposition != "" {
+					w.Header().Set("Content-Disposition", tt.contentDisposition)
+				}
+				w.WriteHeader(http.StatusOK)
+			})
+
+			serverURL := server.URL
+			if tt.url != "http://example.com/" {
+				serverURL = server.URL + strings.TrimPrefix(tt.url, "http://example.com")
+			}
+
+			h := httpHandler.NewHandler()
+			ctx := context.Background()
+			info, err := h.Initialize(ctx, serverURL, nil)
+
+			if err != nil {
+				t.Fatalf("Initialize returned error: %v", err)
+			}
+
+			if info.Filename != tt.want {
+				t.Errorf("expected filename %q, got %q", tt.want, info.Filename)
+			}
+		})
 	}
 }
 
 func TestCreateConnection(t *testing.T) {
-	h := NewHandler()
+	h := httpHandler.NewHandler()
+	ctx := context.Background()
 	urlStr := "http://example.com/file.txt"
 
-	fullChunk := &chunk.Chunk{
-		StartByte:  0,
-		EndByte:    100,
-		Downloaded: 0,
-	}
-	options := &downloader.Config{
-		Headers: map[string]string{
-			"Custom-Header": "custom",
+	tests := []struct {
+		name       string
+		chunk      *chunk.Chunk
+		config     *downloader.Config
+		wantHeader string
+	}{
+		{
+			name: "New download",
+			chunk: &chunk.Chunk{
+				StartByte:  0,
+				EndByte:    999,
+				Downloaded: 0,
+			},
+			config:     nil,
+			wantHeader: "bytes=0-999",
+		},
+		{
+			name: "Resumed download",
+			chunk: &chunk.Chunk{
+				StartByte:  0,
+				EndByte:    999,
+				Downloaded: 200,
+			},
+			config:     nil,
+			wantHeader: "bytes=200-999",
+		},
+		{
+			name: "With custom headers",
+			chunk: &chunk.Chunk{
+				StartByte:  100,
+				EndByte:    999,
+				Downloaded: 50,
+			},
+			config: &downloader.Config{
+				Headers: map[string]string{
+					"Custom-Header": "test-value",
+				},
+			},
+			wantHeader: "bytes=150-999",
 		},
 	}
-	connInterface, err := h.CreateConnection(urlStr, fullChunk, options)
-	if err != nil {
-		t.Fatalf("CreateConnection returned error: %v", err)
-	}
-	conn, ok := connInterface.(*Connection)
-	if !ok {
-		t.Fatal("expected connection to be of type *Connection")
-	}
-	if ua := conn.headers["User-Agent"]; ua != defaultUserAgent {
-		t.Errorf("expected User-Agent %q, got %q", defaultUserAgent, ua)
-	}
-	if val, exists := conn.headers["Custom-Header"]; !exists || val != "custom" {
-		t.Errorf("expected Custom-Header to be set to 'custom'")
-	}
-	if _, exists := conn.headers["Range"]; exists {
-		t.Errorf("did not expect Range header to be set for a full download")
-	}
 
-	// Test resumed download: for this scenario we simulate that the chunk represents a subset.
-	// By having a non-zero StartByte, the condition in CreateConnection triggers the Range header.
-	resumedChunk := &chunk.Chunk{
-		StartByte:  10,  // non-zero start indicates partial download
-		EndByte:    100, // end of chunk
-		Downloaded: 5,   // already downloaded 5 bytes
-	}
-	connInterface2, err := h.CreateConnection(urlStr, resumedChunk, options)
-	if err != nil {
-		t.Fatalf("CreateConnection (resumed) returned error: %v", err)
-	}
-	conn2, ok := connInterface2.(*Connection)
-	if !ok {
-		t.Fatal("expected connection to be of type *Connection")
-	}
-	expectedRange := "bytes=15-100" // 10+5 to 100
-	if rng, exists := conn2.headers["Range"]; !exists || rng != expectedRange {
-		t.Errorf("expected Range header %q, got %q", expectedRange, rng)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			conn, err := h.CreateConnection(ctx, urlStr, tt.chunk, tt.config)
+			if err != nil {
+				t.Fatalf("CreateConnection returned error: %v", err)
+			}
+
+			headers := conn.GetHeaders()
+
+			if range_header, exists := headers["Range"]; !exists || range_header != tt.wantHeader {
+				t.Errorf("expected Range header %q, got %q", tt.wantHeader, range_header)
+			}
+
+			if ua, exists := headers["User-Agent"]; !exists || ua == "" {
+				t.Error("expected User-Agent header to be set")
+			}
+
+			if tt.config != nil && tt.config.Headers != nil {
+				for k, v := range tt.config.Headers {
+					if headers[k] != v {
+						t.Errorf("expected header %q to be %q, got %q", k, v, headers[k])
+					}
+				}
+			}
+		})
 	}
 }
 
-func TestParseContentDisposition(t *testing.T) {
-	header := `attachment; filename="example.pdf"`
-	filename := parseContentDisposition(header)
-	if filename != "example.pdf" {
-		t.Errorf("expected filename 'example.pdf', got %q", filename)
-	}
-	if res := parseContentDisposition(""); res != "" {
-		t.Errorf("expected empty string, got %q", res)
-	}
+type mockNetConn struct {
+	reader *strings.Reader
 }
 
-func TestExtractFilenameFromURL(t *testing.T) {
-	urlStr := "http://example.com/path/to/file.zip"
-	filename := extractFilenameFromURL(urlStr)
-	if filename != "file.zip" {
-		t.Errorf("expected 'file.zip', got %q", filename)
-	}
-	urlStr = "http://example.com/"
-	filename = extractFilenameFromURL(urlStr)
-	if filename != "download" {
-		t.Errorf("expected 'download', got %q", filename)
-	}
+func (m *mockNetConn) Read(b []byte) (n int, err error) {
+	return m.reader.Read(b)
 }
 
-func TestParseLastModified(t *testing.T) {
-	now := time.Now().UTC().Truncate(time.Second)
-	header := now.Format(time.RFC1123)
-	parsed := parseLastModified(header)
-	if parsed.IsZero() {
-		t.Errorf("expected valid time, got zero")
-	}
-	parsed = parseLastModified("invalid time")
-	if !parsed.IsZero() {
-		t.Errorf("expected zero time for invalid header, got %v", parsed)
-	}
-}
-
-// fakeConn is a stub for net.Conn to test headerOnlyConn.
-type fakeConn struct {
-	data   []byte
-	closed bool
-}
-
-func (f *fakeConn) Read(b []byte) (int, error) {
-	if len(f.data) == 0 {
-		return 0, io.EOF
-	}
-	n := copy(b, f.data)
-	f.data = f.data[n:]
-	return n, nil
-}
-
-func (f *fakeConn) Write(b []byte) (int, error) {
+func (m *mockNetConn) Write(b []byte) (n int, err error) {
 	return len(b), nil
 }
 
-func (f *fakeConn) Close() error {
-	f.closed = true
+func (m *mockNetConn) Close() error {
 	return nil
 }
 
-func (f *fakeConn) LocalAddr() net.Addr                { return &net.TCPAddr{} }
-func (f *fakeConn) RemoteAddr() net.Addr               { return &net.TCPAddr{} }
-func (f *fakeConn) SetDeadline(t time.Time) error      { return nil }
-func (f *fakeConn) SetReadDeadline(t time.Time) error  { return nil }
-func (f *fakeConn) SetWriteDeadline(t time.Time) error { return nil }
+func (m *mockNetConn) LocalAddr() net.Addr {
+	return &mockAddr{}
+}
 
-// TestHeaderOnlyConn verifies that headerOnlyConn reads until header termination.
-func TestHeaderOnlyConn(t *testing.T) {
-	// Create a fake connection that returns header data ending with double CRLF.
-	headerData := "HTTP/1.1 200 OK\r\nHeader: value\r\n\r\nBody starts here"
-	fc := &fakeConn{data: []byte(headerData)}
-	hoc := &headerOnlyConn{Conn: fc}
+func (m *mockNetConn) RemoteAddr() net.Addr {
+	return &mockAddr{}
+}
 
-	buf := make([]byte, 1024)
-	n, err := hoc.Read(buf)
-	if err != io.EOF {
-		t.Errorf("expected io.EOF after reading headers, got error: %v", err)
-	}
-	headerEndIndex := strings.Index(headerData, "\r\n\r\n")
-	if headerEndIndex < 0 {
-		t.Fatal("failed to find header termination in test data")
-	}
-	expected := headerData[:headerEndIndex+4]
-	if string(buf[:n]) != expected {
-		t.Errorf("expected header %q, got %q", expected, string(buf[:n]))
-	}
+func (m *mockNetConn) SetDeadline(t time.Time) error {
+	return nil
+}
+
+func (m *mockNetConn) SetReadDeadline(t time.Time) error {
+	return nil
+}
+
+func (m *mockNetConn) SetWriteDeadline(t time.Time) error {
+	return nil
+}
+
+type mockAddr struct{}
+
+func (a *mockAddr) Network() string {
+	return "mock"
+}
+
+func (a *mockAddr) String() string {
+	return "mock-addr"
 }

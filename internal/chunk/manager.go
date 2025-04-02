@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
+	"github.com/NamanBalaji/tdm/internal/logger"
 	"io"
 	"math"
 	"os"
@@ -39,26 +40,42 @@ type Manager struct {
 
 // NewManager creates a new chunk manager
 func NewManager(tempDir string) (*Manager, error) {
+	logger.Debug("Creating new chunk manager")
+
 	if tempDir == "" {
-		tempDir = filepath.Join(os.TempDir(), "tdm-chunks")
+		defaultTemp := filepath.Join(os.TempDir(), "tdm-chunks")
+		logger.Debug("No temp directory specified, using default: %s", defaultTemp)
+		tempDir = defaultTemp
 	}
 
+	logger.Debug("Using temp directory: %s", tempDir)
 	if err := os.MkdirAll(tempDir, 0o755); err != nil {
+		logger.Warn("Failed to create primary temp directory %s: %v, trying fallback", tempDir, err)
 		tempDir = filepath.Join(os.TempDir(), "tdm-chunks")
 		if err := os.MkdirAll(tempDir, 0o755); err != nil {
+			logger.Error("Failed to create fallback temp directory %s: %v", tempDir, err)
 			return nil, fmt.Errorf("failed to create temp directory %s: %w", tempDir, err)
 		}
 	}
 
-	return &Manager{
+	manager := &Manager{
 		tempDir:          tempDir,
 		defaultChunkSize: DefaultChunkSize,
-	}, nil
+	}
+
+	logger.Debug("Chunk manager created successfully with defaults: tempDir=%s, chunkSize=%d bytes",
+		tempDir, DefaultChunkSize)
+
+	return manager, nil
 }
 
 // SetDefaultChunkSize sets the default chunk size
 func (m *Manager) SetDefaultChunkSize(size int64) error {
+	logger.Debug("Setting default chunk size to %d bytes", size)
+
 	if size < MinChunkSize || size > MaxChunkSize {
+		logger.Error("Invalid chunk size %d, must be between %d and %d bytes",
+			size, MinChunkSize, MaxChunkSize)
 		return ErrInvalidChunkSize
 	}
 
@@ -66,49 +83,74 @@ func (m *Manager) SetDefaultChunkSize(size int64) error {
 	defer m.mu.Unlock()
 
 	m.defaultChunkSize = size
+	logger.Debug("Default chunk size set to %d bytes", size)
 	return nil
 }
 
 // CreateChunks divides a download into chunks and returns them
 func (m *Manager) CreateChunks(downloadID uuid.UUID, filesize int64, supportsRange bool, maxConnections int, progressFn func(int64)) ([]*Chunk, error) {
+	logger.Debug("Creating chunks for download %s: filesize=%d, supportsRange=%v, maxConnections=%d",
+		downloadID, filesize, supportsRange, maxConnections)
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	downloadTempDir := filepath.Join(m.tempDir, downloadID.String())
+	logger.Debug("Creating temp directory for chunks: %s", downloadTempDir)
+
 	if err := os.MkdirAll(downloadTempDir, 0o755); err != nil {
+		logger.Error("Failed to create temp directory %s: %v", downloadTempDir, err)
 		return nil, fmt.Errorf("failed to create temp directory: %w", err)
 	}
 
+	// Handle empty or unknown size files
 	if filesize <= 0 {
+		logger.Debug("File size is %d, creating a single empty chunk", filesize)
 		chunk := NewChunk(downloadID, 0, 0, progressFn)
 		chunk.TempFilePath = filepath.Join(downloadTempDir, chunk.ID.String())
+
+		logger.Debug("Creating empty file for chunk: %s", chunk.TempFilePath)
 		emptyFile, err := os.Create(chunk.TempFilePath)
 		if err != nil {
+			logger.Error("Failed to create empty chunk file: %v", err)
 			return nil, fmt.Errorf("failed to create empty chunk file: %w", err)
 		}
 		emptyFile.Close()
+
 		chunk.Status = common.StatusCompleted // Auto-complete empty files
+		logger.Debug("Created single empty chunk with ID: %s", chunk.ID)
 		return []*Chunk{chunk}, nil
 	}
 
+	// Handle small files or servers that don't support range requests
 	if !supportsRange || filesize < MinChunkSize {
+		logger.Debug("Creating single chunk for download: supportsRange=%v, fileSize=%d",
+			supportsRange, filesize)
+
 		chunk := NewChunk(downloadID, 0, filesize-1, progressFn)
 		chunk.TempFilePath = filepath.Join(downloadTempDir, chunk.ID.String())
 
 		if !supportsRange {
 			chunk.SequentialDownload = true
+			logger.Debug("Server doesn't support range requests, marked as sequential download")
 		}
+
+		logger.Debug("Created single chunk with ID: %s, range: 0-%d", chunk.ID, filesize-1)
 		return []*Chunk{chunk}, nil
 	}
 
 	// Calculate optimal number of chunks
 	numChunks := calculateOptimalChunkCount(filesize, maxConnections)
 	chunkSize := filesize / int64(numChunks)
+	logger.Debug("Calculated %d chunks of ~%d bytes each for file size %d",
+		numChunks, chunkSize, filesize)
 
 	// Ensure chunk size is at least the minimum size
 	if chunkSize < MinChunkSize {
 		chunkSize = MinChunkSize
 		numChunks = int(math.Ceil(float64(filesize) / float64(chunkSize)))
+		logger.Debug("Adjusted to %d chunks of %d bytes each (minimum chunk size)",
+			numChunks, chunkSize)
 	}
 
 	chunks := make([]*Chunk, 0, numChunks)
@@ -118,9 +160,13 @@ func (m *Manager) CreateChunks(downloadID uuid.UUID, filesize int64, supportsRan
 		if i == numChunks-1 || endByte >= filesize-1 {
 			endByte = filesize - 1
 		}
+
 		chunk := NewChunk(downloadID, startByte, endByte, progressFn)
 		chunk.TempFilePath = filepath.Join(downloadTempDir, chunk.ID.String())
 		chunks = append(chunks, chunk)
+
+		logger.Debug("Created chunk %d/%d: ID=%s, range=%d-%d, size=%d bytes",
+			i+1, numChunks, chunk.ID, startByte, endByte, chunk.Size())
 
 		startByte = endByte + 1
 
@@ -129,25 +175,40 @@ func (m *Manager) CreateChunks(downloadID uuid.UUID, filesize int64, supportsRan
 		}
 	}
 
+	logger.Info("Created %d chunks for download %s", len(chunks), downloadID)
 	return chunks, nil
 }
 
 // MergeChunks combines downloaded chunks into the final file
 func (m *Manager) MergeChunks(chunks []*Chunk, targetPath string) error {
+	if len(chunks) == 0 {
+		logger.Warn("No chunks provided for merging to %s", targetPath)
+		return nil
+	}
+
+	downloadID := chunks[0].DownloadID
+	logger.Info("Merging %d chunks for download %s to %s", len(chunks), downloadID, targetPath)
+
+	// Verify all chunks are complete
 	for _, chunk := range chunks {
 		if chunk.Status != common.StatusCompleted {
+			logger.Error("Cannot merge: chunk %s is in status %s", chunk.ID, chunk.Status)
 			return fmt.Errorf("cannot merge incomplete download: chunk %s is in status %s", chunk.ID, chunk.Status)
 		}
 	}
 
 	// Ensure target directory exists
 	targetDir := filepath.Dir(targetPath)
+	logger.Debug("Ensuring target directory exists: %s", targetDir)
 	if err := os.MkdirAll(targetDir, 0o755); err != nil {
+		logger.Error("Failed to create target directory %s: %v", targetDir, err)
 		return fmt.Errorf("failed to create target directory: %w", err)
 	}
 
+	logger.Debug("Creating output file: %s", targetPath)
 	outFile, err := os.Create(targetPath)
 	if err != nil {
+		logger.Error("Failed to create output file: %v", err)
 		return fmt.Errorf("failed to create output file: %w", err)
 	}
 	defer outFile.Close()
@@ -155,49 +216,94 @@ func (m *Manager) MergeChunks(chunks []*Chunk, targetPath string) error {
 	bufWriter := bufio.NewWriterSize(outFile, 4*1024*1024) // 4MB buffer
 	defer bufWriter.Flush()
 
+	logger.Debug("Sorting %d chunks by start byte", len(chunks))
 	sortedChunks := sortChunksByStartByte(chunks)
-	for _, chunk := range sortedChunks {
+
+	totalBytes := int64(0)
+	for i, chunk := range sortedChunks {
+		logger.Debug("Processing chunk %d/%d: %s (range: %d-%d)",
+			i+1, len(sortedChunks), chunk.ID, chunk.StartByte, chunk.EndByte)
+
+		logger.Debug("Opening chunk file: %s", chunk.TempFilePath)
 		chunkFile, err := os.Open(chunk.TempFilePath)
 		if err != nil {
+			logger.Error("Failed to open chunk file %s: %v", chunk.TempFilePath, err)
 			return fmt.Errorf("failed to open chunk file: %w", err)
 		}
 
-		if _, err := io.Copy(bufWriter, chunkFile); err != nil {
+		bytesCopied, err := io.Copy(bufWriter, chunkFile)
+		logger.Debug("Copied %d bytes from chunk %s", bytesCopied, chunk.ID)
+		totalBytes += bytesCopied
+
+		if err != nil {
 			chunkFile.Close()
+			logger.Error("Failed to copy chunk data: %v", err)
 			return fmt.Errorf("failed to copy chunk data: %w", err)
 		}
 
 		chunkFile.Close()
 		chunk.Status = common.StatusMerging
+		logger.Debug("Chunk %s merged successfully", chunk.ID)
 	}
 
+	logger.Debug("Flushing %d bytes to disk", totalBytes)
 	if err := bufWriter.Flush(); err != nil {
+		logger.Error("Failed to flush data to file: %v", err)
 		return fmt.Errorf("failed to flush data to file: %w", err)
 	}
 
+	logger.Info("Successfully merged %d chunks (%d bytes) to %s",
+		len(chunks), totalBytes, targetPath)
 	return nil
 }
 
 // CleanupChunks removes temporary chunk files
 func (m *Manager) CleanupChunks(chunks []*Chunk) error {
 	if len(chunks) == 0 {
+		logger.Debug("No chunks to clean up")
 		return nil
 	}
 
-	downloadID := chunks[0].DownloadID.String()
-	downloadTempDir := filepath.Join(m.tempDir, downloadID)
+	downloadID := chunks[0].DownloadID
+	logger.Info("Cleaning up %d chunks for download %s", len(chunks), downloadID)
+
+	downloadTempDir := filepath.Join(m.tempDir, downloadID.String())
+	logger.Debug("Chunk directory to clean: %s", downloadTempDir)
 
 	var lastErr error
+	removedCount := 0
 	for _, chunk := range chunks {
+		logger.Debug("Removing chunk file: %s", chunk.TempFilePath)
 		if err := os.Remove(chunk.TempFilePath); err != nil {
-			lastErr = err
+			if os.IsNotExist(err) {
+				logger.Debug("Chunk file already removed: %s", chunk.TempFilePath)
+			} else {
+				logger.Warn("Failed to remove chunk file %s: %v", chunk.TempFilePath, err)
+				lastErr = err
+			}
+		} else {
+			removedCount++
 		}
 	}
 
+	logger.Debug("Removed %d/%d chunk files, now removing directory: %s",
+		removedCount, len(chunks), downloadTempDir)
+
 	if err := os.Remove(downloadTempDir); err != nil {
-		if lastErr == nil {
-			lastErr = err
+		if os.IsNotExist(err) {
+			logger.Debug("Download directory already removed: %s", downloadTempDir)
+		} else {
+			logger.Warn("Failed to remove download directory %s: %v", downloadTempDir, err)
+			if lastErr == nil {
+				lastErr = err
+			}
 		}
+	}
+
+	if lastErr != nil {
+		logger.Warn("Cleanup completed with errors: %v", lastErr)
+	} else {
+		logger.Info("Cleanup completed successfully for download %s", downloadID)
 	}
 
 	return lastErr
@@ -209,16 +315,19 @@ func calculateOptimalChunkCount(fileSize int64, maxConnections int) int {
 		return maxConnections
 	}
 
+	var chunks int
 	switch {
 	case fileSize < 10*1024*1024:
-		return 2
+		chunks = 2
 	case fileSize < 100*1024*1024:
-		return 4
+		chunks = 4
 	case fileSize < 1024*1024*1024:
-		return 8
+		chunks = 8
 	default:
-		return 16
+		chunks = 16
 	}
+
+	return chunks
 }
 
 // sortChunksByStartByte sorts chunks by their start byte position
