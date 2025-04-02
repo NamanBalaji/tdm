@@ -589,7 +589,7 @@ func resumeDownload(e *engine.Engine, id uuid.UUID) tea.Cmd {
 
 func cancelDownload(e *engine.Engine, id uuid.UUID) tea.Cmd {
 	return func() tea.Msg {
-		err := e.CancelDownload(id, false)
+		err := e.CancelDownload(id, true)
 		if err != nil {
 			return ErrorMsg{Error: err}
 		}

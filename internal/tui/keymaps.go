@@ -22,7 +22,7 @@ type keyMap struct {
 
 // ShortHelp returns keybindings to be shown in the mini help view
 func (k keyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.Up, k.Down, k.PageUp, k.PageDown, k.Add, k.Pause, k.Resume, k.Cancel, k.Quit}
+	return []key.Binding{k.Up, k.Down, k.PageUp, k.PageDown, k.Add, k.Pause, k.Resume, k.Remove, k.Cancel, k.Quit}
 }
 
 // FullHelp returns keybindings for the expanded help view

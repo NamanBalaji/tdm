@@ -158,6 +158,35 @@ func (d *Download) Context() context.Context {
 	return d.ctx
 }
 
+// SetContextKey sets a key-value pair in the download context
+func (d *Download) SetContextKey(key string, value interface{}) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if d.ctx == nil {
+		logger.Debugf("Context is nil, creating new context for download %s", d.ID)
+		d.ctx = context.Background()
+	}
+
+	d.ctx = context.WithValue(d.ctx, key, value)
+	logger.Debugf("Set context key %s for download %s", key, d.ID)
+}
+
+// GetContextKey retrieves a value from the download context
+func (d *Download) GetContextKey(key string) interface{} {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	if d.ctx == nil {
+		logger.Debugf("Context is nil for download %s", d.ID)
+		return nil
+	}
+
+	value := d.ctx.Value(key)
+	logger.Debugf("Got context key %s for download %s: %v", key, d.ID, value)
+	return value
+}
+
 // CancelFunc returns the cancel function
 func (d *Download) CancelFunc() context.CancelFunc {
 	d.mu.RLock()
