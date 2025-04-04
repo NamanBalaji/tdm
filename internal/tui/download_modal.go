@@ -67,7 +67,7 @@ func (d *DownloadModel) View() string {
 	var statusStr string
 	switch stats.Status {
 	case common.StatusActive:
-		statusStr = statusStyleActive.Render(fmt.Sprintf("%s", string(stats.Status)))
+		statusStr = statusStyleActive.Render(string(stats.Status))
 		d.progress.FullColor = string(catpGreen)
 		d.progress.EmptyColor = string(catpSurface0)
 	case common.StatusQueued:

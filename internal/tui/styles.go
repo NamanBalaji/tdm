@@ -16,7 +16,6 @@ var (
 	catpPink     = lipgloss.Color("#f5c2e7") // Pink
 	catpMauve    = lipgloss.Color("#cba6f7") // Mauve (purple)
 	catpRed      = lipgloss.Color("#f38ba8") // Red
-	catpMaroon   = lipgloss.Color("#eba0ac") // Maroon
 	catpPeach    = lipgloss.Color("#fab387") // Peach
 	catpYellow   = lipgloss.Color("#f9e2af") // Yellow
 	catpGreen    = lipgloss.Color("#a6e3a1") // Green
@@ -28,58 +27,27 @@ var (
 
 // Styles
 var (
-	headerStyle = lipgloss.NewStyle().
-			Bold(true).
-			Foreground(catpCrust).
-			Background(catpPink).
-			Padding(1, 2).
-			Width(80).
-			Align(lipgloss.Center)
+	headerStyle = lipgloss.NewStyle().Bold(true).Foreground(catpCrust).Background(catpPink).Padding(1, 2).Width(80).Align(lipgloss.Center)
 
-	downloadItemStyle = lipgloss.NewStyle().
-				Padding(0, 1).
-				Width(80)
+	downloadItemStyle = lipgloss.NewStyle().Padding(0, 1).Width(80)
 
-	selectedDownloadStyle = lipgloss.NewStyle().
-				Border(lipgloss.RoundedBorder()).
-				BorderForeground(catpPink).
-				Padding(0, 1)
+	selectedDownloadStyle = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(catpPink).Padding(0, 1)
 
-	progressBarFilledStyle = lipgloss.NewStyle().
-				Foreground(catpGreen)
+	progressBarFilledStyle = lipgloss.NewStyle().Foreground(catpGreen)
 
-	progressBarEmptyStyle = lipgloss.NewStyle().
-				Foreground(catpSurface0)
+	progressBarEmptyStyle = lipgloss.NewStyle().Foreground(catpSurface0)
 
-	statusStyleActive = lipgloss.NewStyle().
-				Foreground(catpTeal).
-				Bold(true)
+	statusStyleActive = lipgloss.NewStyle().Foreground(catpTeal).Bold(true)
 
-	statusStyleQueued = lipgloss.NewStyle().
-				Foreground(catpYellow).
-				Bold(true)
+	statusStyleQueued = lipgloss.NewStyle().Foreground(catpYellow).Bold(true)
 
-	statusStylePaused = lipgloss.NewStyle().
-				Foreground(catpPeach).
-				Bold(true)
+	statusStylePaused = lipgloss.NewStyle().Foreground(catpPeach).Bold(true)
 
-	statusStyleCompleted = lipgloss.NewStyle().
-				Foreground(catpGreen).
-				Bold(true)
+	statusStyleCompleted = lipgloss.NewStyle().Foreground(catpGreen).Bold(true)
 
-	statusStyleFailed = lipgloss.NewStyle().
-				Foreground(catpRed).
-				Bold(true)
+	statusStyleFailed = lipgloss.NewStyle().Foreground(catpRed).Bold(true)
 
-	formLabelStyle = lipgloss.NewStyle().
-			Foreground(catpSapphire).
-			MarginRight(1)
+	formLabelStyle = lipgloss.NewStyle().Foreground(catpSapphire).MarginRight(1)
 
-	errorStyle = lipgloss.NewStyle().
-			Foreground(catpBase).
-			Background(catpRed).
-			Padding(0, 1).
-			Margin(1, 0).
-			Width(80).
-			Align(lipgloss.Center)
+	errorStyle = lipgloss.NewStyle().Foreground(catpBase).Background(catpRed).Padding(0, 1).Margin(1, 0).Width(80).Align(lipgloss.Center)
 )

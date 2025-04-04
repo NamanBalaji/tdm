@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/NamanBalaji/tdm/internal/logger"
+
 	"github.com/NamanBalaji/tdm/internal/common"
 	"github.com/NamanBalaji/tdm/internal/engine"
 	"github.com/charmbracelet/bubbles/help"
@@ -207,12 +209,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.confirmDialog.width = contentWidth - 20
 		}
 
-		return m, nil
+		if len(m.downloads) > 0 {
+			if m.selectedIdx >= len(m.downloads) {
+				m.selectedIdx = len(m.downloads) - 1
+			}
+		}
+
+		return m, tea.ClearScreen
 
 	case DownloadsLoadedMsg:
 		m.downloads = msg.Downloads
 
-		// Sort the downloads
 		sortDownloadModels(m.downloads)
 
 		for _, d := range m.downloads {
@@ -229,7 +236,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-		// Re-sort after status updates
 		sortDownloadModels(m.downloads)
 
 		return m, nil
@@ -239,10 +245,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		newDownload.width = min(m.width-10, 90)
 		m.downloads = append(m.downloads, newDownload)
 
-		// Sort after adding new download
 		sortDownloadModels(m.downloads)
 
-		// Select the new download
 		for i, d := range m.downloads {
 			if d.download.ID == msg.Download.ID {
 				m.selectedIdx = i
@@ -257,7 +261,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case RemoveDownloadMsg:
-		// Find and remove the download
 		for i, d := range m.downloads {
 			if d.download.ID == msg.ID {
 				m.downloads = append(m.downloads[:i], m.downloads[i+1:]...)
@@ -313,7 +316,7 @@ func (m Model) updateDownloadListView(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 			// If selectedIdx changed, we need to update
 			if prevIdx != m.selectedIdx {
-				// No need to scroll, we'll just render the next item selected
+				return m, tea.ClearScreen
 			}
 		}
 		return m, nil
@@ -325,35 +328,33 @@ func (m Model) updateDownloadListView(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 			// If selectedIdx changed, we need to update
 			if prevIdx != m.selectedIdx {
-				// No need to scroll, we'll just render the previous item selected
+				return m, tea.ClearScreen
 			}
 		}
 		return m, nil
 
 	case key.Matches(msg, m.keys.PageDown):
 		if len(m.downloads) > 0 {
-			// Move down several items at once
 			prevIdx := m.selectedIdx
-			pageSize := 5 // Number of items to skip
+			pageSize := 5
 			m.selectedIdx = min(m.selectedIdx+pageSize, len(m.downloads)-1)
 
 			// If selectedIdx changed, we need to update
 			if prevIdx != m.selectedIdx {
-				// No need to scroll, we'll just render the new selected item
+				return m, tea.ClearScreen
 			}
 		}
 		return m, nil
 
 	case key.Matches(msg, m.keys.PageUp):
 		if len(m.downloads) > 0 {
-			// Move up several items at once
 			prevIdx := m.selectedIdx
-			pageSize := 5 // Number of items to skip
+			pageSize := 5
 			m.selectedIdx = max(m.selectedIdx-pageSize, 0)
 
 			// If selectedIdx changed, we need to update
 			if prevIdx != m.selectedIdx {
-				// No need to scroll, we'll just render the new selected item
+				return m, tea.ClearScreen
 			}
 		}
 		return m, nil
@@ -438,13 +439,12 @@ func (m Model) View() string {
 	termWidth := m.width
 	termHeight := m.height
 
-	// Calculate content width based on terminal size with minimum width enforcement
-	contentWidth := termWidth - 4 // 2 character margins on each side
+	contentWidth := termWidth - 4
 	if contentWidth > 90 {
-		contentWidth = 90 // Cap at maximum reasonable width
+		contentWidth = 90
 	}
 	if contentWidth < 40 {
-		contentWidth = 40 // Minimum width for readability
+		contentWidth = 40
 	}
 
 	var content string
@@ -527,7 +527,6 @@ func (m Model) renderDownloadListView(contentWidth int) string {
 		s.WriteString(instruction)
 
 		s.WriteString("\n\n")
-
 	} else {
 		// Calculate how many items we can show based on available space
 		availableHeight := m.height - 10 // Space for header, footer, etc.
@@ -542,45 +541,49 @@ func (m Model) renderDownloadListView(contentWidth int) string {
 		if endIdx-startIdx < visibleItems && startIdx > 0 {
 			diff := visibleItems - (endIdx - startIdx)
 			startIdx = max(0, startIdx-diff)
+			endIdx = min(len(m.downloads), startIdx+visibleItems)
 		}
 
-		// Show scroll indicators if needed
-		scrollIndicator := ""
 		if startIdx > 0 {
-			scrollIndicator += "↑ More above\n"
-		}
-		if endIdx < len(m.downloads) {
-			scrollIndicator += "↓ More below\n"
-		}
-
-		if scrollIndicator != "" {
-			s.WriteString(lipgloss.NewStyle().
+			scrollUpIndicator := lipgloss.NewStyle().
 				Foreground(catpSubtext0).
 				Align(lipgloss.Center).
 				Width(contentWidth).
-				Render(scrollIndicator))
+				Render("↑ More above")
+			s.WriteString(scrollUpIndicator + "\n")
 		}
 
-		// Update all download widths to match the current content width
+		// Update all download widths to match current content width
 		for _, download := range m.downloads {
 			download.width = contentWidth
 		}
 
-		// Render visible downloads
+		// Render visible downloads with consistent styling
 		for i := startIdx; i < endIdx; i++ {
 			download := m.downloads[i]
+			var downloadView string
+
 			if i == m.selectedIdx {
-				downloadView := selectedDownloadStyle.Copy().
+				downloadView = selectedDownloadStyle.Copy().
 					Width(contentWidth).
 					Render(download.View())
-				s.WriteString(downloadView)
 			} else {
-				downloadView := downloadItemStyle.Copy().
+				downloadView = downloadItemStyle.Copy().
 					Width(contentWidth).
 					Render(download.View())
-				s.WriteString(downloadView)
 			}
-			s.WriteString("\n")
+
+			s.WriteString(downloadView + "\n")
+		}
+
+		// Show bottom scroll indicator if needed
+		if endIdx < len(m.downloads) {
+			scrollDownIndicator := lipgloss.NewStyle().
+				Foreground(catpSubtext0).
+				Align(lipgloss.Center).
+				Width(contentWidth).
+				Render("↓ More below")
+			s.WriteString(scrollDownIndicator + "\n")
 		}
 	}
 
@@ -691,7 +694,9 @@ func (m Model) updateConfirmRemoveView(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func shutdownEngine(e *engine.Engine) tea.Cmd {
 	return func() tea.Msg {
-		e.Shutdown()
+		if err := e.Shutdown(); err != nil {
+			logger.Errorf("error shutting down engine: %v", err)
+		}
 		return tea.Quit()
 	}
 }

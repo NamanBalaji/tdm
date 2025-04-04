@@ -36,53 +36,17 @@ func (k keyMap) FullHelp() [][]key.Binding {
 
 func newKeyMap() keyMap {
 	return keyMap{
-		Up: key.NewBinding(
-			key.WithKeys("up", "k"),
-			key.WithHelp("↑/k", "up"),
-		),
-		Down: key.NewBinding(
-			key.WithKeys("down", "j"),
-			key.WithHelp("↓/j", "down"),
-		),
-		PageUp: key.NewBinding(
-			key.WithKeys("pgup", "b"),
-			key.WithHelp("pgup/b", "page up"),
-		),
-		PageDown: key.NewBinding(
-			key.WithKeys("pgdown", "f"),
-			key.WithHelp("pgdown/f", "page down"),
-		),
-		Add: key.NewBinding(
-			key.WithKeys("a"),
-			key.WithHelp("a", "add download"),
-		),
-		Remove: key.NewBinding(
-			key.WithKeys("d"),
-			key.WithHelp("d", "remove download"),
-		),
-		Pause: key.NewBinding(
-			key.WithKeys("p"),
-			key.WithHelp("p", "pause"),
-		),
-		Resume: key.NewBinding(
-			key.WithKeys("r"),
-			key.WithHelp("r", "resume"),
-		),
-		Cancel: key.NewBinding(
-			key.WithKeys("c"),
-			key.WithHelp("c", "cancel"),
-		),
-		Back: key.NewBinding(
-			key.WithKeys("esc"),
-			key.WithHelp("esc", "back"),
-		),
-		Confirm: key.NewBinding(
-			key.WithKeys("enter"),
-			key.WithHelp("enter", "confirm"),
-		),
-		Quit: key.NewBinding(
-			key.WithKeys("q", "ctrl+c"),
-			key.WithHelp("q", "quit"),
-		),
+		Up:       key.NewBinding(key.WithKeys("up", "k"), key.WithHelp("↑/k", "up")),
+		Down:     key.NewBinding(key.WithKeys("down", "j"), key.WithHelp("↓/j", "down")),
+		PageUp:   key.NewBinding(key.WithKeys("pgup", "b"), key.WithHelp("pgup/b", "page up")),
+		PageDown: key.NewBinding(key.WithKeys("pgdown", "f"), key.WithHelp("pgdown/f", "page down")),
+		Add:      key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "add download")),
+		Remove:   key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "remove download")),
+		Pause:    key.NewBinding(key.WithKeys("p"), key.WithHelp("p", "pause")),
+		Resume:   key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "resume")),
+		Cancel:   key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "cancel")),
+		Back:     key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "back")),
+		Confirm:  key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "confirm")),
+		Quit:     key.NewBinding(key.WithKeys("q", "ctrl+c"), key.WithHelp("q", "quit")),
 	}
 }
