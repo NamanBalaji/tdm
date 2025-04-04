@@ -25,6 +25,8 @@ type view int
 const (
 	downloadListView view = iota
 	addDownloadView
+	confirmCancelView
+	confirmRemoveView
 )
 
 type messageModel struct {
@@ -36,34 +38,35 @@ type messageModel struct {
 
 // Model represents the main TUI state
 type Model struct {
-	engine       *engine.Engine
-	viewport     viewport.Model
-	width        int
-	height       int
-	downloads    []*DownloadModel
-	help         help.Model
-	keys         keyMap
-	activeView   view
-	addDownload  AddDownloadModel
-	spinner      spinner.Model
-	messageModel messageModel
-	errorMsg     string
-	selectedIdx  int
-	quitting     bool
-	ready        bool
+	engine        *engine.Engine
+	viewport      viewport.Model
+	width         int
+	height        int
+	downloads     []*DownloadModel
+	help          help.Model
+	keys          keyMap
+	activeView    view
+	addDownload   AddDownloadModel
+	spinner       spinner.Model
+	messageModel  messageModel
+	errorMsg      string
+	selectedIdx   int
+	quitting      bool
+	ready         bool
+	confirmDialog ConfirmDialogModel
 }
 
 // NewModel creates a new TUI model
 func NewModel(engine *engine.Engine) Model {
 	s := spinner.New()
-	s.Spinner = spinner.Dot
-	s.Style = lipgloss.NewStyle().Foreground(gruvboxGreen)
+	s.Spinner = spinner.Hamburger
+	s.Style = lipgloss.NewStyle().Foreground(catpBlue)
 
 	help := help.New()
 	help.ShowAll = false
 
-	vp := viewport.New(80, 20)                            // Initial temporary size
-	vp.Style = lipgloss.NewStyle().Background(gruvboxBg0) // Match background
+	vp := viewport.New(80, 20)
+	vp.Style = lipgloss.NewStyle().Background(catpBase)
 
 	return Model{
 		engine:     engine,
@@ -73,9 +76,18 @@ func NewModel(engine *engine.Engine) Model {
 		addDownload: AddDownloadModel{
 			textInput: textinput.New(),
 		},
-		spinner:      s,
-		viewport:     vp,
-		messageModel: messageModel{style: lipgloss.NewStyle().Padding(1, 2).BorderStyle(lipgloss.RoundedBorder()).BorderForeground(gruvboxAqua)},
+		spinner:  s,
+		viewport: vp,
+		messageModel: messageModel{
+			style: lipgloss.NewStyle().
+				Padding(1, 2).
+				BorderStyle(lipgloss.RoundedBorder()).
+				BorderForeground(catpLavender).
+				Width(60).              // Set a fixed width for the modal
+				Align(lipgloss.Center). // Center the content horizontally
+				MaxWidth(80).           // Maximum width to prevent overly wide modals
+				MaxHeight(20),          // Maximum height to prevent overly tall modals
+		},
 	}
 }
 
@@ -171,20 +183,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case m.activeView == addDownloadView:
 			return m.updateAddDownloadView(msg)
+
+		case m.activeView == confirmCancelView:
+			return m.updateConfirmCancelView(msg)
+
+		case m.activeView == confirmRemoveView:
+			return m.updateConfirmRemoveView(msg)
 		}
 
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
 
-		// Calculate height for download list
-		// Update download widths
+		contentWidth := min(msg.Width-4, 90)
+
 		for _, d := range m.downloads {
-			d.width = min(m.width-10, 90)
+			d.width = contentWidth
 		}
 
-		// Also update the add download view width
-		m.addDownload.width = m.width - 10
+		m.addDownload.width = contentWidth
+
+		if m.activeView == confirmCancelView || m.activeView == confirmRemoveView {
+			m.confirmDialog.width = contentWidth - 20
+		}
 
 		return m, nil
 
@@ -231,7 +252,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		m.activeView = downloadListView
 		m.errorMsg = ""
-		m.showMessage(fmt.Sprintf("Download added: %s", msg.Download.Filename), gruvboxGreen)
+		m.showMessage(fmt.Sprintf("Download added: %s", msg.Download.Filename), catpGreen)
 
 		return m, nil
 
@@ -250,7 +271,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case ErrorMsg:
-		m.showMessage(fmt.Sprintf("Error: %s", msg.Error.Error()), gruvboxRed) // Use red color for errors
+		m.showMessage(fmt.Sprintf("Error: %s", msg.Error.Error()), catpRed)
 
 		if m.activeView == addDownloadView {
 			m.activeView = downloadListView
@@ -352,13 +373,31 @@ func (m Model) updateDownloadListView(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, m.keys.Cancel):
 		if len(m.downloads) > 0 && m.selectedIdx < len(m.downloads) {
 			download := m.downloads[m.selectedIdx]
-			return m, cancelDownload(m.engine, download.download.ID)
+
+			m.confirmDialog = ConfirmDialogModel{
+				title:    "Cancel Download",
+				message:  fmt.Sprintf("Are you sure you want to cancel '%s'?", download.download.Filename),
+				action:   "cancel",
+				targetID: download.download.ID,
+				width:    min(m.width-20, 60),
+			}
+			m.activeView = confirmCancelView
+			return m, nil
 		}
 
 	case key.Matches(msg, m.keys.Remove):
 		if len(m.downloads) > 0 && m.selectedIdx < len(m.downloads) {
 			download := m.downloads[m.selectedIdx]
-			return m, removeDownload(m.engine, download.download.ID)
+
+			m.confirmDialog = ConfirmDialogModel{
+				title:    "Remove Download",
+				message:  fmt.Sprintf("Are you sure you want to remove '%s'?", download.download.Filename),
+				action:   "remove",
+				targetID: download.download.ID,
+				width:    min(m.width-20, 60),
+			}
+			m.activeView = confirmRemoveView
+			return m, nil
 		}
 	}
 
@@ -370,6 +409,7 @@ func (m Model) updateAddDownloadView(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, m.keys.Back):
 		m.activeView = downloadListView
 		m.addDownload.textInput.Blur()
+		m.addDownload.textInput.SetValue("")
 		return m, nil
 
 	case key.Matches(msg, m.keys.Confirm):
@@ -395,57 +435,106 @@ func (m Model) View() string {
 	if m.quitting {
 		return "Shutting down TDM...\n"
 	}
+	termWidth := m.width
+	termHeight := m.height
+
+	// Calculate content width based on terminal size with minimum width enforcement
+	contentWidth := termWidth - 4 // 2 character margins on each side
+	if contentWidth > 90 {
+		contentWidth = 90 // Cap at maximum reasonable width
+	}
+	if contentWidth < 40 {
+		contentWidth = 40 // Minimum width for readability
+	}
 
 	var content string
-
 	switch m.activeView {
 	case downloadListView:
-		content = m.renderDownloadListView()
+		content = m.renderDownloadListView(contentWidth)
 	case addDownloadView:
-		content = m.renderAddDownloadView()
+		content = m.renderAddDownloadView(contentWidth)
+	case confirmCancelView, confirmRemoveView:
+		content = m.confirmDialog.View()
 	default:
 		return "Unknown view"
 	}
 
-	return lipgloss.Place(
-		m.width,
-		m.height,
-		lipgloss.Center,
-		lipgloss.Center,
-		content,
-	)
+	return lipgloss.Place(termWidth, termHeight, lipgloss.Center, lipgloss.Center, content)
 }
 
-func (m Model) renderDownloadListView() string {
-	var s string
+func (m Model) renderDownloadListView(contentWidth int) string {
+	var s strings.Builder
 
-	contentWidth := min(m.width-10, 90)
-
+	// Update all styles with current width
 	header := headerStyle.Width(contentWidth).Render("Terminal Download Manager (TDM)")
-	s += header + "\n\n"
+	s.WriteString(header)
+	s.WriteString("\n\n")
 
 	if m.errorMsg != "" {
-		s += errorStyle.Width(contentWidth).Render(m.errorMsg) + "\n\n"
+		errorText := errorStyle.Width(contentWidth).Render(m.errorMsg)
+		s.WriteString(errorText)
+		s.WriteString("\n\n")
 	}
 
 	// Render the downloads list
 	if len(m.downloads) == 0 {
-		empty := lipgloss.NewStyle().
-			Foreground(gruvboxFg2).
+		s.Reset()
+
+		logoLines := []string{
+			"████████╗██████╗ ███╗   ███╗",
+			"╚══██╔══╝██╔══██╗████╗ ████║",
+			"   ██║   ██║  ██║██╔████╔██║",
+			"   ██║   ██║  ██║██║╚██╔╝██║",
+			"   ██║   ██████╔╝██║ ╚═╝ ██║",
+			"   ╚═╝   ╚═════╝ ╚═╝     ╚═╝",
+		}
+
+		// Apply Catppuccin gradient colors to the logo
+		colors := []lipgloss.Color{catpBlue, catpMauve, catpRed, catpPeach, catpYellow, catpGreen}
+
+		var coloredLogo strings.Builder
+		for i, line := range logoLines {
+			coloredLine := lipgloss.NewStyle().
+				Foreground(colors[i]).
+				Align(lipgloss.Center).
+				Bold(true).
+				Width(contentWidth).
+				Render(line)
+			coloredLogo.WriteString(coloredLine + "\n")
+		}
+
+		// Add a subtitle
+		subtitle := lipgloss.NewStyle().
+			Foreground(catpText).
+			Italic(true).
 			Align(lipgloss.Center).
 			Width(contentWidth).
-			Render("No downloads yet. Press 'a' to add a download.")
-		s += empty + "\n\n"
-	} else {
-		// Build a scrollable region with the downloads
-		var visibleContent strings.Builder
+			Render("  Terminal Download Manager")
 
-		// Get the number of visible items we can show
-		availableHeight := m.height - 10 // Approximate height needed for header, message, and help
+		// Add instruction
+		instruction := lipgloss.NewStyle().
+			Foreground(catpSubtext0).
+			Align(lipgloss.Center).
+			Width(contentWidth).
+			Margin(1, 0).
+			Render("   Press 'a' to add a download")
+
+		// Combine all elements
+		s.WriteString(coloredLogo.String())
+		s.WriteString("\n")
+		s.WriteString(subtitle)
+		s.WriteString("\n\n")
+		s.WriteString(instruction)
+
+		s.WriteString("\n\n")
+
+	} else {
+		// Calculate how many items we can show based on available space
+		availableHeight := m.height - 10 // Space for header, footer, etc.
 		itemHeight := 6                  // Approximate height of each download item
 		visibleItems := max(1, availableHeight/itemHeight)
 
-		// Calculate start and end indices for visible items
+		// Calculate which portion of downloads to show
 		startIdx := max(0, m.selectedIdx-(visibleItems/2))
 		endIdx := min(len(m.downloads), startIdx+visibleItems)
 
@@ -455,17 +544,7 @@ func (m Model) renderDownloadListView() string {
 			startIdx = max(0, startIdx-diff)
 		}
 
-		// Render only the visible downloads
-		for i := startIdx; i < endIdx; i++ {
-			download := m.downloads[i]
-			if i == m.selectedIdx {
-				visibleContent.WriteString(selectedDownloadStyle.Width(contentWidth).Render(download.View()) + "\n")
-			} else {
-				visibleContent.WriteString(downloadItemStyle.Width(contentWidth).Render(download.View()) + "\n")
-			}
-		}
-
-		// Display scroll indicators if needed
+		// Show scroll indicators if needed
 		scrollIndicator := ""
 		if startIdx > 0 {
 			scrollIndicator += "↑ More above\n"
@@ -475,41 +554,75 @@ func (m Model) renderDownloadListView() string {
 		}
 
 		if scrollIndicator != "" {
-			scrollStyle := lipgloss.NewStyle().
-				Foreground(gruvboxFg2).
+			s.WriteString(lipgloss.NewStyle().
+				Foreground(catpSubtext0).
 				Align(lipgloss.Center).
-				Width(contentWidth)
-			s += scrollStyle.Render(scrollIndicator)
+				Width(contentWidth).
+				Render(scrollIndicator))
 		}
 
-		s += visibleContent.String()
+		// Update all download widths to match the current content width
+		for _, download := range m.downloads {
+			download.width = contentWidth
+		}
+
+		// Render visible downloads
+		for i := startIdx; i < endIdx; i++ {
+			download := m.downloads[i]
+			if i == m.selectedIdx {
+				downloadView := selectedDownloadStyle.Copy().
+					Width(contentWidth).
+					Render(download.View())
+				s.WriteString(downloadView)
+			} else {
+				downloadView := downloadItemStyle.Copy().
+					Width(contentWidth).
+					Render(download.View())
+				s.WriteString(downloadView)
+			}
+			s.WriteString("\n")
+		}
 	}
 
+	// Add message if visible
 	if m.messageModel.visible {
-		s += "\n" + m.messageModel.style.Render(m.messageModel.message)
+		s.WriteString("\n")
+		messageStyle := m.messageModel.style
+		s.WriteString(messageStyle.Render(m.messageModel.message))
 	}
 
+	// Add help view
 	helpView := m.help.View(m.keys)
-	s += "\n" + helpView
+	s.WriteString("\n")
+	s.WriteString(helpView)
 
-	return s
+	return s.String()
 }
 
-func (m Model) renderAddDownloadView() string {
-	var s string
+func (m Model) renderAddDownloadView(contentWidth int) string {
+	var s strings.Builder
 
-	contentWidth := min(m.width-10, 90)
-
-	header := headerStyle.Width(contentWidth).Render("Add New Download")
-	s += header + "\n\n"
-
+	// Update the add download view width
 	m.addDownload.width = contentWidth
-	s += m.addDownload.View() + "\n\n"
 
+	// Create the header with proper width
+	header := headerStyle.Copy().Width(contentWidth).Render("Add New Download")
+	s.WriteString(header)
+	s.WriteString("\n\n")
+
+	// Render the form with the current width
+	formView := lipgloss.NewStyle().
+		Width(contentWidth).
+		Align(lipgloss.Center).
+		Render(m.addDownload.View())
+	s.WriteString(formView)
+	s.WriteString("\n\n")
+
+	// Add help view
 	helpView := m.help.View(m.keys)
-	s += helpView
+	s.WriteString(helpView)
 
-	return s
+	return s.String()
 }
 
 func (m *Model) showMessage(msg string, color lipgloss.Color) {
@@ -542,6 +655,38 @@ func (m Model) updateDownloadStatuses() tea.Cmd {
 		}
 		return nil
 	}
+}
+
+func (m Model) updateConfirmCancelView(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, m.keys.Back), key.Matches(msg, m.keys.Quit):
+		// User cancelled the operation
+		m.activeView = downloadListView
+		return m, nil
+
+	case key.Matches(msg, m.keys.Confirm):
+		// User confirmed the cancellation
+		m.activeView = downloadListView
+		return m, cancelDownload(m.engine, m.confirmDialog.targetID)
+	}
+
+	return m, nil
+}
+
+func (m Model) updateConfirmRemoveView(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, m.keys.Back), key.Matches(msg, m.keys.Quit):
+		// User cancelled the operation
+		m.activeView = downloadListView
+		return m, nil
+
+	case key.Matches(msg, m.keys.Confirm):
+		// User confirmed the removal
+		m.activeView = downloadListView
+		return m, removeDownload(m.engine, m.confirmDialog.targetID)
+	}
+
+	return m, nil
 }
 
 func shutdownEngine(e *engine.Engine) tea.Cmd {

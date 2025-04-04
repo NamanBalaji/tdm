@@ -25,7 +25,7 @@ func NewDownloadModel(download *downloader.Download) *DownloadModel {
 	p := progress.New(
 		progress.WithWidth(50),
 		progress.WithoutPercentage(),
-		progress.WithSolidFill(string(gruvboxGreen)),
+		progress.WithSolidFill(string(catpGreen)),
 	)
 
 	stats := download.GetStats()
@@ -35,8 +35,8 @@ func NewDownloadModel(download *downloader.Download) *DownloadModel {
 	}
 
 	s := spinner.New()
-	s.Spinner = spinner.Dot
-	s.Style = lipgloss.NewStyle().Foreground(gruvboxGreen)
+	s.Spinner = spinner.Hamburger
+	s.Style = lipgloss.NewStyle().Foreground(catpGreen)
 
 	return &DownloadModel{
 		download: download,
@@ -62,33 +62,30 @@ func (d *DownloadModel) View() string {
 		filename = filename[:maxFilenameLen-3] + "..."
 	}
 
-	location := lipgloss.NewStyle().
-		Foreground(gruvboxFg2). // Keep existing color
-		Faint(true). // Add this
-		Render(d.download.Config.Directory)
+	location := lipgloss.NewStyle().Foreground(catpSubtext0).Faint(true).Render(d.download.Config.Directory)
 
 	var statusStr string
 	switch stats.Status {
 	case common.StatusActive:
-		statusStr = statusStyleActive.Render(fmt.Sprintf("%s %s", d.spinner.View(), string(stats.Status)))
-		d.progress.FullColor = "76"
-		d.progress.EmptyColor = "237"
+		statusStr = statusStyleActive.Render(fmt.Sprintf("%s", string(stats.Status)))
+		d.progress.FullColor = string(catpGreen)
+		d.progress.EmptyColor = string(catpSurface0)
 	case common.StatusQueued:
 		statusStr = statusStyleQueued.Render(string(stats.Status))
-		d.progress.FullColor = "4"
-		d.progress.EmptyColor = "236"
+		d.progress.FullColor = string(catpYellow)
+		d.progress.EmptyColor = string(catpSurface0)
 	case common.StatusPaused:
 		statusStr = statusStylePaused.Render(string(stats.Status))
-		d.progress.FullColor = "4"
-		d.progress.EmptyColor = "236"
+		d.progress.FullColor = string(catpPeach)
+		d.progress.EmptyColor = string(catpSurface0)
 	case common.StatusCompleted:
 		statusStr = statusStyleCompleted.Render(string(stats.Status))
-		d.progress.FullColor = "4"
-		d.progress.EmptyColor = "236"
+		d.progress.FullColor = string(catpGreen)
+		d.progress.EmptyColor = string(catpSurface0)
 	case common.StatusFailed, common.StatusCancelled:
 		statusStr = statusStyleFailed.Render(string(stats.Status))
-		d.progress.FullColor = "4"
-		d.progress.EmptyColor = "236"
+		d.progress.FullColor = string(catpRed)
+		d.progress.EmptyColor = string(catpSurface0)
 	default:
 		statusStr = string(stats.Status)
 	}
@@ -97,7 +94,7 @@ func (d *DownloadModel) View() string {
 
 	secondLine := location
 
-	progressBar := customProgressBar(d.progress.Width, stats.Progress/100.0)
+	progressBar := customProgressBar(d.progress.Width, stats.Progress/100.0, lipgloss.Color(d.progress.FullColor), lipgloss.Color(d.progress.EmptyColor))
 
 	var infoLine string
 	if stats.Status == common.StatusActive {
@@ -143,7 +140,7 @@ func formatSpeed(bytesPerSec int64) string {
 }
 
 // Custom progress bar render function
-func customProgressBar(width int, percent float64) string {
+func customProgressBar(width int, percent float64, filledColor, emptyColor lipgloss.Color) string {
 	w := float64(width)
 
 	filled := int(w * percent)
@@ -152,8 +149,8 @@ func customProgressBar(width int, percent float64) string {
 	filledStr := strings.Repeat("█", filled)
 	emptyStr := strings.Repeat("░", empty)
 
-	return progressBarFilledStyle.Render(filledStr) +
-		progressBarEmptyStyle.Render(emptyStr)
+	return progressBarFilledStyle.Foreground(filledColor).Render(filledStr) +
+		progressBarEmptyStyle.Foreground(emptyColor).Render(emptyStr)
 }
 
 // AddDownloadModel represents the add download form
@@ -164,23 +161,15 @@ type AddDownloadModel struct {
 
 // View renders the add download form
 func (a AddDownloadModel) View() string {
-	formWidth := a.width - 10
-	if formWidth < 40 {
-		formWidth = 40
-	}
+	formWidth := a.width - 4
 
-	return lipgloss.NewStyle().
-		Width(formWidth).
-		Padding(1, 2).
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(gruvboxYellow).
-		Render(
-			lipgloss.JoinVertical(
-				lipgloss.Left,
-				formLabelStyle.Render("Enter URL to download:"),
-				a.textInput.View(),
-				"",
-				lipgloss.NewStyle().Foreground(gruvboxFg2).Render("Press Enter to confirm or Esc to cancel"),
-			),
-		)
+	a.textInput.Width = formWidth - 4
+
+	label := formLabelStyle.Render("Enter URL to download:")
+
+	inputField := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(catpPink).Padding(0, 1).Width(formWidth).Render(a.textInput.View())
+
+	instructions := lipgloss.NewStyle().Foreground(catpText).Render("Press Enter to confirm or Esc to cancel")
+
+	return lipgloss.JoinVertical(lipgloss.Left, label, inputField, "", instructions)
 }

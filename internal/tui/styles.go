@@ -4,96 +4,80 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
+// Catppuccin Mocha color palette
 var (
-	gruvboxBg0    = lipgloss.Color("#282828")
-	gruvboxBg1    = lipgloss.Color("#3c3836")
-	gruvboxBg2    = lipgloss.Color("#504945")
-	gruvboxFg0    = lipgloss.Color("#fbf1c7")
-	gruvboxFg1    = lipgloss.Color("#ebdbb2")
-	gruvboxFg2    = lipgloss.Color("#d5c4a1")
-	gruvboxRed    = lipgloss.Color("#fb4934")
-	gruvboxGreen  = lipgloss.Color("#b8bb26")
-	gruvboxYellow = lipgloss.Color("#fabd2f")
-	gruvboxBlue   = lipgloss.Color("#83a598")
-	gruvboxPurple = lipgloss.Color("#d3869b")
-	gruvboxAqua   = lipgloss.Color("#8ec07c")
-	gruvboxOrange = lipgloss.Color("#fe8019")
+	// Base colors
+	catpBase     = lipgloss.Color("#1e1e2e") // Base
+	catpCrust    = lipgloss.Color("#11111b") // Crust (darkest)
+	catpText     = lipgloss.Color("#cdd6f4") // Text
+	catpSubtext0 = lipgloss.Color("#a6adc8") // Subtext 0
+	catpSurface0 = lipgloss.Color("#313244") // Surface 0
+
+	catpPink     = lipgloss.Color("#f5c2e7") // Pink
+	catpMauve    = lipgloss.Color("#cba6f7") // Mauve (purple)
+	catpRed      = lipgloss.Color("#f38ba8") // Red
+	catpMaroon   = lipgloss.Color("#eba0ac") // Maroon
+	catpPeach    = lipgloss.Color("#fab387") // Peach
+	catpYellow   = lipgloss.Color("#f9e2af") // Yellow
+	catpGreen    = lipgloss.Color("#a6e3a1") // Green
+	catpTeal     = lipgloss.Color("#94e2d5") // Teal
+	catpSapphire = lipgloss.Color("#74c7ec") // Sapphire
+	catpBlue     = lipgloss.Color("#89b4fa") // Blue
+	catpLavender = lipgloss.Color("#b4befe") // Lavender
 )
 
 // Styles
 var (
-	// Base application styles
-	appStyle = lipgloss.NewStyle().
-			Background(gruvboxBg0).
-			Foreground(gruvboxFg1)
-
-	// Header styles
 	headerStyle = lipgloss.NewStyle().
 			Bold(true).
-			Foreground(gruvboxYellow).
-			Background(gruvboxBg1).
+			Foreground(catpCrust).
+			Background(catpPink).
 			Padding(1, 2).
 			Width(80).
 			Align(lipgloss.Center)
 
-	// Download item styles
 	downloadItemStyle = lipgloss.NewStyle().
 				Padding(0, 1).
 				Width(80)
 
 	selectedDownloadStyle = lipgloss.NewStyle().
 				Border(lipgloss.RoundedBorder()).
-				BorderForeground(gruvboxYellow).
+				BorderForeground(catpPink).
 				Padding(0, 1)
 
 	progressBarFilledStyle = lipgloss.NewStyle().
-				Foreground(gruvboxGreen)
+				Foreground(catpGreen)
 
 	progressBarEmptyStyle = lipgloss.NewStyle().
-				Foreground(gruvboxBg2)
+				Foreground(catpSurface0)
 
 	statusStyleActive = lipgloss.NewStyle().
-				Foreground(gruvboxGreen).
+				Foreground(catpTeal).
 				Bold(true)
 
 	statusStyleQueued = lipgloss.NewStyle().
-				Foreground(gruvboxYellow).
+				Foreground(catpYellow).
 				Bold(true)
 
 	statusStylePaused = lipgloss.NewStyle().
-				Foreground(gruvboxOrange).
+				Foreground(catpPeach).
 				Bold(true)
 
 	statusStyleCompleted = lipgloss.NewStyle().
-				Foreground(gruvboxBlue).
+				Foreground(catpGreen).
 				Bold(true)
 
 	statusStyleFailed = lipgloss.NewStyle().
-				Foreground(gruvboxRed).
+				Foreground(catpRed).
 				Bold(true)
 
-	// Add download form styles
 	formLabelStyle = lipgloss.NewStyle().
-			Foreground(gruvboxFg0).
+			Foreground(catpSapphire).
 			MarginRight(1)
 
-	formInputStyle = lipgloss.NewStyle().
-			Foreground(gruvboxFg1).
-			Background(gruvboxBg1).
-			Padding(0, 1)
-
-	// Help styles
-	helpStyle = lipgloss.NewStyle().
-			Foreground(gruvboxFg2)
-
-	helpKeyStyle = lipgloss.NewStyle().
-			Foreground(gruvboxYellow).
-			Bold(true)
-
-	// Error message style
 	errorStyle = lipgloss.NewStyle().
-			Foreground(gruvboxBg0).
-			Background(gruvboxRed).
+			Foreground(catpBase).
+			Background(catpRed).
 			Padding(0, 1).
 			Margin(1, 0).
 			Width(80).

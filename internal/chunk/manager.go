@@ -141,7 +141,7 @@ func (m *Manager) CreateChunks(downloadID uuid.UUID, filesize int64, supportsRan
 	}
 
 	// Calculate optimal number of chunks
-	numChunks := calculateOptimalChunkCount(filesize, maxConnections)
+	numChunks := maxConnections
 	chunkSize := filesize / int64(numChunks)
 	logger.Debugf("Calculated %d chunks of ~%d bytes each for file size %d",
 		numChunks, chunkSize, filesize)
@@ -308,27 +308,6 @@ func (m *Manager) CleanupChunks(chunks []*Chunk) error {
 	}
 
 	return lastErr
-}
-
-// calculateOptimalChunkCount calculates the optimal number of chunks based on file size
-func calculateOptimalChunkCount(fileSize int64, maxConnections int) int {
-	if maxConnections > 0 {
-		return maxConnections
-	}
-
-	var chunks int
-	switch {
-	//case fileSize < 10*1024*1024:
-	//	chunks = 2
-	//case fileSize < 100*1024*1024:
-	//	chunks = 4
-	//case fileSize < 1024*1024*1024:
-	//	chunks = 8
-	default:
-		chunks = 16
-	}
-
-	return chunks
 }
 
 // sortChunksByStartByte sorts chunks by their start byte position
