@@ -291,7 +291,7 @@ func (e *Engine) restoreChunks(download *downloader.Download) error {
 			newChunk.ID, newChunk.Status, newChunk.StartByte, newChunk.EndByte, newChunk.Downloaded)
 	}
 
-	download.Chunks = chunks
+	download.AddChunks(chunks...)
 	download.SetProgressFunction()
 	logger.Debugf("All chunks restored for download %s", download.ID)
 
@@ -313,18 +313,18 @@ func (e *Engine) AddDownload(url string, config *downloader.Config) (uuid.UUID, 
 	}
 
 	e.mu.Lock()
-	defer e.mu.Unlock()
-
 	// Check for duplicate URL
 	for _, download := range e.downloads {
+		status := download.GetStatus()
 		if download.URL == url &&
-			download.Status != common.StatusCompleted &&
-			download.Status != common.StatusFailed &&
-			download.Status != common.StatusCancelled {
+			status != common.StatusCompleted &&
+			status != common.StatusFailed &&
+			status != common.StatusCancelled {
 			logger.Warnf("Download already exists for URL: %s", url)
 			return uuid.Nil, ErrDownloadExists
 		}
 	}
+	e.mu.Unlock()
 
 	dConfig := config
 	if dConfig == nil {
@@ -378,7 +378,7 @@ func (e *Engine) AddDownload(url string, config *downloader.Config) (uuid.UUID, 
 		logger.Errorf("Failed to create chunks: %v", err)
 		return uuid.Nil, fmt.Errorf("failed to create chunks: %w", err)
 	}
-	download.Chunks = chunks
+	download.AddChunks(chunks...)
 	logger.Debugf("Created %d chunks for download %s", len(chunks), download.ID)
 
 	logger.Debugf("Saving download %s", download.ID)
@@ -387,20 +387,23 @@ func (e *Engine) AddDownload(url string, config *downloader.Config) (uuid.UUID, 
 		return uuid.Nil, fmt.Errorf("failed to save download: %w", err)
 	}
 
+	e.mu.Lock()
 	e.downloads[download.ID] = download
+	e.mu.Unlock()
 
 	if e.config.AutoStartDownloads {
 		logger.Debugf("Auto-starting download %s", download.ID)
 		e.queueProcessor.EnqueueDownload(download, download.Config.Priority)
 	} else {
 		logger.Debugf("Setting download %s as pending (auto-start disabled)", download.ID)
-		download.Status = common.StatusPending
+		download.SetStatus(common.StatusPending)
 		if err := e.saveDownload(download); err != nil {
 			logger.Warnf("Failed to save download %s: %v", download.ID, err)
 		}
 	}
 
 	logger.Infof("Download added successfully with ID: %s", download.ID)
+
 	return download.ID, nil
 }
 
@@ -445,17 +448,14 @@ func (e *Engine) RemoveDownload(id uuid.UUID, removeFiles bool) error {
 		return ErrEngineNotRunning
 	}
 
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
-	download, ok := e.downloads[id]
-	if !ok {
-		logger.Warnf("Download not found for removal: %s", id)
-		return ErrDownloadNotFound
+	download, err := e.GetDownload(id)
+	if err != nil {
+		logger.Errorf("Failed to get download %s: %v", id, err)
+		return fmt.Errorf("failed to get download: %w", err)
 	}
 
 	// Cancel download if active
-	if download.Status == common.StatusActive {
+	if download.GetStatus() == common.StatusActive {
 		logger.Debugf("Cancelling active download %s before removal", id)
 		err := e.CancelDownload(id, removeFiles)
 		if err != nil {
@@ -479,17 +479,32 @@ func (e *Engine) RemoveDownload(id uuid.UUID, removeFiles bool) error {
 		}
 	}
 
-	if e.repository != nil {
-		logger.Debugf("Deleting download %s from repository", id)
-		if err := e.repository.Delete(id); err != nil && !errors.Is(err, repository.ErrDownloadNotFound) {
-			logger.Errorf("Failed to delete download from repository: %v", err)
-			return fmt.Errorf("failed to delete download from repository: %w", err)
-		}
+	if err := e.deleteDownload(id); err != nil {
+		logger.Errorf("Failed to delete download %s from repository: %v", id, err)
+		return fmt.Errorf("failed to delete download: %w", err)
+	}
+	logger.Infof("Download %s removed successfully", id)
+	return nil
+}
+
+// deleteDownload deletes a download from the engine and repository
+func (e *Engine) deleteDownload(id uuid.UUID) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if e.repository == nil {
+		logger.Debugf("Repository not initialized, skipping download deletion from database")
+		delete(e.downloads, id)
+		return nil
+	}
+
+	logger.Debugf("Deleting download %s from repository", id)
+	if err := e.repository.Delete(id); err != nil && !errors.Is(err, repository.ErrDownloadNotFound) {
+		logger.Errorf("Failed to delete download from repository: %v", err)
+		return fmt.Errorf("failed to delete download from repository: %w", err)
 	}
 
 	delete(e.downloads, id)
-	logger.Infof("Download %s removed successfully", id)
-
 	return nil
 }
 
@@ -505,7 +520,7 @@ func (e *Engine) GetGlobalStats() common.GlobalStats {
 	}
 
 	for _, download := range e.downloads {
-		switch download.Status {
+		switch download.GetStatus() {
 		case common.StatusActive:
 			stats.ActiveDownloads++
 			stats.CurrentConcurrent++
@@ -519,9 +534,9 @@ func (e *Engine) GetGlobalStats() common.GlobalStats {
 			stats.PausedDownloads++
 		}
 
-		stats.TotalDownloaded += download.Downloaded
+		stats.TotalDownloaded += download.GetDownloaded()
 
-		if download.Status == common.StatusActive {
+		if download.GetStatus() == common.StatusActive {
 			dStats := download.GetStats()
 			stats.CurrentSpeed += dStats.Speed
 		}
@@ -554,8 +569,8 @@ func (e *Engine) PauseDownload(id uuid.UUID) error {
 	}
 
 	// Can only pause active downloads
-	if download.Status != common.StatusActive {
-		logger.Debugf("Download %s is not active (status: %s), skipping pause", id, download.Status)
+	if download.GetStatus() != common.StatusActive {
+		logger.Debugf("Download %s is not active, skipping pause", id)
 		return nil
 	}
 
@@ -564,7 +579,7 @@ func (e *Engine) PauseDownload(id uuid.UUID) error {
 		download.CancelFunc()()
 	}
 
-	download.Status = common.StatusPaused
+	download.SetStatus(common.StatusPaused)
 	logger.Debugf("Download %s status set to paused", id)
 
 	if err := e.saveDownload(download); err != nil {
@@ -586,9 +601,10 @@ func (e *Engine) ResumeDownload(ctx context.Context, id uuid.UUID) error {
 		return fmt.Errorf("failed to get download: %w", err)
 	}
 
-	if download.Status != common.StatusPaused && download.Status != common.StatusFailed {
+	downloadStatus := download.GetStatus()
+	if downloadStatus != common.StatusPaused && downloadStatus != common.StatusFailed {
 		logger.Debugf("Download %s is not paused or failed (status: %s), skipping resume",
-			id, download.Status)
+			id, downloadStatus)
 		return nil
 	}
 
@@ -614,7 +630,7 @@ func (e *Engine) CancelDownload(id uuid.UUID, removeFiles bool) error {
 		return fmt.Errorf("failed to get download: %w", err)
 	}
 
-	if download.Status == common.StatusCompleted {
+	if download.GetStatus() == common.StatusCompleted {
 		logger.Debugf("Download %s is already completed, skipping cancellation", id)
 		return nil
 	}
@@ -625,7 +641,7 @@ func (e *Engine) CancelDownload(id uuid.UUID, removeFiles bool) error {
 		download.CancelFunc()()
 	}
 
-	download.Status = common.StatusCancelled
+	download.SetStatus(common.StatusCancelled)
 
 	logger.Debugf("Download %s status set to cancelled", id)
 
@@ -665,7 +681,7 @@ func (e *Engine) StartDownload(ctx context.Context, id uuid.UUID) error {
 	downloadCtx, cancelFunc := context.WithCancel(ctx)
 	download.SetContext(downloadCtx, cancelFunc)
 
-	download.Status = common.StatusActive
+	download.SetStatus(common.StatusActive)
 	download.StartTime = time.Now()
 	logger.Debugf("Download %s status set to active", id)
 
@@ -740,10 +756,10 @@ func (e *Engine) processDownload(download *downloader.Download) {
 		if errors.As(err, &downloadErr) && downloadErr.Category == errors.CategoryContext {
 			if download.GetContextKey("Cancelled") == nil {
 				logger.Infof("Download %s paused due to context cancellation", download.ID)
-				download.Status = common.StatusPaused
+				download.SetStatus(common.StatusPaused)
 			} else {
 				logger.Infof("Download %s cancelled due to context cancellation", download.ID)
-				download.Status = common.StatusCancelled
+				download.SetStatus(common.StatusCancelled)
 			}
 			if saveErr := e.saveDownload(download); saveErr != nil {
 				logger.Errorf("Failed to save download %s after pausing: %s", download.ID, saveErr)
@@ -886,9 +902,8 @@ func (e *Engine) getPendingChunks(download *downloader.Download) []*chunk.Chunk 
 func (e *Engine) handleDownloadFailure(download *downloader.Download, err error) {
 	logger.Errorf("Handling download failure for %s: %v", download.ID, err)
 
-	download.Status = common.StatusFailed
-	download.Error = err
-	download.ErrorMessage = err.Error()
+	download.SetStatus(common.StatusFailed)
+	download.SetError(err)
 
 	if saveErr := e.saveDownload(download); saveErr != nil {
 		logger.Errorf("Failed to save download %s after failure: %s", download.ID, saveErr)
@@ -918,7 +933,7 @@ func (e *Engine) finishDownload(download *downloader.Download) error {
 		return fmt.Errorf("failed to merge chunks: %w", err)
 	}
 
-	download.Status = common.StatusCompleted
+	download.SetStatus(common.StatusCompleted)
 	download.EndTime = time.Now()
 	logger.Debugf("Download %s marked as completed", download.ID)
 
@@ -944,7 +959,7 @@ func (e *Engine) restoreDownloadStates() error {
 	for _, download := range e.downloads {
 		logger.Debugf("Restoring state for download %s with status %s", download.ID, download.Status)
 
-		switch download.Status {
+		switch download.GetStatus() {
 		case common.StatusActive:
 			// Downloads that were active should be paused on restart
 			logger.Debugf("Changing active download %s to paused", download.ID)
@@ -1002,7 +1017,7 @@ func (e *Engine) Shutdown() error {
 	// Get all active downloads while holding the lock
 	activeDownloadIDs := make([]uuid.UUID, 0)
 	for id, download := range e.downloads {
-		if download.Status == common.StatusActive {
+		if download.GetStatus() == common.StatusActive {
 			activeDownloadIDs = append(activeDownloadIDs, id)
 		}
 	}

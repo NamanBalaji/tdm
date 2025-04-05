@@ -32,7 +32,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Set up signal handling for graceful shutdown
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
@@ -46,7 +45,6 @@ func main() {
 		os.Exit(0)
 	}()
 
-	// Start the TUI
 	if err := tui.Run(eng); err != nil {
 		fmt.Printf("Error running TUI: %v\n", err)
 		if err := eng.Shutdown(); err != nil {
@@ -55,7 +53,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	// If TUI exited normally, shutdown the engine
 	if err := eng.Shutdown(); err != nil {
 		fmt.Printf("Error during shutdown: %v\n", err)
 		os.Exit(1)

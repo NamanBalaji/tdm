@@ -58,7 +58,7 @@ type Model struct {
 }
 
 // NewModel creates a new TUI model
-func NewModel(engine *engine.Engine) Model {
+func NewModel(engine *engine.Engine) *Model {
 	s := spinner.New()
 	s.Spinner = spinner.Hamburger
 	s.Style = lipgloss.NewStyle().Foreground(catpBlue)
@@ -69,7 +69,7 @@ func NewModel(engine *engine.Engine) Model {
 	vp := viewport.New(80, 20)
 	vp.Style = lipgloss.NewStyle().Background(catpBase)
 
-	return Model{
+	return &Model{
 		engine:     engine,
 		help:       help,
 		keys:       newKeyMap(),
@@ -93,7 +93,7 @@ func NewModel(engine *engine.Engine) Model {
 }
 
 // Init initializes the TUI model
-func (m Model) Init() tea.Cmd {
+func (m *Model) Init() tea.Cmd {
 	m.addDownload.textInput.Placeholder = "Enter URL to download"
 	m.addDownload.textInput.Focus()
 	m.addDownload.textInput.Width = 60
@@ -107,7 +107,7 @@ func (m Model) Init() tea.Cmd {
 }
 
 // loadDownloads loads existing downloads from the engine
-func (m Model) loadDownloads() tea.Cmd {
+func (m *Model) loadDownloads() tea.Cmd {
 	return func() tea.Msg {
 		downloads := m.engine.ListDownloads()
 		var models []*DownloadModel
@@ -125,7 +125,7 @@ func (m Model) loadDownloads() tea.Cmd {
 }
 
 // Update handles input and updates the model
-func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
 	switch msg := msg.(type) {
@@ -246,7 +246,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m Model) updateDownloadListView(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m *Model) updateDownloadListView(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case key.Matches(msg, m.keys.Add):
 		m.activeView = addDownloadView
@@ -349,7 +349,7 @@ func (m Model) updateDownloadListView(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m Model) updateAddDownloadView(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m *Model) updateAddDownloadView(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case key.Matches(msg, m.keys.Back):
 		m.activeView = downloadListView
@@ -376,7 +376,7 @@ func (m Model) updateAddDownloadView(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 // View renders the TUI
-func (m Model) View() string {
+func (m *Model) View() string {
 	if m.quitting {
 		return "Shutting down TDM...\n"
 	}
@@ -406,7 +406,7 @@ func (m Model) View() string {
 	return lipgloss.Place(termWidth, termHeight, lipgloss.Center, lipgloss.Center, content)
 }
 
-func (m Model) renderDownloadListView(contentWidth int) string {
+func (m *Model) renderDownloadListView(contentWidth int) string {
 	var s strings.Builder
 
 	// Update all styles with current width
@@ -546,7 +546,7 @@ func (m Model) renderDownloadListView(contentWidth int) string {
 	return s.String()
 }
 
-func (m Model) renderAddDownloadView(contentWidth int) string {
+func (m *Model) renderAddDownloadView(contentWidth int) string {
 	var s strings.Builder
 
 	// Update the add download view width
@@ -586,7 +586,7 @@ func (m *Model) showMessage(msg string, color lipgloss.Color) {
 	})
 }
 
-func (m Model) updateDownloadStatuses() tea.Cmd {
+func (m *Model) updateDownloadStatuses() tea.Cmd {
 	return func() tea.Msg {
 		for _, d := range m.downloads {
 			stats := d.download.GetStats()
@@ -601,7 +601,7 @@ func (m Model) updateDownloadStatuses() tea.Cmd {
 	}
 }
 
-func (m Model) updateConfirmCancelView(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m *Model) updateConfirmCancelView(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case key.Matches(msg, m.keys.Back), key.Matches(msg, m.keys.Quit):
 		// User cancelled the operation
@@ -617,7 +617,7 @@ func (m Model) updateConfirmCancelView(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m Model) updateConfirmRemoveView(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m *Model) updateConfirmRemoveView(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case key.Matches(msg, m.keys.Back), key.Matches(msg, m.keys.Quit):
 		// User cancelled the operation

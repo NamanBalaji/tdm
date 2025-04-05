@@ -42,6 +42,59 @@ type Download struct {
 	speedCalculator *SpeedCalculator     `json:"-"`
 }
 
+func (d *Download) SetStatus(status common.Status) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.Status = status
+}
+
+func (d *Download) GetStatus() common.Status {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.Status
+}
+
+func (d *Download) SetError(err error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	d.Error = err
+	d.ErrorMessage = ""
+	if err != nil {
+		d.ErrorMessage = err.Error()
+	}
+}
+
+func (d *Download) GetError() error {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	return d.Error
+}
+
+func (d *Download) GetChunks() []*chunk.Chunk {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	chunks := make([]*chunk.Chunk, len(d.Chunks))
+	copy(chunks, d.Chunks)
+	return chunks
+}
+
+func (d *Download) AddChunks(chunks ...*chunk.Chunk) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	for _, c := range chunks {
+		d.Chunks = append(d.Chunks, c)
+		logger.Debugf("Added chunk %s to download %s", c.ID, d.ID)
+	}
+}
+
+func (d *Download) GetDownloaded() int64 {
+	return atomic.LoadInt64(&d.Downloaded)
+}
+
 // NewDownload creates a new Download instance
 func NewDownload(url, filename string, config *Config) *Download {
 	id := uuid.New()
@@ -224,7 +277,7 @@ func (d *Download) AddProgress(bytes int64) {
 		BytesCompleted: atomic.LoadInt64(&d.Downloaded),
 		TotalBytes:     d.TotalSize,
 		Speed:          d.speedCalculator.GetSpeed(),
-		Status:         d.Status,
+		Status:         d.GetStatus(),
 		Timestamp:      time.Now(),
 	}:
 	default:

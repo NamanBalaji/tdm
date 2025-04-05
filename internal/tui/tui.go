@@ -49,14 +49,9 @@ type (
 func Run(engine *engine.Engine) error {
 	model := NewModel(engine)
 
-	p := tea.NewProgram(
-		model,
-		tea.WithAltScreen(),
-		tea.WithMouseCellMotion(),
-	)
-
+	p := tea.NewProgram(model, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	program = p
-
 	_, err := p.Run()
+
 	return err
 }
