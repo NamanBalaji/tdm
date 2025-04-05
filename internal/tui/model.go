@@ -9,7 +9,6 @@ import (
 
 	"github.com/NamanBalaji/tdm/internal/logger"
 
-	"github.com/NamanBalaji/tdm/internal/common"
 	"github.com/NamanBalaji/tdm/internal/engine"
 	"github.com/charmbracelet/bubbles/help"
 	"github.com/charmbracelet/bubbles/key"
@@ -85,10 +84,10 @@ func NewModel(engine *engine.Engine) Model {
 				Padding(1, 2).
 				BorderStyle(lipgloss.RoundedBorder()).
 				BorderForeground(catpLavender).
-				Width(60).              // Set a fixed width for the modal
+				Width(60). // Set a fixed width for the modal
 				Align(lipgloss.Center). // Center the content horizontally
-				MaxWidth(80).           // Maximum width to prevent overly wide modals
-				MaxHeight(20),          // Maximum height to prevent overly tall modals
+				MaxWidth(80). // Maximum width to prevent overly wide modals
+				MaxHeight(20), // Maximum height to prevent overly tall modals
 		},
 	}
 }
@@ -117,55 +116,11 @@ func (m Model) loadDownloads() tea.Cmd {
 			models = append(models, NewDownloadModel(d))
 		}
 
-		// Sort the downloads
-		sortDownloadModels(models)
+		sort.Slice(models, func(i, j int) bool {
+			return models[j].download.StartTime.After(models[i].download.StartTime)
+		})
 
 		return DownloadsLoadedMsg{Downloads: models}
-	}
-}
-
-// sortDownloadModels sorts downloads with active ones at the top by latest added, then others by latest added
-func sortDownloadModels(downloads []*DownloadModel) {
-	// First separate active and non-active downloads
-	var activeDownloads []*DownloadModel
-	var otherDownloads []*DownloadModel
-
-	for _, d := range downloads {
-		stats := d.download.GetStats()
-		if stats.Status == common.StatusActive {
-			activeDownloads = append(activeDownloads, d)
-		} else {
-			otherDownloads = append(otherDownloads, d)
-		}
-	}
-
-	// Sort active downloads by start time (descending)
-	sort.Slice(activeDownloads, func(i, j int) bool {
-		return activeDownloads[i].download.StartTime.After(activeDownloads[j].download.StartTime)
-	})
-
-	// Sort other downloads by start time (descending)
-	sort.Slice(otherDownloads, func(i, j int) bool {
-		return otherDownloads[i].download.StartTime.After(otherDownloads[j].download.StartTime)
-	})
-
-	// Clear the downloads slice and replace with sorted downloads
-	if len(downloads) > 0 {
-		// First, create a new slice with the correct sorted content
-		sortedDownloads := make([]*DownloadModel, 0, len(downloads))
-		sortedDownloads = append(sortedDownloads, activeDownloads...)
-		sortedDownloads = append(sortedDownloads, otherDownloads...)
-
-		// Then, copy the sorted content into the original slice
-		copy(downloads, sortedDownloads)
-
-		// If the original slice is larger than the sorted content, truncate it
-		if len(sortedDownloads) < len(downloads) {
-			for i := len(sortedDownloads); i < len(downloads); i++ {
-				downloads[i] = nil
-			}
-			downloads = downloads[:len(sortedDownloads)]
-		}
 	}
 }
 
@@ -220,8 +175,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case DownloadsLoadedMsg:
 		m.downloads = msg.Downloads
 
-		sortDownloadModels(m.downloads)
-
 		for _, d := range m.downloads {
 			d.width = min(m.width-10, 90)
 		}
@@ -236,23 +189,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-		sortDownloadModels(m.downloads)
-
 		return m, nil
 
 	case DownloadAddedMsg:
 		newDownload := NewDownloadModel(msg.Download)
 		newDownload.width = min(m.width-10, 90)
+
 		m.downloads = append(m.downloads, newDownload)
-
-		sortDownloadModels(m.downloads)
-
-		for i, d := range m.downloads {
-			if d.download.ID == msg.Download.ID {
-				m.selectedIdx = i
-				break
-			}
-		}
+		m.selectedIdx = 0
 
 		m.activeView = downloadListView
 		m.errorMsg = ""
@@ -564,11 +508,11 @@ func (m Model) renderDownloadListView(contentWidth int) string {
 			var downloadView string
 
 			if i == m.selectedIdx {
-				downloadView = selectedDownloadStyle.Copy().
+				downloadView = selectedDownloadStyle.
 					Width(contentWidth).
 					Render(download.View())
 			} else {
-				downloadView = downloadItemStyle.Copy().
+				downloadView = downloadItemStyle.
 					Width(contentWidth).
 					Render(download.View())
 			}
@@ -644,9 +588,6 @@ func (m *Model) showMessage(msg string, color lipgloss.Color) {
 
 func (m Model) updateDownloadStatuses() tea.Cmd {
 	return func() tea.Msg {
-		// Sort downloads before updating
-		sortDownloadModels(m.downloads)
-
 		for _, d := range m.downloads {
 			stats := d.download.GetStats()
 			d.Update(StatusUpdateMsg{
