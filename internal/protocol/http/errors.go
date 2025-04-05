@@ -3,6 +3,7 @@ package http
 import (
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"strings"
@@ -12,8 +13,9 @@ import (
 
 // Common HTTP error constants
 var (
-	ErrHeadNotSupported   = errors.New("HEAD method not supported by server")
-	ErrRangesNotSupported = errors.New("byte ranges not supported by server")
+	ErrHeadNotSupported    = errors.New("HEAD method not supported by server")
+	ErrRangesNotSupported  = errors.New("byte ranges not supported by server")
+	ErrInvalidContentRange = errors.New("invalid content range")
 )
 
 // ClassifyHTTPError converts an HTTP status code into an appropriate error
@@ -70,6 +72,10 @@ func ClassifyError(err error, url string) error {
 		return errors.NewContextError(err, url)
 	}
 
+	if errors.Is(err, io.EOF) {
+		return errors.NewHTTPError(errors.ErrEndOfFIle, url, http.StatusMethodNotAllowed)
+	}
+
 	var netErr net.Error
 	if errors.As(err, &netErr) {
 		if netErr.Timeout() {
@@ -111,5 +117,5 @@ func ClassifyError(err error, url string) error {
 
 // IsFallbackError determines if an error triggers a fallback mechanism
 func IsFallbackError(err error) bool {
-	return errors.Is(err, ErrHeadNotSupported) || errors.Is(err, ErrRangesNotSupported)
+	return errors.Is(err, ErrHeadNotSupported) || errors.Is(err, ErrRangesNotSupported) || errors.Is(err, errors.ErrEndOfFIle)
 }

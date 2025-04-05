@@ -81,10 +81,16 @@ func (c *Chunk) Download(ctx context.Context) error {
 	}
 	defer file.Close()
 
-	if c.Downloaded > 0 {
+	if c.Downloaded > 0 && !c.SequentialDownload {
 		logger.Debugf("Chunk %s resuming from offset %d", c.ID, c.Downloaded)
 		if _, err := file.Seek(c.Downloaded, 0); err != nil {
 			logger.Errorf("Failed to seek to position %d in file: %v", c.Downloaded, err)
+			return c.handleError(err)
+		}
+	} else {
+		logger.Debugf("Chunk %s starting from beginning", c.ID)
+		if _, err := file.Seek(0, 0); err != nil {
+			logger.Errorf("Failed to seek to beginning of file: %v", err)
 			return c.handleError(err)
 		}
 	}

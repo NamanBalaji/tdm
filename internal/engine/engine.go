@@ -621,10 +621,12 @@ func (e *Engine) CancelDownload(id uuid.UUID, removeFiles bool) error {
 
 	logger.Debugf("Cancelling context for download %s", id)
 	if download.CancelFunc() != nil {
+		download.SetContextKey("Cancelled", true)
 		download.CancelFunc()()
 	}
 
 	download.Status = common.StatusCancelled
+
 	logger.Debugf("Download %s status set to cancelled", id)
 
 	if removeFiles {
@@ -736,8 +738,13 @@ func (e *Engine) processDownload(download *downloader.Download) {
 	if err != nil {
 		var downloadErr *errors.DownloadError
 		if errors.As(err, &downloadErr) && downloadErr.Category == errors.CategoryContext {
-			logger.Infof("Download %s paused due to context cancellation", download.ID)
-			download.Status = common.StatusPaused
+			if download.GetContextKey("Cancelled") == nil {
+				logger.Infof("Download %s paused due to context cancellation", download.ID)
+				download.Status = common.StatusPaused
+			} else {
+				logger.Infof("Download %s cancelled due to context cancellation", download.ID)
+				download.Status = common.StatusCancelled
+			}
 			if saveErr := e.saveDownload(download); saveErr != nil {
 				logger.Errorf("Failed to save download %s after pausing: %s", download.ID, saveErr)
 			}
@@ -832,7 +839,7 @@ func (e *Engine) downloadChunk(ctx context.Context, download *downloader.Downloa
 	}
 
 	logger.Debugf("Creating connection for chunk %s", chunk.ID)
-	conn, err := handler.CreateConnection(ctx, download.URL, chunk, download.Config)
+	conn, err := handler.CreateConnection(download.URL, chunk, download.Config)
 	if err != nil {
 		logger.Errorf("Failed to create connection for chunk %s: %v", chunk.ID, err)
 		chunk.Status = common.StatusFailed
