@@ -839,7 +839,7 @@ func (e *Engine) downloadChunk(ctx context.Context, download *downloader.Downloa
 	}
 
 	logger.Debugf("Creating connection for chunk %s", chunk.ID)
-	conn, err := handler.CreateConnection(ctx, download.URL, chunk, download.Config)
+	conn, err := handler.CreateConnection(download.URL, chunk, download.Config)
 	if err != nil {
 		logger.Errorf("Failed to create connection for chunk %s: %v", chunk.ID, err)
 		chunk.Status = common.StatusFailed

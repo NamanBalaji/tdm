@@ -104,25 +104,6 @@ func (m *Manager) CreateChunks(downloadID uuid.UUID, filesize int64, supportsRan
 		return nil, fmt.Errorf("failed to create temp directory: %w", err)
 	}
 
-	// Handle empty or unknown size files
-	if filesize <= 0 {
-		logger.Debugf("File size is %d, creating a single empty chunk", filesize)
-		chunk := NewChunk(downloadID, 0, 0, progressFn)
-		chunk.TempFilePath = filepath.Join(downloadTempDir, chunk.ID.String())
-
-		logger.Debugf("Creating empty file for chunk: %s", chunk.TempFilePath)
-		emptyFile, err := os.Create(chunk.TempFilePath)
-		if err != nil {
-			logger.Errorf("Failed to create empty chunk file: %v", err)
-			return nil, fmt.Errorf("failed to create empty chunk file: %w", err)
-		}
-		emptyFile.Close()
-
-		chunk.Status = common.StatusCompleted // Auto-complete empty files
-		logger.Debugf("Created single empty chunk with ID: %s", chunk.ID)
-		return []*Chunk{chunk}, nil
-	}
-
 	// Handle small files or servers that don't support range requests
 	if !supportsRange || filesize < MinChunkSize {
 		logger.Debugf("Creating single chunk for download: supportsRange=%v, fileSize=%d",

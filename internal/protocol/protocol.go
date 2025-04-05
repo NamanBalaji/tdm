@@ -20,7 +20,7 @@ type Protocol interface {
 	// Initialize gathers information about the download resource
 	Initialize(ctx context.Context, url string, config *downloader.Config) (*common.DownloadInfo, error)
 	// CreateConnection creates a new connection for chunk download
-	CreateConnection(ctx context.Context, urlStr string, chunk *chunk.Chunk, downloadConfig *downloader.Config) (connection.Connection, error)
+	CreateConnection(urlStr string, chunk *chunk.Chunk, downloadConfig *downloader.Config) (connection.Connection, error)
 }
 
 type Handler struct {

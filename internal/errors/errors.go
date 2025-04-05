@@ -67,6 +67,7 @@ var (
 	ErrResourceNotFound    = New("resource not found")
 	ErrAccessDenied        = New("access denied")
 	ErrAuthentication      = New("authentication required")
+	ErrEndOfFIle           = New("end of file reached")
 )
 
 // NewNetworkError creates a network-related error
