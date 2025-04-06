@@ -7,14 +7,12 @@ import (
 
 	"github.com/NamanBalaji/tdm/internal/logger"
 
-	"github.com/NamanBalaji/tdm/internal/common"
-	"github.com/NamanBalaji/tdm/internal/downloader"
 	"github.com/google/uuid"
 )
 
 // PrioritizedDownload represents a download with its priority in the queue
 type PrioritizedDownload struct {
-	Download *downloader.Download
+	Id       uuid.UUID
 	Priority int
 }
 
@@ -25,20 +23,16 @@ type QueueProcessor struct {
 	queuedDownloads []*PrioritizedDownload
 	activeDownloads map[uuid.UUID]struct{}
 
-	startDownloadFn func(context.Context, *downloader.Download) error
+	startDownloadFn func(id uuid.UUID) error
 
 	completionCh chan uuid.UUID
 
-	ctx  context.Context
 	done chan struct{}
 	mu   sync.Mutex
 }
 
 // NewQueueProcessor creates a new queue processor
-func NewQueueProcessor(
-	maxConcurrent int,
-	startDownloadFn func(context.Context, *downloader.Download) error,
-) *QueueProcessor {
+func NewQueueProcessor(maxConcurrent int, startDownloadFn func(id uuid.UUID) error) *QueueProcessor {
 	logger.Debugf("Creating new queue processor with maxConcurrent=%d", maxConcurrent)
 
 	return &QueueProcessor{
@@ -54,8 +48,7 @@ func NewQueueProcessor(
 // Start begins queue processing
 func (q *QueueProcessor) Start(ctx context.Context) {
 	logger.Debugf("Starting queue processor")
-	q.ctx = ctx
-	go q.processQueue()
+	go q.processQueue(ctx)
 }
 
 // Stop stops the queue processor
@@ -65,7 +58,7 @@ func (q *QueueProcessor) Stop() {
 }
 
 // processQueue is the main loop that handles queue events
-func (q *QueueProcessor) processQueue() {
+func (q *QueueProcessor) processQueue(ctx context.Context) {
 	logger.Debugf("Queue processor main loop started")
 
 	for {
@@ -73,7 +66,7 @@ func (q *QueueProcessor) processQueue() {
 		case completedID := <-q.completionCh:
 			logger.Debugf("Queue processor received completion notification for download %s", completedID)
 			q.handleDownloadCompletion(completedID)
-		case <-q.ctx.Done():
+		case <-ctx.Done():
 			logger.Debugf("Queue processor stopping due to context cancellation")
 			return
 		case <-q.done:
@@ -84,21 +77,18 @@ func (q *QueueProcessor) processQueue() {
 }
 
 // EnqueueDownload adds a download to the queue
-func (q *QueueProcessor) EnqueueDownload(download *downloader.Download, priority int) {
-	logger.Infof("Enqueueing download %s with priority %d", download.ID, priority)
+func (q *QueueProcessor) EnqueueDownload(id uuid.UUID, priority int) {
+	logger.Infof("Enqueueing download %s with priority %d", id, priority)
 
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
-	download.Status = common.StatusQueued
-	logger.Debugf("Setting download %s status to %s", download.ID, download.Status)
-
 	q.queuedDownloads = append(q.queuedDownloads, &PrioritizedDownload{
-		Download: download,
+		Id:       id,
 		Priority: priority,
 	})
 
-	logger.Infof("Enqueued download %s: %s", download.ID, download.URL)
+	logger.Infof("Enqueued download_id: %s", id)
 	q.sortQueue()
 
 	currentActive := len(q.activeDownloads)
@@ -150,8 +140,7 @@ func (q *QueueProcessor) sortQueue() {
 		// Log the highest priority downloads for debugging
 		maxToLog := min(3, len(q.queuedDownloads))
 		for i := 0; i < maxToLog; i++ {
-			logger.Debugf("Queue position %d: download=%s, priority=%d",
-				i+1, q.queuedDownloads[i].Download.ID, q.queuedDownloads[i].Priority)
+			logger.Debugf("Queue position %d: download_id=%s, priority=%d", i+1, q.queuedDownloads[i], q.queuedDownloads[i].Priority)
 		}
 	}
 }
@@ -177,25 +166,22 @@ func (q *QueueProcessor) fillAvailableSlots() {
 
 	for i := 0; i < toStart; i++ {
 		pd := q.queuedDownloads[0]
-		downloadID := pd.Download.ID
 		priority := pd.Priority
 
-		logger.Debugf("Dequeuing download %s (priority %d) for start", downloadID, priority)
+		logger.Debugf("Dequeuing download %s (priority %d) for start", pd.Id, priority)
 		q.queuedDownloads = q.queuedDownloads[1:]
-		q.activeDownloads[downloadID] = struct{}{}
-		logger.Debugf("Added download %s to active downloads map", downloadID)
+		q.activeDownloads[pd.Id] = struct{}{}
+		logger.Debugf("Added download %s to active downloads map", pd.Id)
 
-		download := pd.Download
 		go func() {
-			logger.Debugf("Starting download %s", download.ID)
-			err := q.startDownloadFn(q.ctx, download)
+			logger.Debugf("Starting download %s", pd.Id)
+			err := q.startDownloadFn(pd.Id)
 			if err != nil {
-				logger.Errorf("Download %s failed to start: %v", download.ID, err)
-				q.NotifyDownloadCompletion(download.ID)
+				logger.Errorf("Download %s failed to start: %v", pd.Id, err)
+				q.NotifyDownloadCompletion(pd.Id)
 			}
 		}()
 	}
 
-	logger.Debugf("After filling slots: active=%d, queued=%d",
-		len(q.activeDownloads), len(q.queuedDownloads))
+	logger.Debugf("After filling slots: active=%d, queued=%d", len(q.activeDownloads), len(q.queuedDownloads))
 }

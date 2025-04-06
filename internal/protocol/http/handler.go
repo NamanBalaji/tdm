@@ -141,6 +141,7 @@ func (h *Handler) Initialize(ctx context.Context, urlStr string, config *downloa
 }
 
 func (h *Handler) CreateConnection(urlString string, chunk *chunk.Chunk, downloadConfig *downloader.Config) (connection.Connection, error) {
+	// @TODO: Connection Reuse
 	logger.Debugf("Creating connection for chunk %s (bytes %d-%d, downloaded: %d)",
 		chunk.ID, chunk.StartByte, chunk.EndByte, chunk.Downloaded)
 

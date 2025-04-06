@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -102,45 +103,8 @@ func (r *BboltRepository) Save(download *downloader.Download) error {
 	})
 }
 
-// Find retrieves a download by ID
-func (r *BboltRepository) Find(id uuid.UUID) (*downloader.Download, error) {
-	if id == uuid.Nil {
-		return nil, errors.New("download ID cannot be empty")
-	}
-
-	var data []byte
-	err := r.db.View(func(tx *bbolt.Tx) error {
-		bucket := tx.Bucket([]byte(downloadsBucket))
-		if bucket == nil {
-			return fmt.Errorf("bucket not found: %s", downloadsBucket)
-		}
-
-		// Get data from the database
-		data = bucket.Get([]byte(id.String()))
-		if data == nil {
-			return ErrDownloadNotFound
-		}
-
-		return nil
-	})
-
-	if err != nil {
-		return nil, err
-	}
-
-	download := &downloader.Download{}
-
-	if err := json.Unmarshal(data, download); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal download: %w", err)
-	}
-
-	download.RestoreFromSerialization()
-
-	return download, nil
-}
-
 // FindAll retrieves all downloads
-func (r *BboltRepository) FindAll() ([]*downloader.Download, error) {
+func (r *BboltRepository) FindAll(ctx context.Context) ([]*downloader.Download, error) {
 	var downloads []*downloader.Download
 
 	err := r.db.View(func(tx *bbolt.Tx) error {
@@ -156,7 +120,7 @@ func (r *BboltRepository) FindAll() ([]*downloader.Download, error) {
 				return fmt.Errorf("failed to unmarshal download: %w", err)
 			}
 
-			download.RestoreFromSerialization()
+			download.RestoreFromSerialization(ctx)
 
 			downloads = append(downloads, download)
 			return nil

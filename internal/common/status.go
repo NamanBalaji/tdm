@@ -1,14 +1,14 @@
 package common
 
-type Status string
+type Status = int32
 
 const (
-	StatusPending   Status = "pending"
-	StatusActive    Status = "active"
-	StatusPaused    Status = "paused"
-	StatusCompleted Status = "completed"
-	StatusFailed    Status = "failed"
-	StatusQueued    Status = "queued"
-	StatusMerging   Status = "merging"
-	StatusCancelled Status = "cancelled"
+	StatusPending Status = iota
+	StatusActive
+	StatusPaused
+	StatusCompleted
+	StatusFailed
+	StatusQueued
+	StatusMerging
+	StatusCancelled
 )

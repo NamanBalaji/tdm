@@ -1,8 +1,8 @@
 package tui
 
 import (
-	"context"
 	"fmt"
+	"github.com/NamanBalaji/tdm/internal/common"
 	"sort"
 	"strings"
 	"time"
@@ -84,10 +84,10 @@ func NewModel(engine *engine.Engine) *Model {
 				Padding(1, 2).
 				BorderStyle(lipgloss.RoundedBorder()).
 				BorderForeground(catpLavender).
-				Width(60). // Set a fixed width for the modal
+				Width(60).              // Set a fixed width for the modal
 				Align(lipgloss.Center). // Center the content horizontally
-				MaxWidth(80). // Maximum width to prevent overly wide modals
-				MaxHeight(20), // Maximum height to prevent overly tall modals
+				MaxWidth(80).           // Maximum width to prevent overly wide modals
+				MaxHeight(20),          // Maximum height to prevent overly tall modals
 		},
 	}
 }
@@ -234,7 +234,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.spinner, cmd = m.spinner.Update(msg)
 
 		for _, d := range m.downloads {
-			if d.download.Status == "active" {
+			if d.download.GetStatus() == common.StatusActive {
 				d.spinner, _ = d.spinner.Update(msg)
 			}
 		}
@@ -670,7 +670,7 @@ func pauseDownload(e *engine.Engine, id uuid.UUID) tea.Cmd {
 
 func resumeDownload(e *engine.Engine, id uuid.UUID) tea.Cmd {
 	return func() tea.Msg {
-		err := e.ResumeDownload(context.Background(), id)
+		err := e.ResumeDownload(id)
 		if err != nil {
 			return ErrorMsg{Error: err}
 		}

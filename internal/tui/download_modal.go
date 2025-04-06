@@ -67,27 +67,31 @@ func (d *DownloadModel) View() string {
 	var statusStr string
 	switch stats.Status {
 	case common.StatusActive:
-		statusStr = statusStyleActive.Render(string(stats.Status))
+		statusStr = statusStyleActive.Render("active")
 		d.progress.FullColor = string(catpGreen)
 		d.progress.EmptyColor = string(catpSurface0)
 	case common.StatusQueued:
-		statusStr = statusStyleQueued.Render(string(stats.Status))
+		statusStr = statusStyleQueued.Render("queued")
 		d.progress.FullColor = string(catpYellow)
 		d.progress.EmptyColor = string(catpSurface0)
 	case common.StatusPaused:
-		statusStr = statusStylePaused.Render(string(stats.Status))
+		statusStr = statusStylePaused.Render("paused")
 		d.progress.FullColor = string(catpPeach)
 		d.progress.EmptyColor = string(catpSurface0)
 	case common.StatusCompleted:
-		statusStr = statusStyleCompleted.Render(string(stats.Status))
+		statusStr = statusStyleCompleted.Render("completed")
 		d.progress.FullColor = string(catpGreen)
 		d.progress.EmptyColor = string(catpSurface0)
-	case common.StatusFailed, common.StatusCancelled:
-		statusStr = statusStyleFailed.Render(string(stats.Status))
+	case common.StatusCancelled:
+		statusStr = statusStyleFailed.Render("cancelled")
+		d.progress.FullColor = string(catpRed)
+		d.progress.EmptyColor = string(catpSurface0)
+	case common.StatusFailed:
+		statusStr = statusStyleFailed.Render("failed")
 		d.progress.FullColor = string(catpRed)
 		d.progress.EmptyColor = string(catpSurface0)
 	default:
-		statusStr = string(stats.Status)
+		statusStr = "unknown"
 	}
 
 	firstLine := fmt.Sprintf("%-30s  %s", filename, statusStr)
