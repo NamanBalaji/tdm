@@ -83,7 +83,7 @@ func New(config *Config) (*Engine, error) {
 	}
 
 	protocolHandler := protocol.NewHandler()
-	connectionPool := connection.NewPool(10, 5*time.Minute)
+	connectionPool := connection.NewPool(16, 5*time.Minute)
 	chunkManager, err := chunk.NewManager(config.TempDir)
 	if err != nil {
 		logger.Errorf("Failed to create chunk manager: %v", err)
@@ -819,17 +819,18 @@ func (e *Engine) downloadChunk(ctx context.Context, download *downloader.Downloa
 		return errors.NewNetworkError(err, download.URL, false)
 	}
 
-	logger.Debugf("Creating connection for chunk %s", chunk.ID)
-	conn, err := handler.CreateConnection(download.URL, chunk, download.Config)
+	conn, err := e.getConnection(ctx, download.URL, download.Config.Headers, chunk, handler, download.Config)
 	if err != nil {
-		logger.Errorf("Failed to create connection for chunk %s: %v", chunk.ID, err)
+		if errors.Is(err, context.Canceled) {
+			logger.Debugf("Download of chunk %s cancelled due to context", chunk.ID)
+			return errors.NewContextError(err, download.URL)
+		}
+		logger.Errorf("Failed to get connection for chunk %s: %v", chunk.ID, err)
 		chunk.Status = common.StatusFailed
 		chunk.Error = err
-		return err // Already classified by protocol handler
+		return err
 	}
 
-	logger.Debugf("Registering connection for chunk %s with connection pool", chunk.ID)
-	e.connectionPool.RegisterConnection(conn)
 	defer e.connectionPool.ReleaseConnection(conn)
 
 	chunk.Connection = conn
@@ -849,6 +850,59 @@ func (e *Engine) downloadChunk(ctx context.Context, download *downloader.Downloa
 
 	logger.Debugf("Chunk %s downloaded successfully", chunk.ID)
 	return nil
+}
+
+// getConnection retrieves a connection from the pool or creates a new one
+func (e *Engine) getConnection(ctx context.Context, url string, header map[string]string, chunk *chunk.Chunk, handler protocol.Protocol, config *downloader.Config) (connection.Connection, error) {
+	var conn connection.Connection
+
+	ticker := time.NewTicker(200 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		maxConnReached := false
+		select {
+		case <-ctx.Done():
+			logger.Debugf("Context cancelled, stopping connection retrieval")
+			return nil, ctx.Err()
+		case <-ticker.C:
+			c, m, err := e.connectionPool.GetConnection(url, header)
+			maxConnReached = m
+			conn = c
+			if err != nil {
+				logger.Errorf("Error retrieving connection from pool: %v", err)
+				return nil, err
+			}
+		}
+		if !maxConnReached {
+			break
+		}
+	}
+
+	if conn == nil {
+		logger.Debugf("No connection available in pool, creating new one for chunk %s", chunk.ID)
+		conn, err := handler.CreateConnection(url, chunk, config)
+		if err != nil {
+			return nil, err
+		}
+
+		e.connectionPool.RegisterConnection(conn)
+		return conn, nil
+	}
+
+	logger.Debugf("Reusing connection from pool for chunk %s", chunk.ID)
+
+	// Update the range header for this specific chunk
+	currentStart := chunk.StartByte + chunk.Downloaded
+	conn.SetHeader("Range", fmt.Sprintf("bytes=%d-%d", currentStart, chunk.EndByte))
+
+	if err := conn.Reset(ctx); err != nil {
+		logger.Warnf("Failed to reset reused connection, creating new one: %v", err)
+		e.connectionPool.ReleaseConnection(conn)
+
+		return e.getConnection(ctx, url, header, chunk, handler, config)
+	}
+
+	return conn, nil
 }
 
 // getPendingChunks returns chunks that need downloading

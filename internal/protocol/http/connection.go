@@ -20,6 +20,19 @@ type Connection struct {
 	initialized bool
 }
 
+func NewConnection(url string, headers map[string]string, client *http.Client,
+	startByte, endByte int64) *Connection {
+	return &Connection{
+		url:       url,
+		headers:   copyHeaders(headers),
+		client:    client,
+		startByte: startByte,
+		endByte:   endByte,
+		timeout:   30 * time.Second,
+	}
+
+}
+
 func (c *Connection) Connect(ctx context.Context) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.url, http.NoBody)
 	if err != nil {
@@ -108,4 +121,24 @@ func (c *Connection) GetURL() string {
 
 func (c *Connection) GetHeaders() map[string]string {
 	return c.headers
+}
+
+// SetHeader sets a specific header value
+func (c *Connection) SetHeader(key, value string) {
+	if c.headers == nil {
+		c.headers = make(map[string]string)
+	}
+	c.headers[key] = value
+}
+
+func copyHeaders(headers map[string]string) map[string]string {
+	if headers == nil {
+		return nil
+	}
+
+	headerCopy := make(map[string]string, len(headers))
+	for k, v := range headers {
+		headerCopy[k] = v
+	}
+	return headerCopy
 }

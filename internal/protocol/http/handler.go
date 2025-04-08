@@ -141,31 +141,24 @@ func (h *Handler) Initialize(ctx context.Context, urlStr string, config *downloa
 }
 
 func (h *Handler) CreateConnection(urlString string, chunk *chunk.Chunk, downloadConfig *downloader.Config) (connection.Connection, error) {
-	// @TODO: Connection Reuse
 	logger.Debugf("Creating connection for chunk %s (bytes %d-%d, downloaded: %d)",
 		chunk.ID, chunk.StartByte, chunk.EndByte, chunk.Downloaded)
 
-	conn := &Connection{
-		url:       urlString,
-		headers:   make(map[string]string),
-		client:    h.client,
-		startByte: chunk.StartByte + chunk.Downloaded, // Resume from where we left off
-		endByte:   chunk.EndByte,
-		timeout:   defaultReadTimeout,
-	}
+	headers := make(map[string]string)
+	headers["User-Agent"] = defaultUserAgent
 
-	conn.headers["User-Agent"] = defaultUserAgent
-
-	rangeHeader := fmt.Sprintf("bytes=%d-%d", conn.startByte, chunk.EndByte)
-	conn.headers["Range"] = rangeHeader
-	logger.Debugf("Set Range header: %s for chunk %s", rangeHeader, chunk.ID)
-
+	// Add custom headers if provided
 	if downloadConfig != nil && downloadConfig.Headers != nil {
 		for key, value := range downloadConfig.Headers {
-			conn.headers[key] = value
+			headers[key] = value
 			logger.Debugf("Added custom header: %s for chunk %s", key, chunk.ID)
 		}
 	}
+	startByte := chunk.StartByte + chunk.Downloaded
+	endByte := chunk.EndByte
+	headers["Range"] = fmt.Sprintf("bytes=%d-%d", startByte, chunk.EndByte)
+
+	conn := NewConnection(urlString, headers, h.client, startByte, endByte)
 
 	return conn, nil
 }

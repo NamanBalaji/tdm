@@ -1,11 +1,9 @@
 package connection
 
 import (
-	"context"
-	"crypto/md5"
-	"encoding/hex"
 	"fmt"
-	"reflect"
+	"net/url"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -13,360 +11,440 @@ import (
 	"github.com/NamanBalaji/tdm/internal/logger"
 )
 
-// Pool is a struct that provides a reusable connection pool
-type Pool struct {
-	available    map[string][]Connection
-	inUse        map[string][]Connection
-	lastActivity map[uintptr]time.Time
-	stats        PoolStats
-
-	maxIdlePerHost int
-	maxIdleTime    time.Duration
-
-	mu sync.Mutex
-
-	cleanupDone   chan struct{}
-	cleanupCancel chan struct{}
-}
-
-// PoolStats contains statistics about the connection pool
+// PoolStats tracks statistics about the connection pool
 type PoolStats struct {
-	TotalConnections   int
-	ActiveConnections  int
-	IdleConnections    int
+	TotalConnections   int64
+	ActiveConnections  int64
+	IdleConnections    int64
 	ConnectionsCreated int64
 	ConnectionsReused  int64
 	MaxIdleConnections int
-	ConnectTimeouts    int64
-	ReadTimeouts       int64
+	ConnectionTimeouts int64
+	ConnectionFailures int64
+	AverageConnectTime int64 // in milliseconds
+}
+
+// Pool manages a pool of reusable connections
+type Pool struct {
+	mu              sync.RWMutex
+	hostConnections map[string][]*ManagedConnection
+	maxPerHost      int
+	maxIdleTime     time.Duration
+	maxLifetime     time.Duration
+	stats           PoolStats
+	cleanupTicker   *time.Ticker
+	done            chan struct{}
+}
+
+// ManagedConnection wraps a connection with metadata
+type ManagedConnection struct {
+	conn       Connection
+	url        string
+	host       string
+	path       string
+	headers    map[string]string
+	createdAt  time.Time
+	lastUsedAt time.Time
+	totalBytes int64
+	inUse      bool
 }
 
 // NewPool creates a new connection pool
-func NewPool(maxIdlePerHost int, maxIdleTime time.Duration) *Pool {
-	logger.Debugf("Creating new connection pool: maxIdlePerHost=%d, maxIdleTime=%v",
-		maxIdlePerHost, maxIdleTime)
+func NewPool(maxPerHost int, maxIdleTime time.Duration) *Pool {
+	if maxPerHost <= 0 {
+		maxPerHost = 10
+	}
+	if maxIdleTime <= 0 {
+		maxIdleTime = 5 * time.Minute
+	}
 
 	pool := &Pool{
-		available:      make(map[string][]Connection),
-		inUse:          make(map[string][]Connection),
-		lastActivity:   make(map[uintptr]time.Time),
-		maxIdlePerHost: maxIdlePerHost,
-		maxIdleTime:    maxIdleTime,
-		cleanupDone:    make(chan struct{}),
-		cleanupCancel:  make(chan struct{}),
+		hostConnections: make(map[string][]*ManagedConnection),
+		maxPerHost:      maxPerHost,
+		maxIdleTime:     maxIdleTime,
+		maxLifetime:     30 * time.Minute,
+		done:            make(chan struct{}),
 		stats: PoolStats{
-			MaxIdleConnections: maxIdlePerHost,
+			MaxIdleConnections: maxPerHost,
 		},
 	}
 
-	logger.Debugf("Starting connection pool cleanup goroutine")
-	go pool.cleanup()
+	// Start the cleanup goroutine
+	pool.cleanupTicker = time.NewTicker(2 * time.Minute)
+	go pool.periodicCleanup()
 
-	logger.Debugf("Connection pool created successfully")
+	logger.Infof("Connection pool created with maxPerHost=%d, maxIdleTime=%v", maxPerHost, maxIdleTime)
 	return pool
 }
 
-// GetConnection retrieves a connection from the pool if available
-// in case no suitable connection is found, it returns nil
-// the caller is expected to create a new connection and register it with RegisterConnection
-func (p *Pool) GetConnection(ctx context.Context, url string, headers map[string]string) (Connection, error) {
-	key := hashConnection(url, headers)
-	logger.Debugf("Getting connection for key: %s", key)
+// periodicCleanup removes idle connections periodically
+func (p *Pool) periodicCleanup() {
+	for {
+		select {
+		case <-p.cleanupTicker.C:
+			p.CleanupIdleConnections()
+		case <-p.done:
+			return
+		}
+	}
+}
+
+// GetConnection gets a connection for the specified URL and headers
+func (p *Pool) GetConnection(urlStr string, headers map[string]string) (Connection, bool, error) {
+	u, err := url.Parse(urlStr)
+	if err != nil {
+		logger.Warnf("Failed to parse URL for connection: %v", err)
+		return nil, false, fmt.Errorf("invalid URL: %w", err)
+	}
+
+	host := u.Hostname()
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	connections, ok := p.available[key]
-	if !ok || len(connections) == 0 {
-		logger.Debugf("No available connections for key %s", key)
-		// no available connections
-		return nil, nil
+	connections, exists := p.hostConnections[host]
+	if !exists || len(connections) == 0 {
+		logger.Debugf("No connections found for host %s", host)
+		return nil, false, nil
 	}
 
-	lastIdx := len(connections) - 1
-	conn := connections[lastIdx]
-	logger.Debugf("Found available connection for key %s", key)
+	now := time.Now()
+	logger.Debugf("Looking for available connection to %s among %d connections", host, len(connections))
 
-	p.available[key] = connections[:lastIdx]
-	p.inUse[key] = append(p.inUse[key], conn)
+	// First, clean up any dead connections to ensure an accurate count
+	activeConnections := make([]*ManagedConnection, 0, len(connections))
+	for _, managed := range connections {
+		if !managed.conn.IsAlive() ||
+			now.Sub(managed.createdAt) > p.maxLifetime ||
+			(!managed.inUse && now.Sub(managed.lastUsedAt) > p.maxIdleTime) {
 
-	atomic.AddInt64(&p.stats.ConnectionsReused, 1)
-	logger.Debugf("Connection reuse count: %d", p.stats.ConnectionsReused)
+			logger.Debugf("Removing dead or expired connection to %s", host)
+			managed.conn.Close()
+			continue
+		}
+		activeConnections = append(activeConnections, managed)
+	}
 
-	if !conn.IsAlive() {
-		logger.Debugf("Connection not alive, attempting reset")
-		if err := conn.Reset(ctx); err != nil {
-			logger.Errorf("Failed to reset connection: %v", err)
-			conn.Close()
+	// Update the connections list with only active connections
+	p.hostConnections[host] = activeConnections
+	connections = activeConnections
 
-			if idx := findConnectionIndex(p.inUse[key], conn); idx >= 0 {
-				p.inUse[key] = append(p.inUse[key][:idx], p.inUse[key][idx+1:]...)
+	// Now look for an available connection to use
+	for _, managed := range connections {
+		if !managed.inUse {
+			if !headersCompatible(managed.headers, headers) {
+				logger.Debugf("Headers don't match for connection to %s", host)
+				continue
 			}
 
-			delete(p.lastActivity, getConnectionPtr(conn))
-			return nil, fmt.Errorf("connection reset failed: %w", err)
+			logger.Debugf("Reusing existing connection to %s", host)
+			managed.inUse = true
+			managed.lastUsedAt = now
+			managed.headers = copyHeaders(headers)
+
+			atomic.AddInt64(&p.stats.ConnectionsReused, 1)
+			p.updateStats()
+			return managed.conn, false, nil
 		}
-		logger.Debugf("Connection reset successful")
 	}
 
-	p.lastActivity[getConnectionPtr(conn)] = time.Now()
-	logger.Debugf("Connection activity timestamp updated")
+	// Check if we're at the connection limit after cleaning up dead connections
+	if len(connections) >= p.maxPerHost {
+		logger.Debugf("Maximum connections (%d) reached for host %s", p.maxPerHost, host)
+		return nil, true, nil
+	}
 
-	return conn, nil
+	logger.Debugf("No suitable connection found for %s, can create new", host)
+	p.updateStats()
+	return nil, false, nil
 }
 
-// RegisterConnection registers a newly created connection with the pool
-// This must be called after creating a new connection not obtained from GetConnection
+// RegisterConnection adds a new connection to the pool
 func (p *Pool) RegisterConnection(conn Connection) {
 	if conn == nil {
 		logger.Warnf("Attempted to register nil connection")
 		return
 	}
 
-	url := conn.GetURL()
-	headers := conn.GetHeaders()
-	key := hashConnection(url, headers)
+	urlStr := conn.GetURL()
+	u, err := url.Parse(urlStr)
+	if err != nil {
+		logger.Warnf("Failed to parse URL for connection: %v", err)
+		return
+	}
 
-	logger.Debugf("Registering new connection for key: %s", key)
+	host := u.Hostname()
+	path := u.Path
+
+	managed := &ManagedConnection{
+		conn:       conn,
+		url:        urlStr,
+		host:       host,
+		path:       path,
+		headers:    copyHeaders(conn.GetHeaders()),
+		createdAt:  time.Now(),
+		lastUsedAt: time.Now(),
+		inUse:      true,
+	}
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	p.inUse[key] = append(p.inUse[key], conn)
-	p.lastActivity[getConnectionPtr(conn)] = time.Now()
+	logger.Debugf("Registering new connection to %s", host)
 
+	if p.hostConnections == nil {
+		p.hostConnections = make(map[string][]*ManagedConnection)
+	}
+
+	p.hostConnections[host] = append(p.hostConnections[host], managed)
 	atomic.AddInt64(&p.stats.ConnectionsCreated, 1)
-	logger.Debugf("Connection creation count: %d", p.stats.ConnectionsCreated)
-
 	p.updateStats()
-	logger.Debugf("Connection registered successfully")
 }
 
-// ReleaseConnection returns a connection to the pool
+// ReleaseConnection puts a connection back in the pool for reuse
 func (p *Pool) ReleaseConnection(conn Connection) {
 	if conn == nil {
 		logger.Warnf("Attempted to release nil connection")
 		return
 	}
 
-	url := conn.GetURL()
-	headers := conn.GetHeaders()
-	key := hashConnection(url, headers)
+	logger.Debugf("Release called for connection")
 
-	logger.Debugf("Releasing connection for key: %s", key)
+	urlStr := conn.GetURL()
+	u, err := url.Parse(urlStr)
+	if err != nil {
+		logger.Warnf("Failed to parse URL when releasing connection: %v", err)
+		conn.Close()
+		return
+	}
+
+	host := u.Hostname()
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	var found bool
-	var idx int
-
-	if connections, ok := p.inUse[key]; ok {
-		for i, c := range connections {
-			if c == conn {
-				found = true
-				idx = i
-				break
-			}
-		}
-
-		if found {
-			logger.Debugf("Connection found in inUse pool, removing from active list")
-			p.inUse[key] = append(connections[:idx], connections[idx+1:]...)
-
-			if conn.IsAlive() && len(p.available[key]) < p.maxIdlePerHost {
-				logger.Debugf("Connection is alive, adding to available pool")
-				p.available[key] = append(p.available[key], conn)
-				p.lastActivity[getConnectionPtr(conn)] = time.Now()
-			} else {
-				logger.Debugf("Connection is dead or pool is full, closing connection")
-				conn.Close()
-				delete(p.lastActivity, getConnectionPtr(conn))
-			}
-		} else {
-			logger.Warnf("Connection not found in active list for key: %s", key)
-		}
-	} else {
-		logger.Warnf("No active connections found for key: %s", key)
+	connections, exists := p.hostConnections[host]
+	if !exists {
+		logger.Warnf("No connections for host %s when releasing", host)
+		conn.Close()
+		return
 	}
 
+	logger.Debugf("Releasing connection to %s", host)
+
+	for i, managed := range connections {
+		if managed.conn == conn {
+			if !conn.IsAlive() {
+				logger.Debugf("Connection is dead, closing instead of releasing")
+				conn.Close()
+				p.removeConnection(host, i)
+				p.updateStats()
+				return
+			}
+
+			managed.inUse = false
+			managed.lastUsedAt = time.Now()
+
+			logger.Debugf("Connection marked as not in use and available for reuse")
+
+			if len(connections) > p.maxPerHost {
+				p.pruneConnectionsForHost(host)
+			}
+
+			p.updateStats()
+			return
+		}
+	}
+
+	logger.Warnf("Connection not found in pool when releasing, closing")
+	conn.Close()
+}
+
+// pruneConnectionsForHost reduces the number of connections for a host to maxPerHost
+func (p *Pool) pruneConnectionsForHost(host string) {
+	connections := p.hostConnections[host]
+
+	logger.Debugf("Too many connections for %s (%d/%d), pruning excess",
+		host, len(connections), p.maxPerHost)
+
+	sort.Slice(connections, func(i, j int) bool {
+		if connections[i].inUse && !connections[j].inUse {
+			return true
+		}
+		if !connections[i].inUse && connections[j].inUse {
+			return false
+		}
+		return connections[i].lastUsedAt.After(connections[j].lastUsedAt)
+	})
+
+	excessCount := 0
+	for i := len(connections) - 1; i >= 0 && len(connections)-excessCount > p.maxPerHost; i-- {
+		if !connections[i].inUse {
+			logger.Debugf("Closing excess connection to %s", host)
+			connections[i].conn.Close()
+			excessCount++
+
+			connections[i] = connections[len(connections)-excessCount]
+		}
+	}
+
+	if excessCount > 0 {
+		p.hostConnections[host] = connections[:len(connections)-excessCount]
+	}
+}
+
+// CleanupIdleConnections removes idle connections that haven't been used recently
+func (p *Pool) CleanupIdleConnections() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	logger.Debugf("Running idle connection cleanup")
+	now := time.Now()
+	removed := 0
+
+	for host, connections := range p.hostConnections {
+		activeConnections := make([]*ManagedConnection, 0, len(connections))
+
+		for _, managed := range connections {
+			if managed.inUse {
+				activeConnections = append(activeConnections, managed)
+				continue
+			}
+
+			if now.Sub(managed.lastUsedAt) > p.maxIdleTime ||
+				now.Sub(managed.createdAt) > p.maxLifetime {
+				logger.Debugf("Cleaning up idle connection to %s (idle: %v, age: %v)",
+					host, now.Sub(managed.lastUsedAt), now.Sub(managed.createdAt))
+				managed.conn.Close()
+				removed++
+				continue
+			}
+
+			activeConnections = append(activeConnections, managed)
+		}
+
+		p.hostConnections[host] = activeConnections
+	}
+
+	logger.Debugf("Cleaned up %d idle connections", removed)
 	p.updateStats()
-	logger.Debugf("Connection released successfully")
 }
 
 // CloseAll closes all connections in the pool
 func (p *Pool) CloseAll() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
 	logger.Infof("Closing all connections in pool")
 
-	logger.Debugf("Stopping cleanup goroutine")
-	close(p.cleanupCancel)
-	<-p.cleanupDone
-	logger.Debugf("Cleanup goroutine stopped")
-
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	// Close available connections
-	availableCount := 0
-	for key, connections := range p.available {
-		for _, conn := range connections {
-			logger.Debugf("Closing available connection for key: %s", key)
-			conn.Close()
-			availableCount++
-		}
+	if p.cleanupTicker != nil {
+		p.cleanupTicker.Stop()
+		close(p.done)
 	}
-	logger.Debugf("Closed %d available connections", availableCount)
 
-	// Close in-use connections
-	inUseCount := 0
-	for key, connections := range p.inUse {
-		for _, conn := range connections {
-			logger.Debugf("Closing in-use connection for key: %s", key)
-			conn.Close()
-			inUseCount++
+	closedCount := 0
+	for host, connections := range p.hostConnections {
+		for _, managed := range connections {
+			managed.conn.Close()
+			closedCount++
 		}
+		delete(p.hostConnections, host)
 	}
-	logger.Debugf("Closed %d in-use connections", inUseCount)
 
-	// Clear maps
-	p.available = make(map[string][]Connection)
-	p.inUse = make(map[string][]Connection)
-	p.lastActivity = make(map[uintptr]time.Time)
-	logger.Debugf("Cleared all connection maps")
-
+	logger.Infof("Closed %d connections in pool", closedCount)
 	p.updateStats()
-	logger.Infof("All connections closed successfully (%d total)", availableCount+inUseCount)
 }
 
-// Stats returns the current pool statistics
+// Stats returns statistics about the connection pool
 func (p *Pool) Stats() PoolStats {
-	p.mu.Lock()
-	defer p.mu.Unlock()
+	p.mu.RLock()
+	defer p.mu.RUnlock()
 
-	p.updateStats()
-	logger.Debugf("Pool stats: total=%d, active=%d, idle=%d, created=%d, reused=%d",
-		p.stats.TotalConnections, p.stats.ActiveConnections, p.stats.IdleConnections,
-		p.stats.ConnectionsCreated, p.stats.ConnectionsReused)
+	stats := PoolStats{
+		TotalConnections:   atomic.LoadInt64(&p.stats.TotalConnections),
+		ActiveConnections:  atomic.LoadInt64(&p.stats.ActiveConnections),
+		IdleConnections:    atomic.LoadInt64(&p.stats.IdleConnections),
+		ConnectionsCreated: atomic.LoadInt64(&p.stats.ConnectionsCreated),
+		ConnectionsReused:  atomic.LoadInt64(&p.stats.ConnectionsReused),
+		MaxIdleConnections: p.stats.MaxIdleConnections,
+		ConnectionTimeouts: atomic.LoadInt64(&p.stats.ConnectionTimeouts),
+		ConnectionFailures: atomic.LoadInt64(&p.stats.ConnectionFailures),
+		AverageConnectTime: atomic.LoadInt64(&p.stats.AverageConnectTime),
+	}
 
-	return p.stats
+	return stats
 }
 
-// cleanup periodically removes idle connections
-func (p *Pool) cleanup() {
-	logger.Debugf("Starting connection pool cleanup loop")
-	defer close(p.cleanupDone)
+// removeConnection removes a connection from the pool without closing it
+func (p *Pool) removeConnection(host string, index int) {
+	connections := p.hostConnections[host]
+	if index < 0 || index >= len(connections) {
+		return
+	}
 
-	ticker := time.NewTicker(30 * time.Second)
-	defer ticker.Stop()
+	lastIdx := len(connections) - 1
+	connections[index] = connections[lastIdx]
+	p.hostConnections[host] = connections[:lastIdx]
 
-	for {
-		select {
-		case <-ticker.C:
-			logger.Debugf("Running idle connection cleanup")
-			p.removeIdleConnections()
-		case <-p.cleanupCancel:
-			logger.Debugf("Connection pool cleanup loop cancelled")
-			return
-		}
+	if len(p.hostConnections[host]) == 0 {
+		delete(p.hostConnections, host)
 	}
 }
 
-// removeIdleConnections removes connections that have been idle for too long
-func (p *Pool) removeIdleConnections() {
-	now := time.Now()
-	logger.Debugf("Removing idle connections (max idle time: %v)", p.maxIdleTime)
-
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	removedCount := 0
-	checkedCount := 0
-
-	for key, connections := range p.available {
-		var remaining []Connection
-
-		for _, conn := range connections {
-			checkedCount++
-			connPtr := getConnectionPtr(conn)
-
-			lastActive, exists := p.lastActivity[connPtr]
-			if !exists {
-				logger.Debugf("Connection has no activity timestamp, keeping: %v", connPtr)
-				remaining = append(remaining, conn)
-				p.lastActivity[connPtr] = now
-				continue
-			}
-
-			idleTime := now.Sub(lastActive)
-			if idleTime > p.maxIdleTime {
-				logger.Debugf("Closing idle connection: %v (idle for %v)", connPtr, idleTime)
-				conn.Close()
-				delete(p.lastActivity, connPtr)
-				removedCount++
-			} else {
-				logger.Debugf("Keeping active connection: %v (idle for %v)", connPtr, idleTime)
-				remaining = append(remaining, conn)
-			}
-		}
-
-		if len(remaining) > 0 {
-			p.available[key] = remaining
-		} else {
-			logger.Debugf("No remaining connections for key %s, removing key", key)
-			delete(p.available, key)
-		}
-	}
-
-	p.updateStats()
-	logger.Debugf("Idle connection cleanup complete: checked=%d, removed=%d, remaining=%d",
-		checkedCount, removedCount, p.stats.IdleConnections)
-}
-
-// updateStats updates the connection pool statistics
+// updateStats updates the pool statistics
 func (p *Pool) updateStats() {
-	idle := 0
-	for _, connections := range p.available {
-		idle += len(connections)
-	}
+	totalActive := int64(0)
+	totalIdle := int64(0)
 
-	active := 0
-	for _, connections := range p.inUse {
-		active += len(connections)
-	}
-
-	p.stats.IdleConnections = idle
-	p.stats.ActiveConnections = active
-	p.stats.TotalConnections = idle + active
-}
-
-// hashConnection creates a hash key for a connection based on URL and headers
-func hashConnection(url string, headers map[string]string) string {
-	key := url
-
-	if headers != nil {
-		if auth, ok := headers["Authorization"]; ok {
-			key += "|auth:" + auth
-		}
-		if proxy, ok := headers["Proxy-Authorization"]; ok {
-			key += "|proxy:" + proxy
+	for _, connections := range p.hostConnections {
+		for _, managed := range connections {
+			if managed.inUse {
+				totalActive++
+			} else {
+				totalIdle++
+			}
 		}
 	}
 
-	hash := md5.Sum([]byte(key))
-	return hex.EncodeToString(hash[:])
+	atomic.StoreInt64(&p.stats.ActiveConnections, totalActive)
+	atomic.StoreInt64(&p.stats.IdleConnections, totalIdle)
+	atomic.StoreInt64(&p.stats.TotalConnections, totalActive+totalIdle)
 }
 
-// findConnectionIndex finds a connection's index in a slice
-func findConnectionIndex(connections []Connection, target Connection) int {
-	for i, conn := range connections {
-		if conn == target {
-			return i
+// headersCompatible checks if the supplied headers are compatible with the stored headers
+func headersCompatible(stored, requested map[string]string) bool {
+	// Check for authentication headers specifically
+	authKeys := []string{
+		"Authorization",
+		"Proxy-Authorization",
+		"Cookie",
+	}
+
+	for _, key := range authKeys {
+		storedValue, storedExists := stored[key]
+		requestedValue, requestedExists := requested[key]
+
+		if storedExists && requestedExists && storedValue != requestedValue {
+			return false
+		}
+
+		if storedExists != requestedExists {
+			return false
 		}
 	}
-	return -1
+
+	return true
 }
 
-// getConnectionPtr returns a pointer to the connection as uintptr for use as map key
-func getConnectionPtr(conn Connection) uintptr {
-	return reflect.ValueOf(conn).Pointer()
+// copyHeaders makes a copy of the headers map
+func copyHeaders(headers map[string]string) map[string]string {
+	if headers == nil {
+		return nil
+	}
+
+	headerCopy := make(map[string]string, len(headers))
+	for k, v := range headers {
+		headerCopy[k] = v
+	}
+	return headerCopy
 }
