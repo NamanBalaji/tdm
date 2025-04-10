@@ -4,9 +4,9 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// Catppuccin Mocha color palette
+// Catppuccin Mocha color palette.
 var (
-	// Base colors
+		// Base colors.
 	catpBase     = lipgloss.Color("#1e1e2e") // Base
 	catpCrust    = lipgloss.Color("#11111b") // Crust (darkest)
 	catpText     = lipgloss.Color("#cdd6f4") // Text
@@ -25,7 +25,7 @@ var (
 	catpLavender = lipgloss.Color("#b4befe") // Lavender
 )
 
-// Styles
+// Styles.
 var (
 	headerStyle = lipgloss.NewStyle().Bold(true).Foreground(catpCrust).Background(catpPink).Padding(1, 2).Width(80).Align(lipgloss.Center)
 

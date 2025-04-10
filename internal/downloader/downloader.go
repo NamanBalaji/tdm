@@ -7,14 +7,14 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/NamanBalaji/tdm/internal/logger"
+	"github.com/google/uuid"
 
 	"github.com/NamanBalaji/tdm/internal/chunk"
 	"github.com/NamanBalaji/tdm/internal/common"
-	"github.com/google/uuid"
+	"github.com/NamanBalaji/tdm/internal/logger"
 )
 
-// Download represents a file download task
+// Download represents a file download task.
 type Download struct {
 	ID       uuid.UUID `json:"id"`
 	URL      string    `json:"url"`
@@ -35,25 +35,25 @@ type Download struct {
 	ErrorMessage string `json:"error_message,omitempty"` // For persistent storage
 	Error        error  `json:"-"`                       // Runtime only
 
-	mu              sync.RWMutex         `json:"-"`
-	ctx             context.Context      `json:"-"`
-	cancelFunc      context.CancelFunc   `json:"-"`
-	done            chan struct{}        `json:"-"`
-	progressCh      chan common.Progress `json:"-"`
-	speedCalculator *SpeedCalculator     `json:"-"`
+	mu              sync.RWMutex
+	ctx             context.Context
+	cancelFunc      context.CancelFunc
+	done            chan struct{}
+	progressCh      chan common.Progress
+	speedCalculator *SpeedCalculator
 }
 
-// SetStatus sets the Status of a Download
+// SetStatus sets the Status of a Download.
 func (d *Download) SetStatus(status common.Status) {
-	atomic.StoreInt32(&d.Status, status)
+	atomic.StoreInt32((*int32)(&d.Status), int32(status))
 }
 
-// GetStatus returns the current Status of the Download
+// GetStatus returns the current Status of the Download.
 func (d *Download) GetStatus() common.Status {
-	return atomic.LoadInt32(&d.Status)
+	return common.Status(atomic.LoadInt32((*int32)(&d.Status)))
 }
 
-// SetError sets the Error and ErrorMessage for the Download
+// SetError sets the Error and ErrorMessage for the Download.
 func (d *Download) SetError(err error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -65,7 +65,7 @@ func (d *Download) SetError(err error) {
 	}
 }
 
-// GetError returns the current Error of the Download
+// GetError returns the current Error of the Download.
 func (d *Download) GetError() error {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
@@ -73,7 +73,7 @@ func (d *Download) GetError() error {
 	return d.Error
 }
 
-// GetChunks returns the current Chunks of the Download
+// GetChunks returns the current Chunks of the Download.
 func (d *Download) GetChunks() []*chunk.Chunk {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
@@ -83,7 +83,7 @@ func (d *Download) GetChunks() []*chunk.Chunk {
 	return chunks
 }
 
-// GetTotalChunks returns the total number of chunks
+// GetTotalChunks returns the total number of chunks.
 func (d *Download) GetTotalChunks() int {
 	return int(atomic.LoadInt32(&d.TotalChunks))
 }
@@ -92,7 +92,7 @@ func (d *Download) SetTotalChunks(total int) {
 	atomic.StoreInt32(&d.TotalChunks, int32(total))
 }
 
-// AddChunks adds chunks to the Download
+// AddChunks adds chunks to the Download.
 func (d *Download) AddChunks(chunks ...*chunk.Chunk) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -104,27 +104,27 @@ func (d *Download) AddChunks(chunks ...*chunk.Chunk) {
 	d.SetTotalChunks(len(d.Chunks))
 }
 
-// GetDownloaded returns the number of bytes downloaded
+// GetDownloaded returns the number of bytes downloaded.
 func (d *Download) GetDownloaded() int64 {
 	return atomic.LoadInt64(&d.Downloaded)
 }
 
-// SetDownloaded sets the number of bytes downloaded
+// SetDownloaded sets the number of bytes downloaded.
 func (d *Download) SetDownloaded(bytes int64) {
 	atomic.StoreInt64(&d.Downloaded, bytes)
 }
 
-// GetTotalSize returns the total size of the Download
+// GetTotalSize returns the total size of the Download.
 func (d *Download) GetTotalSize() int64 {
 	return atomic.LoadInt64(&d.TotalSize)
 }
 
-// SetTotalSize sets the total size of the Download
+// SetTotalSize sets the total size of the Download.
 func (d *Download) SetTotalSize(bytes int64) {
 	atomic.StoreInt64(&d.TotalSize, bytes)
 }
 
-// Context returns the download context
+// Context returns the download context.
 func (d *Download) Context() context.Context {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
@@ -132,7 +132,7 @@ func (d *Download) Context() context.Context {
 	return d.ctx
 }
 
-// SetContextKey sets a key-value pair in the Download context
+// SetContextKey sets a key-value pair in the Download context.
 func (d *Download) SetContextKey(key string, value interface{}) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -146,7 +146,7 @@ func (d *Download) SetContextKey(key string, value interface{}) {
 	logger.Debugf("Set context key %s for download %s", key, d.ID)
 }
 
-// GetContextKey retrieves a value from the Download context
+// GetContextKey retrieves a value from the Download context.
 func (d *Download) GetContextKey(key string) interface{} {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
@@ -161,7 +161,7 @@ func (d *Download) GetContextKey(key string) interface{} {
 	return value
 }
 
-// CancelFunc returns the cancel function
+// CancelFunc returns the cancel function.
 func (d *Download) CancelFunc() context.CancelFunc {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
@@ -169,25 +169,26 @@ func (d *Download) CancelFunc() context.CancelFunc {
 	return d.cancelFunc
 }
 
-// WaitForDone waits for the download to finish
+// WaitForDone waits for the download to finish.
 func (d *Download) WaitForDone() {
 	<-d.done
 }
 
-// Done signals that the download is done
+// Done signals that the download is done.
 func (d *Download) Done() {
 	close(d.done)
 }
 
-// PrepareResume prepares the download for resuming
+// PrepareResume prepares the download for resuming.
 func (d *Download) PrepareResume(ctx context.Context) {
-	d.done = make(chan struct{})
 	d.mu.Lock()
 	defer d.mu.Unlock()
+
+	d.done = make(chan struct{})
 	d.ctx, d.cancelFunc = context.WithCancel(ctx)
 }
 
-// SetProgressFunction sets the progress function for each chunk
+// SetProgressFunction sets the progress function for each chunk.
 func (d *Download) SetProgressFunction() {
 	logger.Debugf("Setting progress function for %d chunks in download %s", len(d.Chunks), d.ID)
 
@@ -198,12 +199,12 @@ func (d *Download) SetProgressFunction() {
 	}
 }
 
-// GetProgressChannel returns the progress channel
+// GetProgressChannel returns the progress channel.
 func (d *Download) GetProgressChannel() chan common.Progress {
 	return d.progressCh
 }
 
-// AddProgress adds progress to the download
+// AddProgress adds progress to the download.
 func (d *Download) AddProgress(bytes int64) {
 	atomic.AddInt64(&d.Downloaded, bytes)
 
@@ -225,7 +226,7 @@ func (d *Download) AddProgress(bytes int64) {
 	}
 }
 
-// NewDownload creates a new Download instance
+// NewDownload creates a new Download instance.
 func NewDownload(ctx context.Context, url, filename string, totalSize int64, config *Config) *Download {
 	id := uuid.New()
 	logger.Infof("Creating new download: id=%s, url=%s, filename=%s", id, url, filename)
@@ -258,7 +259,7 @@ func NewDownload(ctx context.Context, url, filename string, totalSize int64, con
 	return download
 }
 
-// GetStats returns current download statistics
+// GetStats returns current download statistics.
 func (d *Download) GetStats() Stats {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
@@ -280,9 +281,10 @@ func (d *Download) GetStats() Stats {
 	completedChunks := 0
 
 	for _, c := range d.Chunks {
-		if c.Status == common.StatusActive {
+		switch c.Status {
+		case common.StatusActive:
 			activeChunks++
-		} else if c.Status == common.StatusCompleted {
+		case common.StatusCompleted:
 			completedChunks++
 		}
 	}
@@ -325,7 +327,7 @@ func (d *Download) GetStats() Stats {
 	return stats
 }
 
-// PrepareForSerialization prepares the download for storage
+// PrepareForSerialization prepares the download for storage.
 func (d *Download) PrepareForSerialization() {
 	logger.Debugf("Preparing download %s for serialization", d.ID)
 
@@ -359,7 +361,7 @@ func (d *Download) PrepareForSerialization() {
 	logger.Debugf("Download %s prepared for serialization with %d chunks", d.ID, len(d.ChunkInfos))
 }
 
-// RestoreFromSerialization restores runtime fields after loading from storage
+// RestoreFromSerialization restores runtime fields after loading from storage.
 func (d *Download) RestoreFromSerialization(ctx context.Context) {
 	logger.Debugf("Restoring download %s from serialization", d.ID)
 

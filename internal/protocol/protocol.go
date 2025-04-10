@@ -2,18 +2,22 @@ package protocol
 
 import (
 	"context"
+	"errors"
 	"sync"
 
-	"github.com/NamanBalaji/tdm/internal/common"
-
 	"github.com/NamanBalaji/tdm/internal/chunk"
+	"github.com/NamanBalaji/tdm/internal/common"
 	"github.com/NamanBalaji/tdm/internal/connection"
 	"github.com/NamanBalaji/tdm/internal/downloader"
-	"github.com/NamanBalaji/tdm/internal/errors"
 	"github.com/NamanBalaji/tdm/internal/protocol/http"
 )
 
-// Protocol defines the interface for handling different protocols
+var (
+	ErrUnsupportedProtocol = errors.New("unsupported protocol")
+	ErrInvalidURL          = errors.New("invalid URL")
+)
+
+// Protocol defines the interface for handling different protocols.
 type Protocol interface {
 	// CanHandle checks if this handler can handle the given URL
 	CanHandle(url string) bool
@@ -21,6 +25,8 @@ type Protocol interface {
 	Initialize(ctx context.Context, url string, config *downloader.Config) (*common.DownloadInfo, error)
 	// CreateConnection creates a new connection for chunk download
 	CreateConnection(urlStr string, chunk *chunk.Chunk, downloadConfig *downloader.Config) (connection.Connection, error)
+	// UpdateConnection updates the connection with new parameters
+	UpdateConnection(conn connection.Connection, chunk *chunk.Chunk)
 }
 
 type Handler struct {
@@ -36,14 +42,14 @@ func NewHandler() *Handler {
 	}
 }
 
-// RegisterProtocol adds a protocol to the handler
+// RegisterProtocol adds a protocol to the handler.
 func (h *Handler) RegisterProtocol(p Protocol) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.protocols = append(h.protocols, p)
 }
 
-// Initialize initializes a download by finding the appropriate handler and gathering information
+// Initialize initializes a download by finding the appropriate handler and gathering information.
 func (h *Handler) Initialize(ctx context.Context, url string, config *downloader.Config) (*common.DownloadInfo, error) {
 	handler, err := h.getProtocolHandler(url)
 	if err != nil {
@@ -55,7 +61,7 @@ func (h *Handler) Initialize(ctx context.Context, url string, config *downloader
 
 func (h *Handler) getProtocolHandler(url string) (Protocol, error) {
 	if url == "" {
-		return nil, errors.ErrInvalidURL
+		return nil, ErrInvalidURL
 	}
 
 	h.mu.RLock()
@@ -67,10 +73,10 @@ func (h *Handler) getProtocolHandler(url string) (Protocol, error) {
 		}
 	}
 
-	return nil, errors.ErrUnsupportedProtocol
+	return nil, ErrUnsupportedProtocol
 }
 
-// GetHandler returns a handler that can handle the given URL
+// GetHandler returns a handler that can handle the given URL.
 func (h *Handler) GetHandler(url string) (Protocol, error) {
 	return h.getProtocolHandler(url)
 }

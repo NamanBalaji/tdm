@@ -1,65 +1,45 @@
-linters-settings:
-  gocyclo:
-    min-complexity: 25
-  dupl:
-    threshold: 100
-  goconst:
-    min-len: 3
-    min-occurrences: 3
-  gocritic:
-    enabled-tags:
-      - diagnostic
-      - experimental
-      - opinionated
-      - performance
-      - style
-  # Removing govet.check-shadowing — older schemas do not allow it:
-  govet: {}
-  # Removing nolintlint.requireExplanations / requireSpecificExplanation:
-  nolintlint: {}
-
+version: "2"
 linters:
-  disable-all: true
-  enable:
-    - bodyclose
-    - dogsled
-    - dupl
-    - errcheck
-    - copyloopvar
+  default: all
+  disable:
+    - depguard
+    - exhaustruct
+    - ginkgolinter
+    - musttag
+    - nlreturn
+    - tagalign
+    - varnamelen
     - gochecknoinits
-    - goconst
-    - gocritic
-    - gocyclo
-    - gofmt
-    - goimports
-    - goprintffuncname
-    - gosimple
-    - govet
-    - ineffassign
-    - misspell
-    - nakedret
-    - noctx
-    - nolintlint
-    - staticcheck
-    - stylecheck
-    - typecheck
-    - unconvert
-    - unparam
-    - unused
-    - whitespace
+    - gochecknoglobals
+    - wrapcheck
+    - wsl
+    - godox
+    - protogetter
+    - lll
+    - revive
+  settings:
 
-run:
-  # Removing 'deadline' and 'skip-dirs' since schema complains about them.
-  issues-exit-code: 1
-  tests: true
-
-# Removing 'format' from output to avoid schema complaints:
-output:
-  print-issued-lines: true
-  print-linter-name: true
-
-issues:
-  exclude-files:
-   - ".*_test\\.go$"
-  max-issues-per-linter: 0
-  max-same-issues: 0
+  exclusions:
+    rules:
+      - path: "_test.go"
+        linters:
+          - funlen
+          - maintidx
+          - goconst
+          - dupl
+      - path: "service/error.go"
+        linters:
+          - ireturn
+formatters:
+  enable:
+    - gci
+  settings:
+    gci:
+      sections:
+        - standard
+        - default
+        - prefix(github.com/NamanBalaji/tdm)
+        - blank
+        - dot
+        - alias
+        - localmodule

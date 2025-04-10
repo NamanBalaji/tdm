@@ -7,10 +7,10 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/NamanBalaji/tdm/internal/downloader"
 	"github.com/google/uuid"
-
 	"go.etcd.io/bbolt"
+
+	"github.com/NamanBalaji/tdm/internal/downloader"
 )
 
 const (
@@ -20,16 +20,16 @@ const (
 )
 
 var (
-	// ErrDownloadNotFound is returned when a download cannot be found
+	// ErrDownloadNotFound is returned when a download cannot be found.
 	ErrDownloadNotFound = errors.New("download not found")
 )
 
-// BboltRepository implements the downloader.DownloadRepository interface
+// BboltRepository implements the downloader.DownloadRepository interface.
 type BboltRepository struct {
 	db *bbolt.DB
 }
 
-// NewBboltRepository creates a new bbolt repository
+// NewBboltRepository creates a new bbolt repository.
 func NewBboltRepository(dbPath string) (*BboltRepository, error) {
 	options := &bbolt.Options{
 		Timeout: 1 * time.Second,
@@ -52,7 +52,7 @@ func NewBboltRepository(dbPath string) (*BboltRepository, error) {
 	return repo, nil
 }
 
-// initialize sets up buckets and schema
+// initialize sets up buckets and schema.
 func (r *BboltRepository) initialize() error {
 	return r.db.Update(func(tx *bbolt.Tx) error {
 		_, err := tx.CreateBucketIfNotExists([]byte(downloadsBucket))
@@ -65,7 +65,7 @@ func (r *BboltRepository) initialize() error {
 			return fmt.Errorf("failed to create metadata bucket: %w", err)
 		}
 
-		versionBytes := []byte(fmt.Sprintf("%d", schemaVersion))
+		versionBytes := []byte(strconv.Itoa(schemaVersion))
 		err = metadataBucket.Put([]byte("schema_version"), versionBytes)
 		if err != nil {
 			return fmt.Errorf("failed to store schema version: %w", err)
@@ -75,7 +75,7 @@ func (r *BboltRepository) initialize() error {
 	})
 }
 
-// Save persists a download to storage
+// Save persists a download to storage.
 func (r *BboltRepository) Save(download *downloader.Download) error {
 	if download == nil {
 		return errors.New("cannot save nil download")
@@ -103,7 +103,7 @@ func (r *BboltRepository) Save(download *downloader.Download) error {
 	})
 }
 
-// FindAll retrieves all downloads
+// FindAll retrieves all downloads.
 func (r *BboltRepository) FindAll(ctx context.Context) ([]*downloader.Download, error) {
 	var downloads []*downloader.Download
 
@@ -134,7 +134,7 @@ func (r *BboltRepository) FindAll(ctx context.Context) ([]*downloader.Download, 
 	return downloads, nil
 }
 
-// Delete removes a download
+// Delete removes a download.
 func (r *BboltRepository) Delete(id uuid.UUID) error {
 	if id == uuid.Nil {
 		return errors.New("download ID cannot be empty")
@@ -154,7 +154,7 @@ func (r *BboltRepository) Delete(id uuid.UUID) error {
 	})
 }
 
-// Close closes the database
+// Close closes the database.
 func (r *BboltRepository) Close() error {
 	return r.db.Close()
 }

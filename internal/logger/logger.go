@@ -15,7 +15,7 @@ var (
 	logFile *os.File
 )
 
-// InitLogging sets up logging based on configuration
+// InitLogging sets up logging based on configuration.
 func InitLogging(debugMode bool, logPath string) error {
 	DebugEnabled = debugMode
 
@@ -37,7 +37,7 @@ func InitLogging(debugMode bool, logPath string) error {
 	return nil
 }
 
-// Close closes the log file if open
+// Close closes the log file if open.
 func Close() {
 	if logFile != nil {
 		logFile.Close()
@@ -50,7 +50,7 @@ func Infof(format string, v ...interface{}) {
 	}
 }
 
-// Errorf logs an error message to the file if debug mode is enabled
+// Errorf logs an error message to the file if debug mode is enabled.
 func Errorf(format string, v ...interface{}) {
 	if DebugEnabled && debugLogger != nil {
 		debugLogger.Printf("[ERROR] "+format, v...)

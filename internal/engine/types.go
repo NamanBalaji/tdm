@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 )
 
-// Config contains download manager configuration
+// Config contains download manager configuration.
 type Config struct {
 	DownloadDir               string
 	ConfigDir                 string
@@ -20,7 +20,7 @@ type Config struct {
 	SaveInterval              int64 // Interval in seconds to save download state
 }
 
-// DefaultConfig returns the default engine configuration
+// DefaultConfig returns the default engine configuration.
 func DefaultConfig() *Config {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {

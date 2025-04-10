@@ -2,35 +2,25 @@ package chunk
 
 import (
 	"bufio"
-	"errors"
-	"fmt"
 	"io"
 	"math"
 	"os"
 	"path/filepath"
 	"sync"
 
-	"github.com/NamanBalaji/tdm/internal/logger"
+	"github.com/google/uuid"
 
 	"github.com/NamanBalaji/tdm/internal/common"
-
-	"github.com/google/uuid"
+	"github.com/NamanBalaji/tdm/internal/logger"
 )
 
 const (
-	// MinChunkSize is the minimum size of a chunk in bytes (256 KB)
+	// MinChunkSize is the minimum size of a chunk in bytes (256 KB).
 	MinChunkSize int64 = 256 * 1024
-	// MaxChunkSize is the maximum size of a chunk in bytes (16 MB)
+	// MaxChunkSize is the maximum size of a chunk in bytes (16 MB).
 	MaxChunkSize int64 = 16 * 1024 * 1024
-	// DefaultChunkSize is the default size of a chunk (4 MB)
+	// DefaultChunkSize is the default size of a chunk (4 MB).
 	DefaultChunkSize int64 = 4 * 1024 * 1024
-)
-
-var (
-	// ErrChunkNotFound is returned when a chunk cannot be found
-	ErrChunkNotFound = errors.New("chunk not found")
-	// ErrInvalidChunkSize is returned when an invalid chunk size is specified
-	ErrInvalidChunkSize = errors.New("invalid chunk size")
 )
 
 type Manager struct {
@@ -39,7 +29,7 @@ type Manager struct {
 	defaultChunkSize int64
 }
 
-// NewManager creates a new chunk manager
+// NewManager creates a new chunk manager.
 func NewManager(tempDir string) (*Manager, error) {
 	logger.Debugf("Creating new chunk manager")
 
@@ -55,7 +45,7 @@ func NewManager(tempDir string) (*Manager, error) {
 		tempDir = filepath.Join(os.TempDir(), "tdm-chunks")
 		if err := os.MkdirAll(tempDir, 0o755); err != nil {
 			logger.Errorf("Failed to create fallback temp directory %s: %v", tempDir, err)
-			return nil, fmt.Errorf("failed to create temp directory %s: %w", tempDir, err)
+			return nil, ErrChunkTempDirCreate
 		}
 	}
 
@@ -70,7 +60,7 @@ func NewManager(tempDir string) (*Manager, error) {
 	return manager, nil
 }
 
-// SetDefaultChunkSize sets the default chunk size
+// SetDefaultChunkSize sets the default chunk size.
 func (m *Manager) SetDefaultChunkSize(size int64) error {
 	logger.Debugf("Setting default chunk size to %d bytes", size)
 
@@ -88,7 +78,7 @@ func (m *Manager) SetDefaultChunkSize(size int64) error {
 	return nil
 }
 
-// CreateChunks divides a download into chunks and returns them
+// CreateChunks divides a download into chunks and returns them.
 func (m *Manager) CreateChunks(downloadID uuid.UUID, filesize int64, supportsRange bool, maxConnections int, progressFn func(int64)) ([]*Chunk, error) {
 	logger.Debugf("Creating chunks for download %s: filesize=%d, supportsRange=%v, maxConnections=%d",
 		downloadID, filesize, supportsRange, maxConnections)
@@ -101,7 +91,7 @@ func (m *Manager) CreateChunks(downloadID uuid.UUID, filesize int64, supportsRan
 
 	if err := os.MkdirAll(downloadTempDir, 0o755); err != nil {
 		logger.Errorf("Failed to create temp directory %s: %v", downloadTempDir, err)
-		return nil, fmt.Errorf("failed to create temp directory: %w", err)
+		return nil, ErrChunkTempDirCreate
 	}
 
 	// Handle small files or servers that don't support range requests
@@ -137,7 +127,7 @@ func (m *Manager) CreateChunks(downloadID uuid.UUID, filesize int64, supportsRan
 
 	chunks := make([]*Chunk, 0, numChunks)
 	var startByte int64
-	for i := 0; i < numChunks; i++ {
+	for i := range numChunks {
 		endByte := startByte + chunkSize - 1
 		if i == numChunks-1 || endByte >= filesize-1 {
 			endByte = filesize - 1
@@ -161,7 +151,7 @@ func (m *Manager) CreateChunks(downloadID uuid.UUID, filesize int64, supportsRan
 	return chunks, nil
 }
 
-// MergeChunks combines downloaded chunks into the final file
+// MergeChunks combines downloaded chunks into the final file.
 func (m *Manager) MergeChunks(chunks []*Chunk, targetPath string) error {
 	if len(chunks) == 0 {
 		logger.Warnf("No chunks provided for merging to %s", targetPath)
@@ -175,7 +165,7 @@ func (m *Manager) MergeChunks(chunks []*Chunk, targetPath string) error {
 	for _, chunk := range chunks {
 		if chunk.Status != common.StatusCompleted {
 			logger.Errorf("Cannot merge: chunk %s is in status %s", chunk.ID, chunk.Status)
-			return fmt.Errorf("cannot merge incomplete download: chunk %s is in status %s", chunk.ID, chunk.Status)
+			return ErrMergeIncomplete
 		}
 	}
 
@@ -184,14 +174,14 @@ func (m *Manager) MergeChunks(chunks []*Chunk, targetPath string) error {
 	logger.Debugf("Ensuring target directory exists: %s", targetDir)
 	if err := os.MkdirAll(targetDir, 0o755); err != nil {
 		logger.Errorf("Failed to create target directory %s: %v", targetDir, err)
-		return fmt.Errorf("failed to create target directory: %w", err)
+		return ErrChunkDirCreate
 	}
 
 	logger.Debugf("Creating output file: %s", targetPath)
 	outFile, err := os.Create(targetPath)
 	if err != nil {
 		logger.Errorf("Failed to create output file: %v", err)
-		return fmt.Errorf("failed to create output file: %w", err)
+		return ErrTargetFileCreate
 	}
 	defer outFile.Close()
 
@@ -210,7 +200,7 @@ func (m *Manager) MergeChunks(chunks []*Chunk, targetPath string) error {
 		chunkFile, err := os.Open(chunk.TempFilePath)
 		if err != nil {
 			logger.Errorf("Failed to open chunk file %s: %v", chunk.TempFilePath, err)
-			return fmt.Errorf("failed to open chunk file: %w", err)
+			return ErrChunkFileOpen
 		}
 
 		bytesCopied, err := io.Copy(bufWriter, chunkFile)
@@ -220,7 +210,7 @@ func (m *Manager) MergeChunks(chunks []*Chunk, targetPath string) error {
 		if err != nil {
 			chunkFile.Close()
 			logger.Errorf("Failed to copy chunk data: %v", err)
-			return fmt.Errorf("failed to copy chunk data: %w", err)
+			return ErrChunkFileCopy
 		}
 
 		chunkFile.Close()
@@ -231,7 +221,7 @@ func (m *Manager) MergeChunks(chunks []*Chunk, targetPath string) error {
 	logger.Debugf("Flushing %d bytes to disk", totalBytes)
 	if err := bufWriter.Flush(); err != nil {
 		logger.Errorf("Failed to flush data to file: %v", err)
-		return fmt.Errorf("failed to flush data to file: %w", err)
+		return ErrChunkFileWrite
 	}
 
 	logger.Infof("Successfully merged %d chunks (%d bytes) to %s",
@@ -239,7 +229,7 @@ func (m *Manager) MergeChunks(chunks []*Chunk, targetPath string) error {
 	return nil
 }
 
-// CleanupChunks removes temporary chunk files
+// CleanupChunks removes temporary chunk files.
 func (m *Manager) CleanupChunks(chunks []*Chunk) error {
 	if len(chunks) == 0 {
 		logger.Debugf("No chunks to clean up")
@@ -261,7 +251,7 @@ func (m *Manager) CleanupChunks(chunks []*Chunk) error {
 				logger.Debugf("Chunk file already removed: %s", chunk.TempFilePath)
 			} else {
 				logger.Warnf("Failed to remove chunk file %s: %v", chunk.TempFilePath, err)
-				lastErr = err
+				lastErr = ErrChunkFileRemove
 			}
 		} else {
 			removedCount++
@@ -291,7 +281,7 @@ func (m *Manager) CleanupChunks(chunks []*Chunk) error {
 	return lastErr
 }
 
-// sortChunksByStartByte sorts chunks by their start byte position
+// sortChunksByStartByte sorts chunks by their start byte position.
 func sortChunksByStartByte(chunks []*Chunk) []*Chunk {
 	sortedChunks := make([]*Chunk, len(chunks))
 	copy(sortedChunks, chunks)

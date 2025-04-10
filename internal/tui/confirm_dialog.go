@@ -7,7 +7,7 @@ import (
 	"github.com/google/uuid"
 )
 
-// ConfirmDialogModel represents a simple confirmation dialog
+// ConfirmDialogModel represents a simple confirmation dialog.
 type ConfirmDialogModel struct {
 	title    string
 	message  string
@@ -16,7 +16,7 @@ type ConfirmDialogModel struct {
 	width    int
 }
 
-// View renders the confirmation dialog
+// View renders the confirmation dialog.
 func (c ConfirmDialogModel) View() string {
 	var s strings.Builder
 

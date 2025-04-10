@@ -2,7 +2,7 @@ package common
 
 import "time"
 
-// DownloadInfo contains information about a download resource
+// DownloadInfo contains information about a download resource.
 type DownloadInfo struct {
 	URL             string
 	Filename        string
@@ -17,8 +17,7 @@ type DownloadInfo struct {
 	CanBeResumed    bool
 }
 
-// ChunkInfo contains serializable information about a chunk
-// Used to persist chunk data when saving downloads
+// Used to persist chunk data when saving downloads.
 type ChunkInfo struct {
 	ID                 string    `json:"id"`
 	StartByte          int64     `json:"start_byte"`
@@ -31,7 +30,7 @@ type ChunkInfo struct {
 	LastActive         time.Time `json:"last_active,omitempty"`
 }
 
-// GlobalStats contains aggregated statistics across all downloads
+// GlobalStats contains aggregated statistics across all downloads.
 type GlobalStats struct {
 	ActiveDownloads    int
 	QueuedDownloads    int

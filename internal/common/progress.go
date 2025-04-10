@@ -6,7 +6,7 @@ import (
 	"github.com/google/uuid"
 )
 
-// Progress represents a progress update event for the chunk
+// Progress represents a progress update event for the chunk.
 type Progress struct {
 	DownloadID     uuid.UUID
 	ChunkID        uuid.UUID

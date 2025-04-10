@@ -3,9 +3,18 @@ package engine
 import (
 	"math/rand"
 	"time"
+
+	"github.com/NamanBalaji/tdm/internal/protocol/http"
 )
 
-// calculateBackoff calculates a backoff duration with jitter
+var retryableErrors = map[error]struct{}{
+	http.ErrNetworkProblem:  {},
+	http.ErrServerProblem:   {},
+	http.ErrTooManyRequests: {},
+	http.ErrTimeout:         {},
+}
+
+// calculateBackoff calculates a backoff duration with jitter.
 func calculateBackoff(retryCount int, baseDelay time.Duration) time.Duration {
 	// Exponential backoff: 2^retryCount * baseDelay
 	delay := baseDelay * (1 << uint(retryCount))
@@ -21,4 +30,10 @@ func calculateBackoff(retryCount int, baseDelay time.Duration) time.Duration {
 	}
 
 	return jitter
+}
+
+// isRetryableError checks if the error is in the retryable.
+func isRetryableError(err error) bool {
+	_, ok := retryableErrors[err]
+	return ok
 }

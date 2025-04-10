@@ -2,25 +2,26 @@ package tui
 
 import (
 	"fmt"
-	"github.com/NamanBalaji/tdm/internal/common"
 	"sort"
 	"strings"
 	"time"
 
-	"github.com/NamanBalaji/tdm/internal/logger"
-
-	"github.com/NamanBalaji/tdm/internal/engine"
 	"github.com/charmbracelet/bubbles/help"
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/google/uuid"
+
+	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/NamanBalaji/tdm/internal/common"
+	"github.com/NamanBalaji/tdm/internal/engine"
+	"github.com/NamanBalaji/tdm/internal/logger"
 )
 
-// view represents the different screens in the TUI
+// view represents the different screens in the TUI.
 type view int
 
 const (
@@ -37,7 +38,7 @@ type messageModel struct {
 	timer   *time.Timer
 }
 
-// Model represents the main TUI state
+// Model represents the main TUI state.
 type Model struct {
 	engine        *engine.Engine
 	viewport      viewport.Model
@@ -57,7 +58,7 @@ type Model struct {
 	confirmDialog ConfirmDialogModel
 }
 
-// NewModel creates a new TUI model
+// NewModel creates a new TUI model.
 func NewModel(engine *engine.Engine) *Model {
 	s := spinner.New()
 	s.Spinner = spinner.Hamburger
@@ -92,7 +93,7 @@ func NewModel(engine *engine.Engine) *Model {
 	}
 }
 
-// Init initializes the TUI model
+// Init initializes the TUI model.
 func (m *Model) Init() tea.Cmd {
 	m.addDownload.textInput.Placeholder = "Enter URL to download"
 	m.addDownload.textInput.Focus()
@@ -106,7 +107,7 @@ func (m *Model) Init() tea.Cmd {
 	)
 }
 
-// loadDownloads loads existing downloads from the engine
+// loadDownloads loads existing downloads from the engine.
 func (m *Model) loadDownloads() tea.Cmd {
 	return func() tea.Msg {
 		downloads := m.engine.ListDownloads()
@@ -124,7 +125,7 @@ func (m *Model) loadDownloads() tea.Cmd {
 	}
 }
 
-// Update handles input and updates the model
+// Update handles input and updates the model.
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
@@ -200,7 +201,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		m.activeView = downloadListView
 		m.errorMsg = ""
-		m.showMessage(fmt.Sprintf("Download added: %s", msg.Download.Filename), catpGreen)
+		m.showMessage("Download added: "+msg.Download.Filename, catpGreen)
 
 		return m, nil
 
@@ -218,7 +219,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case ErrorMsg:
-		m.showMessage(fmt.Sprintf("Error: %s", msg.Error.Error()), catpRed)
+		m.showMessage("Error: "+msg.Error.Error(), catpRed)
 
 		if m.activeView == addDownloadView {
 			m.activeView = downloadListView
@@ -375,7 +376,7 @@ func (m *Model) updateAddDownloadView(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 }
 
-// View renders the TUI
+// View renders the TUI.
 func (m *Model) View() string {
 	if m.quitting {
 		return "Shutting down TDM...\n"

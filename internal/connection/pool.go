@@ -11,7 +11,7 @@ import (
 	"github.com/NamanBalaji/tdm/internal/logger"
 )
 
-// PoolStats tracks statistics about the connection pool
+// PoolStats tracks statistics about the connection pool.
 type PoolStats struct {
 	TotalConnections   int64
 	ActiveConnections  int64
@@ -24,7 +24,7 @@ type PoolStats struct {
 	AverageConnectTime int64 // in milliseconds
 }
 
-// Pool manages a pool of reusable connections
+// Pool manages a pool of reusable connections.
 type Pool struct {
 	mu              sync.RWMutex
 	hostConnections map[string][]*ManagedConnection
@@ -36,7 +36,7 @@ type Pool struct {
 	done            chan struct{}
 }
 
-// ManagedConnection wraps a connection with metadata
+// ManagedConnection wraps a connection with metadata.
 type ManagedConnection struct {
 	conn       Connection
 	url        string
@@ -49,7 +49,7 @@ type ManagedConnection struct {
 	inUse      bool
 }
 
-// NewPool creates a new connection pool
+// NewPool creates a new connection pool.
 func NewPool(maxPerHost int, maxIdleTime time.Duration) *Pool {
 	if maxPerHost <= 0 {
 		maxPerHost = 10
@@ -77,7 +77,7 @@ func NewPool(maxPerHost int, maxIdleTime time.Duration) *Pool {
 	return pool
 }
 
-// periodicCleanup removes idle connections periodically
+// periodicCleanup removes idle connections periodically.
 func (p *Pool) periodicCleanup() {
 	for {
 		select {
@@ -89,7 +89,7 @@ func (p *Pool) periodicCleanup() {
 	}
 }
 
-// GetConnection gets a connection for the specified URL and headers
+// GetConnection gets a connection for the specified URL and headers.
 func (p *Pool) GetConnection(urlStr string, headers map[string]string) (Connection, bool, error) {
 	u, err := url.Parse(urlStr)
 	if err != nil {
@@ -117,7 +117,6 @@ func (p *Pool) GetConnection(urlStr string, headers map[string]string) (Connecti
 		if !managed.conn.IsAlive() ||
 			now.Sub(managed.createdAt) > p.maxLifetime ||
 			(!managed.inUse && now.Sub(managed.lastUsedAt) > p.maxIdleTime) {
-
 			logger.Debugf("Removing dead or expired connection to %s", host)
 			managed.conn.Close()
 			continue
@@ -159,7 +158,7 @@ func (p *Pool) GetConnection(urlStr string, headers map[string]string) (Connecti
 	return nil, false, nil
 }
 
-// RegisterConnection adds a new connection to the pool
+// RegisterConnection adds a new connection to the pool.
 func (p *Pool) RegisterConnection(conn Connection) {
 	if conn == nil {
 		logger.Warnf("Attempted to register nil connection")
@@ -201,7 +200,7 @@ func (p *Pool) RegisterConnection(conn Connection) {
 	p.updateStats()
 }
 
-// ReleaseConnection puts a connection back in the pool for reuse
+// ReleaseConnection puts a connection back in the pool for reuse.
 func (p *Pool) ReleaseConnection(conn Connection) {
 	if conn == nil {
 		logger.Warnf("Attempted to release nil connection")
@@ -260,7 +259,7 @@ func (p *Pool) ReleaseConnection(conn Connection) {
 	conn.Close()
 }
 
-// pruneConnectionsForHost reduces the number of connections for a host to maxPerHost
+// pruneConnectionsForHost reduces the number of connections for a host to maxPerHost.
 func (p *Pool) pruneConnectionsForHost(host string) {
 	connections := p.hostConnections[host]
 
@@ -293,7 +292,7 @@ func (p *Pool) pruneConnectionsForHost(host string) {
 	}
 }
 
-// CleanupIdleConnections removes idle connections that haven't been used recently
+// CleanupIdleConnections removes idle connections that haven't been used recently.
 func (p *Pool) CleanupIdleConnections() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -330,7 +329,7 @@ func (p *Pool) CleanupIdleConnections() {
 	p.updateStats()
 }
 
-// CloseAll closes all connections in the pool
+// CloseAll closes all connections in the pool.
 func (p *Pool) CloseAll() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -355,7 +354,7 @@ func (p *Pool) CloseAll() {
 	p.updateStats()
 }
 
-// Stats returns statistics about the connection pool
+// Stats returns statistics about the connection pool.
 func (p *Pool) Stats() PoolStats {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
@@ -375,7 +374,7 @@ func (p *Pool) Stats() PoolStats {
 	return stats
 }
 
-// removeConnection removes a connection from the pool without closing it
+// removeConnection removes a connection from the pool without closing it.
 func (p *Pool) removeConnection(host string, index int) {
 	connections := p.hostConnections[host]
 	if index < 0 || index >= len(connections) {
@@ -391,7 +390,7 @@ func (p *Pool) removeConnection(host string, index int) {
 	}
 }
 
-// updateStats updates the pool statistics
+// updateStats updates the pool statistics.
 func (p *Pool) updateStats() {
 	totalActive := int64(0)
 	totalIdle := int64(0)
@@ -411,7 +410,7 @@ func (p *Pool) updateStats() {
 	atomic.StoreInt64(&p.stats.TotalConnections, totalActive+totalIdle)
 }
 
-// headersCompatible checks if the supplied headers are compatible with the stored headers
+// headersCompatible checks if the supplied headers are compatible with the stored headers.
 func headersCompatible(stored, requested map[string]string) bool {
 	// Check for authentication headers specifically
 	authKeys := []string{
@@ -436,7 +435,7 @@ func headersCompatible(stored, requested map[string]string) bool {
 	return true
 }
 
-// copyHeaders makes a copy of the headers map
+// copyHeaders makes a copy of the headers map.
 func copyHeaders(headers map[string]string) map[string]string {
 	if headers == nil {
 		return nil

@@ -4,15 +4,16 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/NamanBalaji/tdm/internal/common"
-	"github.com/NamanBalaji/tdm/internal/downloader"
 	"github.com/charmbracelet/bubbles/progress"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/lipgloss"
+
+	"github.com/NamanBalaji/tdm/internal/common"
+	"github.com/NamanBalaji/tdm/internal/downloader"
 )
 
-// DownloadModel represents a download in the TUI
+// DownloadModel represents a download in the TUI.
 type DownloadModel struct {
 	download *downloader.Download
 	progress progress.Model
@@ -20,7 +21,7 @@ type DownloadModel struct {
 	width    int
 }
 
-// NewDownloadModel creates a new download model for the TUI
+// NewDownloadModel creates a new download model for the TUI.
 func NewDownloadModel(download *downloader.Download) *DownloadModel {
 	p := progress.New(
 		progress.WithWidth(50),
@@ -45,14 +46,14 @@ func NewDownloadModel(download *downloader.Download) *DownloadModel {
 	}
 }
 
-// Update updates the download model with new stats
+// Update updates the download model with new stats.
 func (d *DownloadModel) Update(msg StatusUpdateMsg) {
 	if msg.ID == d.download.ID {
 		d.progress.SetPercent(float64(msg.Progress) / 100.0)
 	}
 }
 
-// View renders the download model
+// View renders the download model.
 func (d *DownloadModel) View() string {
 	stats := d.download.GetStats()
 
@@ -121,7 +122,7 @@ func (d *DownloadModel) View() string {
 	return fmt.Sprintf("%s\n%s\n%s  %s", firstLine, secondLine, progressBar, infoLine)
 }
 
-// Helper function to format bytes to human-readable format
+// Helper function to format bytes to human-readable format.
 func formatSize(bytes int64) string {
 	const unit = 1000
 	if bytes < unit {
@@ -135,15 +136,15 @@ func formatSize(bytes int64) string {
 	return fmt.Sprintf("%.1f %cB", float64(bytes)/float64(div), "KMGTPE"[exp])
 }
 
-// Helper function to format speed
+// Helper function to format speed.
 func formatSpeed(bytesPerSec int64) string {
 	if bytesPerSec < 0 {
 		return "0 B/s"
 	}
-	return fmt.Sprintf("%s/s", formatSize(bytesPerSec))
+	return formatSize(bytesPerSec) + "/s"
 }
 
-// Custom progress bar render function
+// Custom progress bar render function.
 func customProgressBar(width int, percent float64, filledColor, emptyColor lipgloss.Color) string {
 	w := float64(width)
 
@@ -157,13 +158,13 @@ func customProgressBar(width int, percent float64, filledColor, emptyColor lipgl
 		progressBarEmptyStyle.Foreground(emptyColor).Render(emptyStr)
 }
 
-// AddDownloadModel represents the add download form
+// AddDownloadModel represents the add download form.
 type AddDownloadModel struct {
 	textInput textinput.Model
 	width     int
 }
 
-// View renders the add download form
+// View renders the add download form.
 func (a AddDownloadModel) View() string {
 	formWidth := a.width - 4
 

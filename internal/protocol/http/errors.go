@@ -2,120 +2,94 @@ package http
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"io"
 	"net"
 	"net/http"
-	"strings"
-
-	"github.com/NamanBalaji/tdm/internal/errors"
 )
 
-// Common HTTP error constants
 var (
 	ErrHeadNotSupported    = errors.New("HEAD method not supported by server")
 	ErrRangesNotSupported  = errors.New("byte ranges not supported by server")
-	ErrInvalidContentRange = errors.New("invalid content range")
+	ErrInvalidContentRange = errors.New("invalid Content-Range header")
+
+	ErrTimeout         = errors.New("operation timed out")
+	ErrNetworkProblem  = errors.New("network-related error")
+	ErrIOProblem       = errors.New("I/O error")
+	ErrRequestCreation = errors.New("failed to create request")
+
+	ErrServerProblem    = errors.New("server error (5xx)")
+	ErrTooManyRequests  = errors.New("too many requests (429)")
+	ErrResourceNotFound = errors.New("resource not found (404)")
+	ErrAccessDenied     = errors.New("access denied (403)")
+	ErrAuthentication   = errors.New("authentication required (401)")
+	ErrGone             = errors.New("resource gone (410)")
+	ErrClientRequest    = errors.New("client error (4xx)")
+
+	ErrUnknown          = errors.New("unknown error")
+	ErrUnexpectedEOF    = errors.New("unexpected EOF")
+	ErrContextCancelled = errors.New("operation cancelled")
 )
 
-// ClassifyHTTPError converts an HTTP status code into an appropriate error
-func ClassifyHTTPError(statusCode int, url string) error {
-	var baseErr error
-
+// classifyHTTPError converts an HTTP status code into an appropriate error.
+func classifyHTTPError(statusCode int) error {
 	switch statusCode {
 	case http.StatusNotFound:
-		baseErr = errors.ErrResourceNotFound
+		return ErrResourceNotFound
 	case http.StatusForbidden:
-		baseErr = errors.ErrAccessDenied
+		return ErrAccessDenied
 	case http.StatusUnauthorized:
-		baseErr = errors.ErrAuthentication
+		return ErrAuthentication
 	case http.StatusGone:
-		baseErr = errors.New("resource gone")
+		return ErrGone
 	case http.StatusMethodNotAllowed:
-		baseErr = ErrHeadNotSupported
+		return ErrHeadNotSupported
 	case http.StatusRequestedRangeNotSatisfiable:
-		baseErr = ErrRangesNotSupported
+		return ErrRangesNotSupported
 	case http.StatusTooManyRequests:
-		baseErr = errors.New("too many requests")
+		return ErrTooManyRequests
 	default:
 		switch {
 		case statusCode >= 500:
-			message := fmt.Sprintf("server error (%d)", statusCode)
-			baseErr = errors.New(message)
+			return ErrServerProblem
 		case statusCode >= 400:
-			message := fmt.Sprintf("client error (%d)", statusCode)
-			baseErr = errors.New(message)
+			return ErrClientRequest
 		default:
 			return nil
 		}
 	}
-
-	return errors.NewHTTPError(baseErr, url, statusCode)
 }
 
-// ClassifyError categorizes a general error into a custom error type
-func ClassifyError(err error, url string) error {
+// classifyError categorizes a general error into a sentinel error.
+func classifyError(err error) error {
 	if err == nil {
 		return nil
 	}
 
-	var downloadErr *errors.DownloadError
-	if errors.As(err, &downloadErr) {
+	if errors.Is(err, context.Canceled) {
 		return err
 	}
 
-	if errors.Is(err, context.Canceled) {
-		return errors.NewContextError(err, url)
-	}
-
 	if errors.Is(err, context.DeadlineExceeded) {
-		return errors.NewContextError(err, url)
+		return ErrTimeout
 	}
 
 	if errors.Is(err, io.EOF) {
-		return errors.NewHTTPError(errors.ErrEndOfFIle, url, http.StatusMethodNotAllowed)
+		return ErrUnexpectedEOF
+	}
+	if errors.Is(err, io.ErrUnexpectedEOF) {
+		return ErrUnexpectedEOF
 	}
 
 	var netErr net.Error
 	if errors.As(err, &netErr) {
-		if netErr.Timeout() {
-			return errors.NewNetworkError(errors.ErrTimeout, url, true)
-		}
-		return errors.NewNetworkError(err, url, true)
+		return ErrNetworkProblem
 	}
 
-	errStr := strings.ToLower(err.Error())
-
-	if strings.Contains(errStr, "connection refused") ||
-		strings.Contains(errStr, "connection reset") {
-		return errors.NewNetworkError(errors.ErrConnectionReset, url, true)
-	}
-
-	if strings.Contains(errStr, "no such host") {
-		return errors.NewNetworkError(errors.New("DNS resolution failed"), url, false)
-	}
-
-	if strings.Contains(errStr, "tls") ||
-		strings.Contains(errStr, "certificate") {
-		return errors.NewNetworkError(errors.New("TLS/SSL error"), url, true)
-	}
-
-	if strings.Contains(errStr, "context") &&
-		(strings.Contains(errStr, "canceled") ||
-			strings.Contains(errStr, "deadline exceeded")) {
-		return errors.NewContextError(err, url)
-	}
-
-	return &errors.DownloadError{
-		Err:       err,
-		Category:  errors.CategoryUnknown,
-		Protocol:  errors.ProtocolGeneric,
-		Retryable: false,
-		Resource:  url,
-	}
+	return ErrUnknown
 }
 
-// IsFallbackError determines if an error triggers a fallback mechanism
+// IsFallbackError checks if the error requires fallback during initialization.
 func IsFallbackError(err error) bool {
-	return errors.Is(err, ErrHeadNotSupported) || errors.Is(err, ErrRangesNotSupported) || errors.Is(err, errors.ErrEndOfFIle)
+	return errors.Is(err, ErrHeadNotSupported) || errors.Is(err, ErrRangesNotSupported) || errors.Is(err, ErrUnexpectedEOF)
 }

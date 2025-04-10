@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-// Connection represents a network connection to a remote resource
+// Connection represents a network connection to a remote resource.
 type Connection interface {
 	// Connect establishes the connection
 	Connect(ctx context.Context) error

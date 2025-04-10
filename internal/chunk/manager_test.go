@@ -1,13 +1,15 @@
 package chunk_test
 
 import (
-	"github.com/NamanBalaji/tdm/internal/chunk"
-	"github.com/NamanBalaji/tdm/internal/common"
-	"github.com/google/uuid"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/google/uuid"
+
+	"github.com/NamanBalaji/tdm/internal/chunk"
+	"github.com/NamanBalaji/tdm/internal/common"
 )
 
 func TestNewManager(t *testing.T) {
@@ -103,7 +105,7 @@ func TestCreateChunks_MultipleChunks(t *testing.T) {
 	if lastChunk.EndByte != filesize-1 {
 		t.Errorf("last chunk should end at %d, got %d", filesize-1, lastChunk.EndByte)
 	}
-	for i := 0; i < len(chunks)-1; i++ {
+	for i := range len(chunks) - 1 {
 		if chunks[i].EndByte+1 != chunks[i+1].StartByte {
 			t.Errorf("chunks not contiguous: chunk %d end %d, next start %d", i, chunks[i].EndByte, chunks[i+1].StartByte)
 		}

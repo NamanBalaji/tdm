@@ -4,7 +4,7 @@ import (
 	"github.com/charmbracelet/bubbles/key"
 )
 
-// Keymap defines the keys for the application
+// Keymap defines the keys for the application.
 type keyMap struct {
 	Up       key.Binding
 	Down     key.Binding
@@ -20,12 +20,12 @@ type keyMap struct {
 	Quit     key.Binding
 }
 
-// ShortHelp returns keybindings to be shown in the mini help view
+// ShortHelp returns keybindings to be shown in the mini help view.
 func (k keyMap) ShortHelp() []key.Binding {
 	return []key.Binding{k.Add, k.Pause, k.Resume, k.Remove, k.Cancel, k.Quit}
 }
 
-// FullHelp returns keybindings for the expanded help view
+// FullHelp returns keybindings for the expanded help view.
 func (k keyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{k.Up, k.Down, k.PageUp, k.PageDown, k.Add},
