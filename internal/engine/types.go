@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 )
 
-// Config contains download manager configuration
+// Config contains download manager configuration.
 type Config struct {
 	DownloadDir               string
 	ConfigDir                 string
@@ -20,7 +20,7 @@ type Config struct {
 	SaveInterval              int64 // Interval in seconds to save download state
 }
 
-// DefaultConfig returns the default engine configuration
+// DefaultConfig returns the default engine configuration.
 func DefaultConfig() *Config {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
@@ -32,8 +32,8 @@ func DefaultConfig() *Config {
 	return &Config{
 		DownloadDir:               downloadDir,
 		ConfigDir:                 configDir,
-		MaxConcurrentDownloads:    3,
-		MaxConnectionsPerDownload: 8,
+		MaxConcurrentDownloads:    4,
+		MaxConnectionsPerDownload: 32,
 		ChunkSize:                 4 * 1024 * 1024, // 4MB
 		UserAgent:                 "TDM/1.0",
 		TempDir:                   filepath.Join(os.TempDir(), "tdm"),

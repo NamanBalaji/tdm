@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-// Connection represents a network connection to a remote resource
+// Connection represents a network connection to a remote resource.
 type Connection interface {
 	// Connect establishes the connection
 	Connect(ctx context.Context) error
@@ -21,6 +21,8 @@ type Connection interface {
 	GetURL() string
 	// GetHeaders returns the connection's headers (for connection pooling)
 	GetHeaders() map[string]string
+	// SetHeader sets a specific header value
+	SetHeader(key, value string)
 	// SetTimeout sets read/write timeouts
 	SetTimeout(timeout time.Duration)
 }

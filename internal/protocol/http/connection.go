@@ -2,13 +2,12 @@ package http
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"net/http"
 	"time"
 )
 
-// Connection implements the Connection interface for HTTP
+// Connection implements the Connection interface for HTTP.
 type Connection struct {
 	url         string
 	headers     map[string]string
@@ -20,10 +19,22 @@ type Connection struct {
 	initialized bool
 }
 
+func NewConnection(url string, headers map[string]string, client *http.Client,
+	startByte, endByte int64) *Connection {
+	return &Connection{
+		url:       url,
+		headers:   copyHeaders(headers),
+		client:    client,
+		startByte: startByte,
+		endByte:   endByte,
+		timeout:   30 * time.Second,
+	}
+}
+
 func (c *Connection) Connect(ctx context.Context) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.url, http.NoBody)
 	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
+		return ErrRequestCreation
 	}
 
 	for key, value := range c.headers {
@@ -32,16 +43,16 @@ func (c *Connection) Connect(ctx context.Context) error {
 
 	resp, err := c.client.Do(req)
 	if err != nil {
-		return fmt.Errorf("failed to connect: %w", err)
+		return classifyError(err)
 	}
 
 	if resp.StatusCode >= 400 {
 		resp.Body.Close()
-		return fmt.Errorf("server returned error status: %s", resp.Status)
+		return classifyHTTPError(resp.StatusCode)
 	}
 
 	rangeHeader := req.Header.Get("Range")
-	if rangeHeader != "" && resp.StatusCode != 206 {
+	if rangeHeader != "" && resp.StatusCode != http.StatusPartialContent {
 		// Server doesn't support ranges but returned 200 OK
 		// We need to handle this specially - for example by skipping data
 		// if we're resuming a download
@@ -50,7 +61,7 @@ func (c *Connection) Connect(ctx context.Context) error {
 			// This is inefficient but necessary for servers without range support
 			if _, err := io.CopyN(io.Discard, resp.Body, c.startByte); err != nil {
 				resp.Body.Close()
-				return fmt.Errorf("failed to skip to start position: %w", err)
+				return ErrIOProblem
 			}
 		}
 	}
@@ -108,4 +119,24 @@ func (c *Connection) GetURL() string {
 
 func (c *Connection) GetHeaders() map[string]string {
 	return c.headers
+}
+
+// SetHeader sets a specific header value.
+func (c *Connection) SetHeader(key, value string) {
+	if c.headers == nil {
+		c.headers = make(map[string]string)
+	}
+	c.headers[key] = value
+}
+
+func copyHeaders(headers map[string]string) map[string]string {
+	if headers == nil {
+		return nil
+	}
+
+	headerCopy := make(map[string]string, len(headers))
+	for k, v := range headers {
+		headerCopy[k] = v
+	}
+	return headerCopy
 }
