@@ -2,7 +2,6 @@ package http
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"net/http"
 	"time"
@@ -35,7 +34,7 @@ func NewConnection(url string, headers map[string]string, client *http.Client,
 func (c *Connection) Connect(ctx context.Context) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.url, http.NoBody)
 	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
+		return ErrRequestCreation
 	}
 
 	for key, value := range c.headers {

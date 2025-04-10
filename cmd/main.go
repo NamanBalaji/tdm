@@ -1,30 +1,35 @@
 package main
 
 import (
+	"flag"
 	"fmt"
+	"github.com/NamanBalaji/tdm/internal/logger"
 	"os"
 	"os/signal"
 	"syscall"
 
 	"github.com/NamanBalaji/tdm/internal/engine"
-	"github.com/NamanBalaji/tdm/internal/logger"
 	"github.com/NamanBalaji/tdm/internal/tui"
 )
 
 func main() {
-	// Create and initialize the engine
 	config := engine.DefaultConfig()
+
+	// Initialize logging
+	debug := flag.Bool("debug", false, "debug flag")
+	flag.Parse()
+
+	if err := logger.InitLogging(*debug, config.ConfigDir+"/tdm.log"); err != nil {
+		fmt.Printf("Warning: Failed to initialize logging: %v\n", err)
+	}
+	defer logger.Close()
+
+	// Create and initialize the engine
 	eng, err := engine.New(config)
 	if err != nil {
 		fmt.Printf("Error creating engine: %v\n", err)
 		os.Exit(1)
 	}
-
-	// Initialize logging
-	if err := logger.InitLogging(true, config.ConfigDir+"/tdm.log"); err != nil {
-		fmt.Printf("Warning: Failed to initialize logging: %v\n", err)
-	}
-	defer logger.Close()
 
 	// Initialize the engine
 	if err := eng.Init(); err != nil {

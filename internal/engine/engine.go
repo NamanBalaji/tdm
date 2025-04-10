@@ -4,16 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
-	"golang.org/x/sync/errgroup"
 
-	"github.com/NamanBalaji/tdm/internal/chunk"
 	"github.com/NamanBalaji/tdm/internal/common"
 	"github.com/NamanBalaji/tdm/internal/connection"
 	"github.com/NamanBalaji/tdm/internal/downloader"
@@ -42,16 +39,15 @@ type Engine struct {
 	downloads       map[uuid.UUID]*downloader.Download
 	protocolHandler *protocol.Handler
 	connectionPool  *connection.Pool
-	chunkManager    *chunk.Manager
 	config          *Config
 	repository      *repository.BboltRepository
 	queueProcessor  *QueueProcessor
 
-	ctx        context.Context
-	cancelFunc context.CancelFunc
-	wg         sync.WaitGroup
-
-	running bool
+	ctx           context.Context
+	cancelFunc    context.CancelFunc
+	wg            sync.WaitGroup
+	saveStateChan chan *downloader.Download
+	running       bool
 }
 
 // runTask runs a function in a goroutine tracked by the WaitGroup.
@@ -84,11 +80,6 @@ func New(config *Config) (*Engine, error) {
 
 	protocolHandler := protocol.NewHandler()
 	connectionPool := connection.NewPool(16, 5*time.Minute)
-	chunkManager, err := chunk.NewManager(config.TempDir)
-	if err != nil {
-		logger.Errorf("Failed to create chunk manager: %v", err)
-		return nil, fmt.Errorf("failed to create chunk manager: %w", err)
-	}
 
 	ctx, cancelFunc := context.WithCancel(context.Background())
 
@@ -96,10 +87,10 @@ func New(config *Config) (*Engine, error) {
 		downloads:       make(map[uuid.UUID]*downloader.Download),
 		protocolHandler: protocolHandler,
 		connectionPool:  connectionPool,
-		chunkManager:    chunkManager,
 		config:          config,
 		ctx:             ctx,
 		cancelFunc:      cancelFunc,
+		saveStateChan:   make(chan *downloader.Download, 5),
 	}
 
 	logger.Infof("Engine instance created successfully")
@@ -140,10 +131,19 @@ func (e *Engine) Init() error {
 		e.startPeriodicSave(e.ctx)
 	})
 
-	if err := e.restoreDownloadStates(); err != nil {
-		logger.Errorf("Failed to restore download states: %v", err)
-		log.Printf("some download states could not be restored: %v", err)
-	}
+	e.runTask(func() {
+		for {
+			select {
+			case <-e.ctx.Done():
+				return
+			case d := <-e.saveStateChan:
+				err := e.saveDownload(d)
+				if err != nil {
+					logger.Errorf("Failed to save download %s: %v", d, err)
+				}
+			}
+		}
+	})
 
 	queuedCount := 0
 	for _, download := range e.downloads {
@@ -199,7 +199,7 @@ func (e *Engine) initRepository() error {
 func (e *Engine) loadDownloads() error {
 	logger.Debugf("Loading downloads from repository")
 
-	downloads, err := e.repository.FindAll(e.ctx)
+	downloads, err := e.repository.FindAll()
 	if err != nil {
 		logger.Errorf("Failed to retrieve downloads from repository: %v", err)
 		return fmt.Errorf("failed to retrieve downloads: %w", err)
@@ -207,10 +207,9 @@ func (e *Engine) loadDownloads() error {
 
 	for _, download := range downloads {
 		logger.Debugf("Restoring download: %s, URL: %s", download.ID, download.URL)
-		download.RestoreFromSerialization(e.ctx)
-
-		if err := e.restoreChunks(download); err != nil {
-			logger.Warnf("Failed to restore chunks for download %s: %v", download.ID, err)
+		if err := download.RestoreFromSerialization(e.ctx, e.protocolHandler, e.saveStateChan); err != nil {
+			logger.Errorf("Failed to restore download %s: %v", download.ID, err)
+			continue
 		}
 
 		e.downloads[download.ID] = download
@@ -221,67 +220,8 @@ func (e *Engine) loadDownloads() error {
 	return nil
 }
 
-// restoreChunks recreates chunk objects from serialized chunk info.
-func (e *Engine) restoreChunks(download *downloader.Download) error {
-	if len(download.ChunkInfos) == 0 {
-		logger.Debugf("No chunks to restore for download %s", download.ID)
-		return nil
-	}
-
-	logger.Debugf("Restoring %d chunks for download %s", len(download.ChunkInfos), download.ID)
-	chunks := make([]*chunk.Chunk, download.GetTotalChunks())
-
-	for i, info := range download.ChunkInfos {
-		chunkID, err := uuid.Parse(info.ID)
-		if err != nil {
-			logger.Errorf("Failed to parse chunk ID %s: %v", info.ID, err)
-			return err
-		}
-
-		newChunk := &chunk.Chunk{
-			ID:                 chunkID,
-			DownloadID:         download.ID,
-			StartByte:          info.StartByte,
-			EndByte:            info.EndByte,
-			Downloaded:         info.Downloaded,
-			Status:             info.Status,
-			RetryCount:         info.RetryCount,
-			TempFilePath:       info.TempFilePath,
-			SequentialDownload: info.SequentialDownload,
-			LastActive:         info.LastActive,
-		}
-
-		if _, err := os.Stat(newChunk.TempFilePath); os.IsNotExist(err) {
-			logger.Debugf("Chunk file %s does not exist, checking directory", newChunk.TempFilePath)
-			chunkDir := filepath.Dir(newChunk.TempFilePath)
-			if _, err := os.Stat(chunkDir); os.IsNotExist(err) {
-				logger.Debugf("Creating chunk directory: %s", chunkDir)
-				if err := os.MkdirAll(chunkDir, 0o755); err != nil {
-					logger.Warnf("Failed to create chunk directory %s: %v", chunkDir, err)
-				}
-			}
-
-			if newChunk.GetStatus() == common.StatusCompleted {
-				logger.Debugf("Resetting completed chunk %s as file is missing", newChunk.ID)
-				newChunk.SetStatus(common.StatusPending)
-				newChunk.Downloaded = 0
-			}
-		}
-
-		chunks[i] = newChunk
-		logger.Debugf("Restored chunk %s with status %s, range: %d-%d, downloaded: %d",
-			newChunk.ID, newChunk.GetStatus(), newChunk.GetStartByte(), newChunk.GetEndByte(), newChunk.GetDownloaded())
-	}
-
-	download.AddChunks(chunks...)
-	download.SetProgressFunction()
-	logger.Debugf("All chunks restored for download %s", download.ID)
-
-	return nil
-}
-
 // AddDownload adds a new download to the Engine.
-func (e *Engine) AddDownload(url string, config *downloader.Config) (uuid.UUID, error) {
+func (e *Engine) AddDownload(url string, config *common.Config) (uuid.UUID, error) {
 	logger.Infof("Adding download for URL: %s", url)
 
 	if url == "" {
@@ -310,7 +250,7 @@ func (e *Engine) AddDownload(url string, config *downloader.Config) (uuid.UUID, 
 	dConfig := config
 	if dConfig == nil {
 		logger.Debugf("No config provided, using default download config")
-		dConfig = &downloader.Config{}
+		dConfig = &common.Config{}
 	}
 
 	if dConfig.Directory == "" {
@@ -330,52 +270,27 @@ func (e *Engine) AddDownload(url string, config *downloader.Config) (uuid.UUID, 
 		logger.Debugf("Using default retry delay: %v", dConfig.RetryDelay)
 	}
 
-	logger.Debugf("Initializing download for URL: %s", url)
-	info, err := e.protocolHandler.Initialize(e.ctx, url, dConfig)
+	download, err := downloader.NewDownload(e.ctx, url, e.protocolHandler, dConfig, e.saveStateChan)
 	if err != nil {
-		logger.Errorf("Failed to initialize download for URL %s: %v", url, err)
-		return uuid.Nil, fmt.Errorf("failed to initialize download: %w", err)
+		logger.Errorf("Failed to create download: %v", err)
+		return uuid.Nil, fmt.Errorf("failed to create download: %w", err)
 	}
-
-	logger.Debugf("Download initialized, filename: %s, size: %d, supports ranges: %v",
-		info.Filename, info.TotalSize, info.SupportsRanges)
-
-	if err := os.MkdirAll(dConfig.Directory, 0o755); err != nil {
-		logger.Errorf("Failed to create directory %s: %v", dConfig.Directory, err)
-		return uuid.Nil, fmt.Errorf("failed to create directory: %w", err)
-	}
-
-	download := downloader.NewDownload(e.ctx, url, info.Filename, info.TotalSize, dConfig)
-
-	logger.Debugf("Created download with ID: %s", download.ID)
-
-	chunks, err := e.chunkManager.CreateChunks(download.ID, info.TotalSize, info.SupportsRanges, dConfig.Connections, download.AddProgress)
-	if err != nil {
-		logger.Errorf("Failed to create chunks: %v", err)
-		return uuid.Nil, fmt.Errorf("failed to create chunks: %w", err)
-	}
-	download.AddChunks(chunks...)
-
-	logger.Debugf("Created %d chunks for download %s", len(chunks), download.ID)
-
 	e.mu.Lock()
 	e.downloads[download.ID] = download
 	e.mu.Unlock()
+
+	if err := e.repository.Save(download); err != nil {
+		logger.Errorf("Failed to save download to repository: %v", err)
+		e.mu.Lock()
+		delete(e.downloads, download.ID)
+		e.mu.Unlock()
+		return uuid.Nil, fmt.Errorf("failed to save download to repository: %w", err)
+	}
 
 	if e.config.AutoStartDownloads {
 		logger.Debugf("Auto-starting download %s", download.ID)
 		download.SetStatus(common.StatusQueued)
 		e.queueProcessor.EnqueueDownload(download.ID, download.Config.Priority)
-	}
-
-	logger.Debugf("Saving download %s", download.ID)
-	if err := e.saveDownload(download); err != nil {
-		logger.Errorf("Failed to save download %s: %v", download.ID, err)
-		// @TODO: Dequeue as well
-		e.mu.Lock()
-		delete(e.downloads, download.ID)
-		e.mu.Unlock()
-		return uuid.Nil, fmt.Errorf("failed to save download: %w", err)
 	}
 
 	logger.Infof("Download added successfully with ID: %s", download.ID)
@@ -430,31 +345,7 @@ func (e *Engine) RemoveDownload(id uuid.UUID, removeFiles bool) error {
 		return fmt.Errorf("failed to get download: %w", err)
 	}
 
-	// Cancel download if active
-	if download.GetStatus() == common.StatusActive {
-		logger.Debugf("Cancelling active download %s before removal", id)
-		err := e.CancelDownload(id, removeFiles)
-		if err != nil {
-			logger.Errorf("Failed to cancel download %s: %v", id, err)
-			return fmt.Errorf("failed to cancel download: %w", err)
-		}
-	}
-
-	if removeFiles {
-		logger.Debugf("Cleaning up chunk files for download %s", id)
-		if err := e.chunkManager.CleanupChunks(download.Chunks); err != nil {
-			logger.Warnf("Failed to clean up chunks: %v", err)
-		}
-
-		outputPath := filepath.Join(download.Config.Directory, download.Filename)
-		logger.Debugf("Removing output file: %s", outputPath)
-		if _, err := os.Stat(outputPath); err == nil {
-			if err := os.Remove(outputPath); err != nil {
-				logger.Warnf("Failed to remove output file: %v", err)
-			}
-		}
-	}
-
+	download.Remove()
 	if err := e.deleteDownload(id); err != nil {
 		logger.Errorf("Failed to delete download %s from repository: %v", id, err)
 		return fmt.Errorf("failed to delete download: %w", err)
@@ -535,10 +426,11 @@ func (e *Engine) GetGlobalStats() common.GlobalStats {
 func (e *Engine) PauseDownload(id uuid.UUID) error {
 	logger.Infof("Pausing download: %s", id)
 
-	if err := e.stopDownloading(id, common.StatusPaused, false); err != nil {
-		logger.Errorf("Failed to pause download %s: %v", id, err)
-		return fmt.Errorf("failed to pause download: %w", err)
+	download, err := e.GetDownload(id)
+	if err != nil {
+		return fmt.Errorf("failed to get download: %w", err)
 	}
+	download.Stop(common.StatusPaused, false)
 	logger.Infof("Download %s paused successfully", id)
 
 	return nil
@@ -548,52 +440,12 @@ func (e *Engine) PauseDownload(id uuid.UUID) error {
 func (e *Engine) CancelDownload(id uuid.UUID, removeFiles bool) error {
 	logger.Infof("Cancelling download %s (removeFiles: %v)", id, removeFiles)
 
-	if err := e.stopDownloading(id, common.StatusCancelled, true); err != nil {
-		logger.Errorf("Failed to cancel download %s: %v", id, err)
-		return fmt.Errorf("failed to cancel download: %w", err)
-	}
-	logger.Infof("Download %s cancelled successfully", id)
-
-	return nil
-}
-
-// stopDownloading is a helper function that stops a download and sets its status.
-func (e *Engine) stopDownloading(id uuid.UUID, status common.Status, removeFiles bool) error {
-	if !e.running {
-		return ErrEngineNotRunning
-	}
-
 	download, err := e.GetDownload(id)
 	if err != nil {
 		return fmt.Errorf("failed to get download: %w", err)
 	}
-
-	if download.GetStatus() != common.StatusActive && status == common.StatusPaused {
-		logger.Debugf("Download %s is not active, skipping pause", id)
-		return nil
-	}
-
-	logger.Debugf("Cancelling context for download %s", id)
-	if download.CancelFunc() != nil {
-		download.SetContextKey("stop", true)
-		download.CancelFunc()()
-	}
-
-	download.WaitForDone()
-
-	download.SetStatus(status)
-	logger.Debugf("Download %s status set to %s", id, status)
-
-	if removeFiles {
-		logger.Debugf("Cleaning up chunk files for download %s", id)
-		if err := e.chunkManager.CleanupChunks(download.Chunks); err != nil {
-			logger.Warnf("Failed to clean up chunks: %v", err)
-		}
-	}
-
-	if err := e.saveDownload(download); err != nil {
-		logger.Errorf("Failed to save download %s after stopping: %v", id, err)
-	}
+	download.Stop(common.StatusCancelled, true)
+	logger.Infof("Download %s cancelled successfully", id)
 
 	return nil
 }
@@ -608,14 +460,9 @@ func (e *Engine) ResumeDownload(id uuid.UUID) error {
 		return fmt.Errorf("failed to get download: %w", err)
 	}
 
-	downloadStatus := download.GetStatus()
-	if downloadStatus != common.StatusPaused && downloadStatus != common.StatusFailed {
-		logger.Debugf("Download %s is not paused or failed (status: %s), skipping resume",
-			id, downloadStatus)
+	if !download.Resume(e.ctx) {
 		return nil
 	}
-
-	download.PrepareResume(e.ctx)
 
 	logger.Debugf("Enqueueing download %s for resumption", id)
 	download.SetStatus(common.StatusQueued)
@@ -635,383 +482,23 @@ func (e *Engine) StartDownload(id uuid.UUID) error {
 		return err
 	}
 
-	stats := download.GetStats()
-	if stats.Status == common.StatusActive {
-		logger.Debugf("Download %s is already active, skipping start", id)
-		return nil
-	}
-
-	logger.Debugf("Creating new context for download %s", id)
-
-	download.SetStatus(common.StatusActive)
-	download.StartTime = time.Now()
-	logger.Debugf("Download %s status set to active", id)
-
 	if err := e.saveDownload(download); err != nil {
 		logger.Errorf("Failed to save download %s after starting: %v", id, err)
 		return fmt.Errorf("failed to save download: %w", err)
 	}
 
+	completed := make(chan uuid.UUID)
+	e.runTask(func() {
+		e.queueProcessor.NotifyDownloadCompletion(<-completed)
+	})
+
 	e.runTask(func() {
 		logger.Debugf("Processing download %s in background", id)
-		e.processDownload(download)
+		download.Start(e.connectionPool, completed)
 	})
 
 	logger.Infof("Download %s started successfully", id)
 	return nil
-}
-
-// processDownload handles the actual download process.
-func (e *Engine) processDownload(download *downloader.Download) {
-	logger.Infof("Processing download %s: %s", download.ID, download.URL)
-
-	chunks := e.getPendingChunks(download)
-	logger.Debugf("Found %d pending chunks for download %s", len(chunks), download.ID)
-
-	defer func() {
-		e.queueProcessor.NotifyDownloadCompletion(download.ID)
-		download.Done()
-	}()
-
-	if len(chunks) == 0 {
-		logger.Debugf("No pending chunks for download %s, finishing", download.ID)
-		if err := e.finishDownload(download); err != nil {
-			logger.Errorf("Errorf finishing download %s: %s", download.ID, err)
-		}
-		return
-	}
-
-	logger.Debugf("Creating error group for download %s with %d chunks", download.ID, len(chunks))
-	g, ctx := errgroup.WithContext(download.Context())
-
-	sem := make(chan struct{}, download.Config.Connections)
-	logger.Debugf("Using semaphore with %d slots for download %s", download.Config.Connections, download.ID)
-
-	for i, c := range chunks {
-		chunkCopy := c
-		chunkIdx := i
-
-		g.Go(func() error {
-			logger.Debugf("Starting goroutine for chunk %d (%s) of download %s",
-				chunkIdx, chunkCopy.ID, download.ID)
-
-			select {
-			case sem <- struct{}{}:
-				logger.Debugf("Acquired semaphore slot for chunk %s", chunkCopy.ID)
-				defer func() {
-					<-sem
-					logger.Debugf("Released semaphore slot for chunk %s", chunkCopy.ID)
-				}()
-			case <-ctx.Done():
-				logger.Debugf("Context cancelled while waiting for semaphore for chunk %s", chunkCopy.ID)
-				return ctx.Err()
-			}
-
-			logger.Debugf("Downloading chunk %s (range: %d-%d) for download %s",
-				chunkCopy.ID, chunkCopy.StartByte, chunkCopy.EndByte, download.ID)
-			return e.downloadChunkWithRetries(ctx, download, chunkCopy)
-		})
-	}
-
-	logger.Debugf("Waiting for all chunks to complete for download %s", download.ID)
-	err := g.Wait()
-
-	if err == nil {
-		logger.Infof("All chunks completed successfully for download %s", download.ID)
-		if err := e.finishDownload(download); err != nil {
-			logger.Errorf("Errorf finishing download %s: %s", download.ID, err)
-		}
-
-		return
-	}
-
-	if errors.Is(err, context.Canceled) {
-		if download.GetContextKey("stop") == nil {
-			logger.Infof("Download %s paused due to context cancellation", download.ID)
-			download.SetStatus(common.StatusPaused)
-		}
-		if saveErr := e.saveDownload(download); saveErr != nil {
-			logger.Errorf("Failed to save download %s after pausing: %s", download.ID, saveErr)
-		}
-
-		return
-	}
-
-	logger.Errorf("Download %s failed: %v", download.ID, err)
-	e.handleDownloadFailure(download, err)
-}
-
-// downloadChunkWithRetries downloads a chunk with intelligent retry logic.
-func (e *Engine) downloadChunkWithRetries(ctx context.Context, download *downloader.Download, chunk *chunk.Chunk) error {
-	logger.Debugf("Downloading chunk %s with retries (max: %d)", chunk.ID, download.Config.MaxRetries)
-
-	err := e.downloadChunk(ctx, download, chunk)
-
-	if err == nil || errors.Is(err, context.Canceled) {
-		if err == nil {
-			logger.Debugf("Chunk %s downloaded successfully", chunk.ID)
-		} else {
-			logger.Debugf("Chunk %s download cancelled", chunk.ID)
-		}
-		return err
-	}
-
-	logger.Errorf("Download error for chunk %s: %v (retryable: %v)",
-		chunk.ID, err, isRetryableError(err))
-
-	for chunk.GetRetryCount() < download.Config.MaxRetries {
-		chunk.Reset()
-
-		retryCount := chunk.GetRetryCount()
-		logger.Debugf("Reset chunk %s for retry attempt %d/%d",
-			chunk.ID, retryCount, download.Config.MaxRetries)
-
-		backoff := calculateBackoff(chunk.RetryCount, download.Config.RetryDelay)
-		logger.Debugf("Waiting %v before retrying chunk %s", backoff, chunk.ID)
-
-		select {
-		case <-time.After(backoff):
-			logger.Infof("Retrying chunk %s (attempt %d/%d)",
-				chunk.ID, chunk.RetryCount+1, download.Config.MaxRetries)
-
-			err = e.downloadChunk(ctx, download, chunk)
-			if err == nil || errors.Is(err, context.Canceled) {
-				if err == nil {
-					logger.Debugf("Chunk %s retry succeeded", chunk.ID)
-				} else {
-					logger.Debugf("Chunk %s retry cancelled", chunk.ID)
-				}
-				return err
-			}
-
-			logger.Errorf("Download retry failed for chunk %s: %v (retryable: %v)",
-				chunk.ID, err, isRetryableError(err))
-
-			if !isRetryableError(err) {
-				logger.Errorf("Errorf not retryable for chunk %s, giving up", chunk.ID)
-				return err
-			}
-
-		case <-ctx.Done():
-			logger.Debugf("Context cancelled while waiting to retry chunk %s", chunk.ID)
-			chunk.SetStatus(common.StatusPaused)
-			return err
-		}
-	}
-
-	retryCount := chunk.GetRetryCount()
-	logger.Errorf("Chunk %s failed after %d retry attempts", chunk.ID, retryCount)
-	return fmt.Errorf("chunk %s failed after %d attempts: %w", chunk.ID, retryCount, err)
-}
-
-// downloadChunk downloads a single chunk.
-func (e *Engine) downloadChunk(ctx context.Context, download *downloader.Download, chunk *chunk.Chunk) error {
-	startByte := chunk.GetStartByte()
-	endByte := chunk.GetEndByte()
-	downloadedBytes := chunk.GetDownloaded()
-
-	logger.Debugf("Downloading chunk %s (range: %d-%d, downloaded: %d bytes) for download %s",
-		chunk.ID, startByte, endByte, downloadedBytes, download.ID)
-
-	// Set the status safely
-	chunk.SetStatus(common.StatusActive)
-
-	handler, err := e.protocolHandler.GetHandler(download.URL)
-	if err != nil {
-		logger.Errorf("Should never happen failed to get protocol handler for URL %s: %v", download.URL, err)
-		chunk.SetStatus(common.StatusFailed)
-		chunk.SetError(err)
-
-		return err
-	}
-
-	conn, err := e.getConnection(ctx, download.URL, download.Config.Headers, chunk, handler, download.Config)
-	if err != nil {
-		if errors.Is(err, context.Canceled) {
-			logger.Debugf("Download of chunk %s cancelled due to context", chunk.ID)
-			return err
-		}
-		logger.Errorf("Failed to get connection for chunk %s: %v", chunk.ID, err)
-		chunk.SetStatus(common.StatusFailed)
-
-		chunk.SetError(err)
-		return err
-	}
-
-	defer e.connectionPool.ReleaseConnection(conn)
-
-	chunk.SetConnection(conn)
-	logger.Debugf("Starting download for chunk %s", chunk.ID)
-	err = chunk.Download(ctx)
-
-	if err != nil {
-		// If we received a context cancellation, wrap it with our error system
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			logger.Debugf("Download of chunk %s cancelled due to context", chunk.ID)
-			return err
-		}
-		// Other errors are already properly categorized
-		logger.Errorf("Errorf downloading chunk %s: %v", chunk.ID, err)
-		return err
-	}
-
-	logger.Debugf("Chunk %s downloaded successfully", chunk.ID)
-	return nil
-}
-
-// getConnection retrieves a connection from the pool or creates a new one.
-func (e *Engine) getConnection(ctx context.Context, url string, header map[string]string, chunk *chunk.Chunk, handler protocol.Protocol, config *downloader.Config) (connection.Connection, error) {
-	var conn connection.Connection
-
-	ticker := time.NewTicker(200 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		maxConnReached := false
-		select {
-		case <-ctx.Done():
-			logger.Debugf("Context cancelled, stopping connection retrieval")
-			return nil, ctx.Err()
-		case <-ticker.C:
-			c, m, err := e.connectionPool.GetConnection(url, header)
-			maxConnReached = m
-			conn = c
-			if err != nil {
-				logger.Errorf("Error retrieving connection from pool: %v", err)
-				return nil, err
-			}
-		}
-		if !maxConnReached {
-			break
-		}
-	}
-
-	if conn == nil {
-		logger.Debugf("No connection available in pool, creating new one for chunk %s", chunk.ID)
-		conn, err := handler.CreateConnection(url, chunk, config)
-		if err != nil {
-			return nil, err
-		}
-
-		e.connectionPool.RegisterConnection(conn)
-		return conn, nil
-	}
-
-	logger.Debugf("Reusing connection from pool for chunk %s", chunk.ID)
-
-	handler.UpdateConnection(conn, chunk)
-
-	if err := conn.Reset(ctx); err != nil {
-		logger.Warnf("Failed to reset reused connection, creating new one: %v", err)
-		e.connectionPool.ReleaseConnection(conn)
-
-		return e.getConnection(ctx, url, header, chunk, handler, config)
-	}
-
-	return conn, nil
-}
-
-// getPendingChunks returns chunks that need downloading.
-func (e *Engine) getPendingChunks(download *downloader.Download) []*chunk.Chunk {
-	var pending []*chunk.Chunk
-	for _, c := range download.Chunks {
-		if c.Status != common.StatusCompleted {
-			pending = append(pending, c)
-		}
-	}
-	logger.Debugf("Found %d pending chunks for download %s", len(pending), download.ID)
-	return pending
-}
-
-// handleDownloadFailure updates download state on failure.
-func (e *Engine) handleDownloadFailure(download *downloader.Download, err error) {
-	logger.Errorf("Handling download failure for %s: %v", download.ID, err)
-
-	download.SetStatus(common.StatusFailed)
-	download.SetError(err)
-
-	if saveErr := e.saveDownload(download); saveErr != nil {
-		logger.Errorf("Failed to save download %s after failure: %s", download.ID, saveErr)
-	}
-
-	logger.Debugf("Download %s marked as failed", download.ID)
-}
-
-func (e *Engine) finishDownload(download *downloader.Download) error {
-	logger.Infof("Finishing download %s", download.ID)
-
-	for _, c := range download.Chunks {
-		if c.Status != common.StatusCompleted {
-			err := fmt.Errorf("cannot finish download: chunk %s is in state %s", c.ID, c.Status)
-			logger.Errorf("Cannot finish download %s: %v", download.ID, err)
-			e.handleDownloadFailure(download, err)
-			return err
-		}
-	}
-
-	targetPath := filepath.Join(download.Config.Directory, download.Filename)
-	logger.Debugf("Merging chunks for download %s to %s", download.ID, targetPath)
-
-	if err := e.chunkManager.MergeChunks(download.Chunks, targetPath); err != nil {
-		logger.Errorf("Failed to merge chunks for download %s: %v", download.ID, err)
-		e.handleDownloadFailure(download, err)
-		return fmt.Errorf("failed to merge chunks: %w", err)
-	}
-
-	download.SetStatus(common.StatusCompleted)
-	download.EndTime = time.Now()
-	logger.Debugf("Download %s marked as completed", download.ID)
-
-	logger.Debugf("Cleaning up chunks for download %s", download.ID)
-	if err := e.chunkManager.CleanupChunks(download.Chunks); err != nil {
-		logger.Warnf("Failed to cleanup chunks for download %s: %s", download.ID, err)
-	}
-
-	logger.Debugf("Saving download %s", download.ID)
-	if err := e.saveDownload(download); err != nil {
-		logger.Warnf("Failed to save download %s: %s", download.ID, err)
-	}
-
-	logger.Infof("Download %s finished successfully", download.ID)
-	return nil
-}
-
-// restoreDownloadStates restores the state of downloads based on their status.
-func (e *Engine) restoreDownloadStates() error {
-	logger.Infof("Restoring download states")
-	var lastErr error
-
-	for _, download := range e.downloads {
-		logger.Debugf("Restoring state for download %s with status %s", download.ID, download.GetStatus())
-
-		switch download.GetStatus() {
-		case common.StatusActive:
-			// Downloads that were active should be paused on restart
-			logger.Debugf("Changing active download %s to paused", download.ID)
-			download.SetStatus(common.StatusPaused)
-			if err := e.saveDownload(download); err != nil {
-				lastErr = err
-				logger.Errorf("Errorf setting download %s to paused: %v", download.ID, err)
-			}
-		case common.StatusCompleted:
-			outputPath := filepath.Join(download.Config.Directory, download.Filename)
-			logger.Debugf("Checking if completed download %s file exists at %s", download.ID, outputPath)
-			// @TODO: status missing and maybe ability to download again
-			if _, err := os.Stat(outputPath); os.IsNotExist(err) {
-				logger.Warnf("Output file missing for completed download %s, marking as failed", download.ID)
-				download.SetStatus(common.StatusFailed)
-				download.Error = errors.New("output file missing")
-				if err := e.saveDownload(download); err != nil {
-					lastErr = err
-					logger.Errorf("Errorf updating download %s status: %v", download.ID, err)
-				}
-			}
-		default:
-			logger.Debugf("Download %s remains in state %s", download.ID, download.GetStatus())
-		}
-	}
-
-	logger.Infof("Download states restored")
-	return lastErr
 }
 
 // Shutdown gracefully stops the engine, saving all download states.
@@ -1148,9 +635,6 @@ func (e *Engine) saveDownload(download *downloader.Download) error {
 		logger.Errorf("Cannot save download %s: repository not initialized", download.ID)
 		return errors.New("repository not initialized")
 	}
-
-	logger.Debugf("Preparing download %s for serialization", download.ID)
-	download.PrepareForSerialization()
 
 	logger.Debugf("Saving download %s to repository", download.ID)
 	return e.repository.Save(download)

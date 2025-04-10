@@ -1,10 +1,10 @@
 package repository
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/google/uuid"
@@ -104,7 +104,7 @@ func (r *BboltRepository) Save(download *downloader.Download) error {
 }
 
 // FindAll retrieves all downloads.
-func (r *BboltRepository) FindAll(ctx context.Context) ([]*downloader.Download, error) {
+func (r *BboltRepository) FindAll() ([]*downloader.Download, error) {
 	var downloads []*downloader.Download
 
 	err := r.db.View(func(tx *bbolt.Tx) error {
@@ -119,8 +119,6 @@ func (r *BboltRepository) FindAll(ctx context.Context) ([]*downloader.Download, 
 			if err := json.Unmarshal(v, download); err != nil {
 				return fmt.Errorf("failed to unmarshal download: %w", err)
 			}
-
-			download.RestoreFromSerialization(ctx)
 
 			downloads = append(downloads, download)
 			return nil

@@ -1,383 +1,282 @@
 package downloader
 
+import "C"
 import (
 	"context"
 	"errors"
-	"sync"
-	"sync/atomic"
-	"time"
-
-	"github.com/google/uuid"
-
+	"fmt"
 	"github.com/NamanBalaji/tdm/internal/chunk"
 	"github.com/NamanBalaji/tdm/internal/common"
+	"github.com/NamanBalaji/tdm/internal/connection"
 	"github.com/NamanBalaji/tdm/internal/logger"
+	"github.com/google/uuid"
+	"golang.org/x/sync/errgroup"
+	"math/rand"
+	"os"
+	"path/filepath"
+	"time"
 )
 
-// Download represents a file download task.
-type Download struct {
-	ID       uuid.UUID `json:"id"`
-	URL      string    `json:"url"`
-	Filename string    `json:"filename"`
-
-	Config    *Config       `json:"config"`
-	Status    common.Status `json:"status"`
-	TotalSize int64         `json:"total_size"`
-
-	Downloaded int64     `json:"downloaded"` // Downloaded bytes so far
-	StartTime  time.Time `json:"start_time,omitempty"`
-	EndTime    time.Time `json:"end_time,omitempty"`
-
-	ChunkInfos  []common.ChunkInfo `json:"chunk_infos"` // Chunk data for serialization
-	Chunks      []*chunk.Chunk     `json:"-"`
-	TotalChunks int32              `json:"total_chunks"`
-
-	ErrorMessage string `json:"error_message,omitempty"` // For persistent storage
-	Error        error  `json:"-"`                       // Runtime only
-
-	mu              sync.RWMutex
-	ctx             context.Context
-	cancelFunc      context.CancelFunc
-	done            chan struct{}
-	progressCh      chan common.Progress
-	speedCalculator *SpeedCalculator
-}
-
-// SetStatus sets the Status of a Download.
-func (d *Download) SetStatus(status common.Status) {
-	atomic.StoreInt32((*int32)(&d.Status), int32(status))
-}
-
-// GetStatus returns the current Status of the Download.
-func (d *Download) GetStatus() common.Status {
-	return common.Status(atomic.LoadInt32((*int32)(&d.Status)))
-}
-
-// SetError sets the Error and ErrorMessage for the Download.
-func (d *Download) SetError(err error) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	d.Error = err
-	d.ErrorMessage = ""
-	if err != nil {
-		d.ErrorMessage = err.Error()
+// Start initiates the download process for the chunks
+func (d *Download) Start(pool *connection.Pool, completed chan<- uuid.UUID) {
+	if d.GetStatus() == common.StatusActive {
+		return
 	}
-}
 
-// GetError returns the current Error of the Download.
-func (d *Download) GetError() error {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
-
-	return d.Error
-}
-
-// GetChunks returns the current Chunks of the Download.
-func (d *Download) GetChunks() []*chunk.Chunk {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
-
-	chunks := make([]*chunk.Chunk, len(d.Chunks))
-	copy(chunks, d.Chunks)
-	return chunks
-}
-
-// GetTotalChunks returns the total number of chunks.
-func (d *Download) GetTotalChunks() int {
-	return int(atomic.LoadInt32(&d.TotalChunks))
-}
-
-func (d *Download) SetTotalChunks(total int) {
-	atomic.StoreInt32(&d.TotalChunks, int32(total))
-}
-
-// AddChunks adds chunks to the Download.
-func (d *Download) AddChunks(chunks ...*chunk.Chunk) {
 	d.mu.Lock()
-	defer d.mu.Unlock()
+	defer func() {
+		close(d.done)
+		d.mu.Unlock()
+		completed <- d.ID
 
+	}()
+	d.SetStatus(common.StatusActive)
+	d.StartTime = time.Now()
+
+	chunks := d.getPendingChunks()
+	if len(chunks) == 0 {
+		logger.Debugf("No pending chunks found for download %s", d.ID)
+		d.finishDownload()
+	}
+
+	d.processDownload(chunks, pool)
+}
+
+// processDownload downloads the chunks concurrently using a connection pool
+func (d *Download) processDownload(chunks []*chunk.Chunk, pool *connection.Pool) {
+	g, ctx := errgroup.WithContext(d.ctx)
+	sem := make(chan struct{}, d.Config.Connections)
 	for _, c := range chunks {
-		d.Chunks = append(d.Chunks, c)
-		logger.Debugf("Added chunk %s to download %s", c.ID, d.ID)
-	}
-	d.SetTotalChunks(len(d.Chunks))
-}
+		c := c
+		g.Go(func() error {
+			select {
+			case <-ctx.Done():
+				logger.Debugf("Download cancelled for chunk %s", c.ID)
+				return ctx.Err()
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			}
 
-// GetDownloaded returns the number of bytes downloaded.
-func (d *Download) GetDownloaded() int64 {
-	return atomic.LoadInt64(&d.Downloaded)
-}
-
-// SetDownloaded sets the number of bytes downloaded.
-func (d *Download) SetDownloaded(bytes int64) {
-	atomic.StoreInt64(&d.Downloaded, bytes)
-}
-
-// GetTotalSize returns the total size of the Download.
-func (d *Download) GetTotalSize() int64 {
-	return atomic.LoadInt64(&d.TotalSize)
-}
-
-// SetTotalSize sets the total size of the Download.
-func (d *Download) SetTotalSize(bytes int64) {
-	atomic.StoreInt64(&d.TotalSize, bytes)
-}
-
-// Context returns the download context.
-func (d *Download) Context() context.Context {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
-
-	return d.ctx
-}
-
-// SetContextKey sets a key-value pair in the Download context.
-func (d *Download) SetContextKey(key string, value interface{}) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	if d.ctx == nil {
-		logger.Debugf("Context is nil, creating new context for download %s", d.ID)
-		d.ctx = context.Background()
+			return d.downloadChunkWithRetries(c, pool)
+		})
 	}
 
-	d.ctx = context.WithValue(d.ctx, key, value)
-	logger.Debugf("Set context key %s for download %s", key, d.ID)
-}
-
-// GetContextKey retrieves a value from the Download context.
-func (d *Download) GetContextKey(key string) interface{} {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
-
-	if d.ctx == nil {
-		logger.Debugf("Context is nil for download %s", d.ID)
-		return nil
+	err := g.Wait()
+	if err == nil {
+		d.finishDownload()
+		return
+	}
+	if errors.Is(err, context.Canceled) {
+		if d.ctx.Value("stop") != nil {
+			d.SetStatus(common.StatusPaused)
+		}
+		return
 	}
 
-	value := d.ctx.Value(key)
-	logger.Debugf("Got context key %s for download %s: %v", key, d.ID, value)
-	return value
+	d.handleDownloadFailure(err)
 }
 
-// CancelFunc returns the cancel function.
-func (d *Download) CancelFunc() context.CancelFunc {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
-
-	return d.cancelFunc
-}
-
-// WaitForDone waits for the download to finish.
-func (d *Download) WaitForDone() {
-	<-d.done
-}
-
-// Done signals that the download is done.
-func (d *Download) Done() {
-	close(d.done)
-}
-
-// PrepareResume prepares the download for resuming.
-func (d *Download) PrepareResume(ctx context.Context) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	d.done = make(chan struct{})
-	d.ctx, d.cancelFunc = context.WithCancel(ctx)
-}
-
-// SetProgressFunction sets the progress function for each chunk.
-func (d *Download) SetProgressFunction() {
-	logger.Debugf("Setting progress function for %d chunks in download %s", len(d.Chunks), d.ID)
-
-	for i, c := range d.Chunks {
-		logger.Debugf("Setting progress function for chunk %d/%d (%s) in download %s",
-			i+1, len(d.Chunks), c.ID, d.ID)
-		c.SetProgressFunc(d.AddProgress)
-	}
-}
-
-// GetProgressChannel returns the progress channel.
-func (d *Download) GetProgressChannel() chan common.Progress {
-	return d.progressCh
-}
-
-// AddProgress adds progress to the download.
-func (d *Download) AddProgress(bytes int64) {
-	atomic.AddInt64(&d.Downloaded, bytes)
-
-	if d.speedCalculator != nil {
-		d.speedCalculator.AddBytes(bytes)
-	}
-
-	select {
-	case d.progressCh <- common.Progress{
-		DownloadID:     d.ID,
-		BytesCompleted: atomic.LoadInt64(&d.Downloaded),
-		TotalBytes:     d.TotalSize,
-		Speed:          d.speedCalculator.GetSpeed(),
-		Status:         d.GetStatus(),
-		Timestamp:      time.Now(),
-	}:
-	default:
-		// Channel full, skip this update
-	}
-}
-
-// NewDownload creates a new Download instance.
-func NewDownload(ctx context.Context, url, filename string, totalSize int64, config *Config) *Download {
-	id := uuid.New()
-	logger.Infof("Creating new download: id=%s, url=%s, filename=%s", id, url, filename)
-
-	ctx, cancel := context.WithCancel(ctx)
-
-	download := &Download{
-		ID:              id,
-		URL:             url,
-		Filename:        filename,
-		TotalSize:       totalSize,
-		Config:          config,
-		Status:          common.StatusPending,
-		ChunkInfos:      make([]common.ChunkInfo, 0),
-		Chunks:          make([]*chunk.Chunk, 0),
-		progressCh:      make(chan common.Progress, 10),
-		done:            make(chan struct{}),
-		speedCalculator: NewSpeedCalculator(5),
-		StartTime:       time.Now(),
-		ctx:             ctx,
-		cancelFunc:      cancel,
-	}
-
-	if config != nil {
-		logger.Debugf("Download %s configuration: connections=%d, maxRetries=%d, retryDelay=%v",
-			id, config.Connections, config.MaxRetries, config.RetryDelay)
-	}
-
-	logger.Debugf("Download %s created with status: %s", id, download.Status)
-	return download
-}
-
-// GetStats returns current download statistics.
-func (d *Download) GetStats() Stats {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
-
-	downloadedBytes := atomic.LoadInt64(&d.Downloaded)
-	logger.Debugf("Getting stats for download %s: downloaded=%d bytes", d.ID, downloadedBytes)
-
-	var progress float64
-	if d.TotalSize > 0 {
-		progress = float64(downloadedBytes) / float64(d.TotalSize) * 100
-	}
-
-	var speed int64
-	if d.speedCalculator != nil {
-		speed = d.speedCalculator.GetSpeed()
-	}
-
-	activeChunks := 0
-	completedChunks := 0
-
+// getPendingChunks returns a list of chunks that are not completed
+func (d *Download) getPendingChunks() []*chunk.Chunk {
+	var pending []*chunk.Chunk
 	for _, c := range d.Chunks {
-		switch c.Status {
-		case common.StatusActive:
-			activeChunks++
-		case common.StatusCompleted:
-			completedChunks++
+		if c.GetStatus() != common.StatusCompleted {
+			pending = append(pending, c)
 		}
 	}
-
-	timeElapsed := time.Since(d.StartTime)
-	var timeRemaining time.Duration
-	if speed > 0 {
-		bytesRemaining := d.TotalSize - downloadedBytes
-		if bytesRemaining > 0 {
-			timeRemaining = time.Duration(bytesRemaining/speed) * time.Second
-		}
-	}
-
-	errorMsg := ""
-	if d.Error != nil {
-		errorMsg = d.Error.Error()
-	} else if d.ErrorMessage != "" {
-		errorMsg = d.ErrorMessage
-	}
-
-	stats := Stats{
-		ID:              d.ID,
-		Status:          d.GetStatus(),
-		TotalSize:       d.GetTotalSize(),
-		Downloaded:      downloadedBytes,
-		Progress:        progress,
-		Speed:           speed,
-		TimeElapsed:     timeElapsed,
-		TimeRemaining:   timeRemaining,
-		ActiveChunks:    activeChunks,
-		CompletedChunks: completedChunks,
-		TotalChunks:     d.GetTotalChunks(),
-		Error:           errorMsg,
-		LastUpdated:     time.Now(),
-	}
-
-	logger.Debugf("Download %s stats: progress=%.2f%%, speed=%d B/s, active=%d, completed=%d, total=%d",
-		d.ID, stats.Progress, stats.Speed, stats.ActiveChunks, stats.CompletedChunks, stats.TotalChunks)
-
-	return stats
+	logger.Debugf("Found %d pending chunks for download %s", len(pending), d.ID)
+	return pending
 }
 
-// PrepareForSerialization prepares the download for storage.
-func (d *Download) PrepareForSerialization() {
-	logger.Debugf("Preparing download %s for serialization", d.ID)
+// downloadChunkWithRetries attempts to download a chunk with retries
+func (d *Download) downloadChunkWithRetries(chunk *chunk.Chunk, pool *connection.Pool) error {
+	err := d.downloadChunk(chunk, pool)
+	if err == nil || errors.Is(err, context.Canceled) || !isRetryableError(err) {
+		return err
+	}
 
-	d.mu.Lock()
-	defer d.mu.Unlock()
+	for chunk.GetRetryCount() < d.Config.MaxRetries {
+		chunk.Reset()
 
-	// Save chunk information for serialization
-	d.ChunkInfos = make([]common.ChunkInfo, len(d.Chunks))
-	for i, c := range d.Chunks {
-		d.ChunkInfos[i] = common.ChunkInfo{
-			ID:                 c.ID.String(),
-			StartByte:          c.StartByte,
-			EndByte:            c.EndByte,
-			Downloaded:         c.Downloaded,
-			Status:             c.Status,
-			RetryCount:         c.RetryCount,
-			TempFilePath:       c.TempFilePath,
-			SequentialDownload: c.SequentialDownload,
-			LastActive:         c.LastActive,
+		retryCount := chunk.GetRetryCount()
+		backoff := calculateBackoff(retryCount, d.Config.RetryDelay)
+		logger.Debugf("Waiting %v before retrying chunk %s", backoff, chunk.ID)
+
+		select {
+		case <-time.After(backoff):
+			err = d.downloadChunk(chunk, pool)
+			if err == nil || errors.Is(err, context.Canceled) {
+				return err
+			}
+
+			if !isRetryableError(err) {
+				return err
+			}
+
+		case <-d.ctx.Done():
+			logger.Debugf("Context cancelled while waiting to retry chunk %s", chunk.ID)
+			chunk.SetStatus(common.StatusPaused)
+			return err
 		}
-
-		logger.Debugf("Serialized chunk %d/%d: id=%s, range=%d-%d, downloaded=%d, status=%s",
-			i+1, len(d.Chunks), c.ID, c.StartByte, c.EndByte, c.Downloaded, c.Status)
 	}
 
-	if d.Error != nil {
-		d.ErrorMessage = d.Error.Error()
-		logger.Debugf("Serialized error message: %s", d.ErrorMessage)
-	}
-
-	logger.Debugf("Download %s prepared for serialization with %d chunks", d.ID, len(d.ChunkInfos))
+	return err
 }
 
-// RestoreFromSerialization restores runtime fields after loading from storage.
-func (d *Download) RestoreFromSerialization(ctx context.Context) {
-	logger.Debugf("Restoring download %s from serialization", d.ID)
+// downloadChunk downloads a chunk using the provided connection pool
+func (d *Download) downloadChunk(chunk *chunk.Chunk, pool *connection.Pool) error {
+	conn, err := d.getConnection(chunk, pool)
+	if err != nil {
+		return err
+	}
 
-	d.ctx, d.cancelFunc = context.WithCancel(ctx)
+	chunk.SetConnection(conn)
+	defer pool.ReleaseConnection(conn)
 
-	d.progressCh = make(chan common.Progress, 10)
+	return chunk.Download(d.ctx)
+}
+
+// getConnection retrieves a connection from the pool or creates a new one if none are available
+func (d *Download) getConnection(chunk *chunk.Chunk, pool *connection.Pool) (connection.Connection, error) {
+	var conn connection.Connection
+
+	ticker := time.NewTicker(200 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		maxConnReached := false
+		select {
+		case <-d.ctx.Done():
+			return nil, d.ctx.Err()
+		case <-ticker.C:
+			c, m, err := pool.GetConnection(d.URL, d.Config.Headers)
+			maxConnReached = m
+			conn = c
+			if err != nil {
+				return nil, err
+			}
+		}
+		if !maxConnReached {
+			break
+		}
+	}
+
+	if conn == nil {
+		logger.Debugf("No connection available in pool, creating new one for chunk %s", chunk.ID)
+		conn, err := d.protocolHandler.CreateConnection(d.URL, chunk, d.Config)
+		if err != nil {
+			return nil, err
+		}
+
+		pool.RegisterConnection(conn)
+		return conn, nil
+	}
+
+	logger.Debugf("Reusing connection from pool for chunk %s", chunk.ID)
+	d.protocolHandler.UpdateConnection(conn, chunk)
+
+	if err := conn.Reset(d.ctx); err != nil {
+		pool.ReleaseConnection(conn)
+
+		return nil, err
+	}
+
+	return conn, nil
+}
+
+// finishDownload checks if all chunks are completed and merges them
+func (d *Download) finishDownload() {
+	for _, c := range d.Chunks {
+		if c.GetStatus() != common.StatusCompleted {
+			err := fmt.Errorf("cannot finish download: chunk %s is in state %s", c.ID, c.Status)
+			d.handleDownloadFailure(err)
+		}
+	}
+
+	targetPath := filepath.Join(d.Config.Directory, d.Filename)
+
+	if err := d.chunkManager.MergeChunks(d.Chunks, targetPath); err != nil {
+		logger.Errorf("Failed to merge chunks for download %s: %v", d.ID, err)
+		d.handleDownloadFailure(err)
+	}
+
+	d.SetStatus(common.StatusCompleted)
+	d.EndTime = time.Now()
+
+	go func() {
+		d.saveStateChan <- d
+	}()
+	if err := d.chunkManager.CleanupChunks(d.Chunks); err != nil {
+		logger.Warnf("Failed to cleanup chunks for download %s: %s", d.ID, err)
+	}
+}
+
+// handleDownloadFailure sets the status and error on a filed download
+func (d *Download) handleDownloadFailure(err error) {
+	d.SetStatus(common.StatusFailed)
+	d.error = err
+}
+
+// calculateBackoff calculates a backoff duration with jitter.
+func calculateBackoff(retryCount int, baseDelay time.Duration) time.Duration {
+	// Exponential backoff: 2^retryCount * baseDelay
+	delay := baseDelay * (1 << uint(retryCount))
+
+	// Apply jitter to avoid thundering herd (between 75% and 125% of computed delay)
+	jitterFactor := 0.75 + 0.5*rand.Float64()
+	jitter := time.Duration(float64(delay) * jitterFactor)
+
+	// Cap maximum delay at 2 minutes
+	maxDelay := 2 * time.Minute
+	if jitter > maxDelay {
+		jitter = maxDelay
+	}
+
+	return jitter
+}
+
+// Stop stops the download process and cleans up resources
+func (d *Download) Stop(status common.Status, removeFiles bool) {
+	if d.GetStatus() != common.StatusActive && status == common.StatusPaused {
+		return
+	}
+
+	d.ctx = context.WithValue(d.ctx, "stop", true)
+	d.cancelFunc()
+	<-d.done
+	d.SetStatus(status)
+
+	go func() {
+		d.saveStateChan <- d
+	}()
+
+	if removeFiles {
+		if err := d.chunkManager.CleanupChunks(d.Chunks); err != nil {
+			logger.Errorf("Failed to cleanup chunks for download %s: %s", d.ID, err)
+		}
+
+	}
+}
+
+// Remove deletes the output file and cleans up the chunks
+func (d *Download) Remove() {
+	if d.GetStatus() == common.StatusActive {
+		d.Stop(common.StatusCancelled, true)
+	}
+	outputPath := filepath.Join(d.Config.Directory, d.Filename)
+	if _, err := os.Stat(outputPath); err == nil {
+		if err := os.Remove(outputPath); err != nil {
+			logger.Warnf("Failed to remove output file: %v", err)
+		}
+	}
+}
+
+// Resume resumes a paused or failed download
+func (d *Download) Resume(ctx context.Context) bool {
+	if d.GetStatus() != common.StatusPaused && d.GetStatus() != common.StatusFailed {
+		return false
+	}
+
 	d.done = make(chan struct{})
-	d.speedCalculator = NewSpeedCalculator(5)
-	d.SetTotalChunks(len(d.ChunkInfos))
-
-	if d.ErrorMessage != "" && d.Error == nil {
-		d.Error = errors.New(d.ErrorMessage)
-		logger.Debugf("Restored error message: %s", d.ErrorMessage)
-	}
-
-	logger.Debugf("Download %s restored from serialization (chunks will be restored separately)", d.ID)
-	// Note: Chunks need to be recreated by the Engine using ChunkInfos
-	// This is handled separately in the Engine.restoreChunks method
+	d.ctx, d.cancelFunc = context.WithCancel(ctx)
+	return true
 }

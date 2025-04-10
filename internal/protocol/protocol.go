@@ -8,7 +8,6 @@ import (
 	"github.com/NamanBalaji/tdm/internal/chunk"
 	"github.com/NamanBalaji/tdm/internal/common"
 	"github.com/NamanBalaji/tdm/internal/connection"
-	"github.com/NamanBalaji/tdm/internal/downloader"
 	"github.com/NamanBalaji/tdm/internal/protocol/http"
 )
 
@@ -22,9 +21,9 @@ type Protocol interface {
 	// CanHandle checks if this handler can handle the given URL
 	CanHandle(url string) bool
 	// Initialize gathers information about the download resource
-	Initialize(ctx context.Context, url string, config *downloader.Config) (*common.DownloadInfo, error)
+	Initialize(ctx context.Context, url string, config *common.Config) (*common.DownloadInfo, error)
 	// CreateConnection creates a new connection for chunk download
-	CreateConnection(urlStr string, chunk *chunk.Chunk, downloadConfig *downloader.Config) (connection.Connection, error)
+	CreateConnection(urlStr string, chunk *chunk.Chunk, downloadConfig *common.Config) (connection.Connection, error)
 	// UpdateConnection updates the connection with new parameters
 	UpdateConnection(conn connection.Connection, chunk *chunk.Chunk)
 }
@@ -50,7 +49,7 @@ func (h *Handler) RegisterProtocol(p Protocol) {
 }
 
 // Initialize initializes a download by finding the appropriate handler and gathering information.
-func (h *Handler) Initialize(ctx context.Context, url string, config *downloader.Config) (*common.DownloadInfo, error) {
+func (h *Handler) Initialize(ctx context.Context, url string, config *common.Config) (*common.DownloadInfo, error) {
 	handler, err := h.getProtocolHandler(url)
 	if err != nil {
 		return nil, err

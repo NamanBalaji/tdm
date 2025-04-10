@@ -15,7 +15,6 @@ import (
 	"github.com/NamanBalaji/tdm/internal/chunk"
 	"github.com/NamanBalaji/tdm/internal/common"
 	"github.com/NamanBalaji/tdm/internal/connection"
-	"github.com/NamanBalaji/tdm/internal/downloader"
 	"github.com/NamanBalaji/tdm/internal/logger"
 )
 
@@ -102,7 +101,7 @@ func checkDownloadable(res *http.Response) bool {
 	return true
 }
 
-func (h *Handler) Initialize(ctx context.Context, urlStr string, config *downloader.Config) (*common.DownloadInfo, error) {
+func (h *Handler) Initialize(ctx context.Context, urlStr string, config *common.Config) (*common.DownloadInfo, error) {
 	logger.Debugf("Initializing download for URL: %s", urlStr)
 
 	logger.Debugf("Attempting HEAD request for %s", urlStr)
@@ -137,7 +136,7 @@ func (h *Handler) Initialize(ctx context.Context, urlStr string, config *downloa
 	return nil, err
 }
 
-func (h *Handler) CreateConnection(urlString string, chunk *chunk.Chunk, downloadConfig *downloader.Config) (connection.Connection, error) {
+func (h *Handler) CreateConnection(urlString string, chunk *chunk.Chunk, downloadConfig *common.Config) (connection.Connection, error) {
 	logger.Debugf("Creating HTTP connection for chunk %s (bytes %d-%d, downloaded: %d)",
 		chunk.ID, chunk.GetStartByte(), chunk.GetEndByte(), chunk.GetDownloaded())
 
@@ -174,7 +173,7 @@ func (h *Handler) UpdateConnection(conn connection.Connection, chunk *chunk.Chun
 }
 
 // initializeWithHEAD attempts to initialize using a HEAD request.
-func (h *Handler) initializeWithHEAD(ctx context.Context, urlStr string, config *downloader.Config) (*common.DownloadInfo, error) {
+func (h *Handler) initializeWithHEAD(ctx context.Context, urlStr string, config *common.Config) (*common.DownloadInfo, error) {
 	logger.Debugf("Initializing with HEAD request: %s", urlStr)
 
 	ctx, cancel := context.WithTimeout(ctx, defaultConnectTimeout)
@@ -208,7 +207,7 @@ func (h *Handler) initializeWithHEAD(ctx context.Context, urlStr string, config 
 }
 
 // initializeWithRangeGET tries to get file info using Range headers.
-func (h *Handler) initializeWithRangeGET(ctx context.Context, urlStr string, config *downloader.Config) (*common.DownloadInfo, error) {
+func (h *Handler) initializeWithRangeGET(ctx context.Context, urlStr string, config *common.Config) (*common.DownloadInfo, error) {
 	logger.Debugf("Initializing with Range GET request: %s", urlStr)
 
 	ctx, cancel := context.WithTimeout(ctx, defaultConnectTimeout)
@@ -295,7 +294,7 @@ func (h *Handler) initializeWithRegularGET(ctx context.Context, urlStr string) (
 }
 
 // generateRequest creates a new HTTP request with the specified method and URL.
-func generateRequest(ctx context.Context, urlStr, method string, config *downloader.Config) (*http.Request, error) {
+func generateRequest(ctx context.Context, urlStr, method string, config *common.Config) (*http.Request, error) {
 	logger.Debugf("Creating %s request for URL: %s", method, urlStr)
 
 	req, err := http.NewRequestWithContext(ctx, method, urlStr, http.NoBody)

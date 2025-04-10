@@ -6,7 +6,6 @@ import (
 	"math"
 	"os"
 	"path/filepath"
-	"sync"
 
 	"github.com/google/uuid"
 
@@ -24,17 +23,16 @@ const (
 )
 
 type Manager struct {
-	mu               sync.Mutex
 	tempDir          string
 	defaultChunkSize int64
 }
 
 // NewManager creates a new chunk manager.
-func NewManager(tempDir string) (*Manager, error) {
+func NewManager(downloadID, tempDir string) (*Manager, error) {
 	logger.Debugf("Creating new chunk manager")
 
 	if tempDir == "" {
-		defaultTemp := filepath.Join(os.TempDir(), "tdm-chunks")
+		defaultTemp := filepath.Join(os.TempDir(), downloadID)
 		logger.Debugf("No temp directory specified, using default: %s", defaultTemp)
 		tempDir = defaultTemp
 	}
@@ -70,9 +68,6 @@ func (m *Manager) SetDefaultChunkSize(size int64) error {
 		return ErrInvalidChunkSize
 	}
 
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	m.defaultChunkSize = size
 	logger.Debugf("Default chunk size set to %d bytes", size)
 	return nil
@@ -82,9 +77,6 @@ func (m *Manager) SetDefaultChunkSize(size int64) error {
 func (m *Manager) CreateChunks(downloadID uuid.UUID, filesize int64, supportsRange bool, maxConnections int, progressFn func(int64)) ([]*Chunk, error) {
 	logger.Debugf("Creating chunks for download %s: filesize=%d, supportsRange=%v, maxConnections=%d",
 		downloadID, filesize, supportsRange, maxConnections)
-
-	m.mu.Lock()
-	defer m.mu.Unlock()
 
 	downloadTempDir := filepath.Join(m.tempDir, downloadID.String())
 	logger.Debugf("Creating temp directory for chunks: %s", downloadTempDir)

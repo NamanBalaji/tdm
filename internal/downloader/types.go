@@ -1,6 +1,7 @@
 package downloader
 
 import (
+	"github.com/NamanBalaji/tdm/internal/protocol/http"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -9,27 +10,6 @@ import (
 
 	"github.com/NamanBalaji/tdm/internal/common"
 )
-
-// Config contains all download configuration options.
-type Config struct {
-	Directory string `json:"directory"` // Target directory
-
-	Connections int               `json:"connections"`       // Number of parallel connections
-	Headers     map[string]string `json:"headers,omitempty"` // Custom headers
-
-	MaxRetries int           `json:"max_retries"`           // Maximum number of retries
-	RetryDelay time.Duration `json:"retry_delay,omitempty"` // Delay between retries
-
-	ThrottleSpeed      int64 `json:"throttle_speed,omitempty"`      // Bandwidth throttle in bytes/sec
-	DisableParallelism bool  `json:"disable_parallelism,omitempty"` // Force single connection
-
-	Priority int `json:"priority"` // Priority level (higher = more important)
-
-	Checksum          string `json:"checksum,omitempty"`           // File checksum
-	ChecksumAlgorithm string `json:"checksum_algorithm,omitempty"` // Checksum algorithm
-
-	UseExistingFile bool `json:"use_existing_file,omitempty"` // Resume from existing file
-}
 
 // SpeedCalculator handles download speed measurement.
 type SpeedCalculator struct {
@@ -114,4 +94,17 @@ type Stats struct {
 	TotalChunks     int
 	Error           string
 	LastUpdated     time.Time
+}
+
+var retryableErrors = map[error]struct{}{
+	http.ErrNetworkProblem:  {},
+	http.ErrServerProblem:   {},
+	http.ErrTooManyRequests: {},
+	http.ErrTimeout:         {},
+}
+
+// isRetryableError checks if the error is in the retryable.
+func isRetryableError(err error) bool {
+	_, ok := retryableErrors[err]
+	return ok
 }

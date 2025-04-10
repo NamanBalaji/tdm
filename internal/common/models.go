@@ -17,7 +17,6 @@ type DownloadInfo struct {
 	CanBeResumed    bool
 }
 
-// Used to persist chunk data when saving downloads.
 type ChunkInfo struct {
 	ID                 string    `json:"id"`
 	StartByte          int64     `json:"start_byte"`
@@ -42,4 +41,25 @@ type GlobalStats struct {
 	CurrentSpeed       int64
 	MaxConcurrent      int
 	CurrentConcurrent  int
+}
+
+// Config contains all download configuration options.
+type Config struct {
+	Directory   string            `json:"directory"` // Target directory
+	TempDir     string            `json:"temp_dir"`
+	Connections int               `json:"connections"`       // Number of parallel connections
+	Headers     map[string]string `json:"headers,omitempty"` // Custom headers
+
+	MaxRetries int           `json:"max_retries"`           // Maximum number of retries
+	RetryDelay time.Duration `json:"retry_delay,omitempty"` // Delay between retries
+
+	ThrottleSpeed      int64 `json:"throttle_speed,omitempty"`      // Bandwidth throttle in bytes/sec
+	DisableParallelism bool  `json:"disable_parallelism,omitempty"` // Force single connection
+
+	Priority int `json:"priority"` // Priority level (higher = more important)
+
+	Checksum          string `json:"checksum,omitempty"`           // File checksum
+	ChecksumAlgorithm string `json:"checksum_algorithm,omitempty"` // Checksum algorithm
+
+	UseExistingFile bool `json:"use_existing_file,omitempty"` // Resume from existing file
 }
