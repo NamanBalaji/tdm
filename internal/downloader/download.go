@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/NamanBalaji/tdm/internal/protocol"
 	"os"
 	"path/filepath"
 	"sync"
@@ -16,6 +15,7 @@ import (
 	"github.com/NamanBalaji/tdm/internal/chunk"
 	"github.com/NamanBalaji/tdm/internal/common"
 	"github.com/NamanBalaji/tdm/internal/logger"
+	"github.com/NamanBalaji/tdm/internal/protocol"
 )
 
 // Download represents a file download task.
@@ -100,7 +100,7 @@ func NewDownload(ctx context.Context, url string, proto *protocol.Handler, confi
 
 	info, err := handler.Initialize(ctx, url, config)
 	if err != nil {
-		return nil, fmt.Errorf("error initializing handler: %v", err)
+		return nil, fmt.Errorf("error initializing handler: %w", err)
 	}
 
 	if err := os.MkdirAll(config.Directory, 0o755); err != nil {

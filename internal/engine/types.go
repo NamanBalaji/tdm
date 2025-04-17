@@ -11,6 +11,7 @@ type Config struct {
 	ConfigDir                 string
 	MaxConcurrentDownloads    int
 	MaxConnectionsPerDownload int
+	MaxConnectionsPerHost     int
 	ChunkSize                 int64
 	UserAgent                 string
 	TempDir                   string
@@ -33,7 +34,8 @@ func DefaultConfig() *Config {
 		DownloadDir:               downloadDir,
 		ConfigDir:                 configDir,
 		MaxConcurrentDownloads:    4,
-		MaxConnectionsPerDownload: 32,
+		MaxConnectionsPerDownload: 8,
+		MaxConnectionsPerHost:     16,
 		ChunkSize:                 4 * 1024 * 1024, // 4MB
 		UserAgent:                 "TDM/1.0",
 		TempDir:                   filepath.Join(os.TempDir(), "tdm"),

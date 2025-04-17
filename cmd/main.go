@@ -3,12 +3,12 @@ package main
 import (
 	"flag"
 	"fmt"
-	"github.com/NamanBalaji/tdm/internal/logger"
 	"os"
 	"os/signal"
 	"syscall"
 
 	"github.com/NamanBalaji/tdm/internal/engine"
+	"github.com/NamanBalaji/tdm/internal/logger"
 	"github.com/NamanBalaji/tdm/internal/tui"
 )
 

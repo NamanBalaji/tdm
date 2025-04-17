@@ -1,24 +1,24 @@
 package downloader
 
-import "C"
 import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/NamanBalaji/tdm/internal/chunk"
-	"github.com/NamanBalaji/tdm/internal/common"
-	"github.com/NamanBalaji/tdm/internal/connection"
-	"github.com/NamanBalaji/tdm/internal/logger"
-	"github.com/google/uuid"
-	"golang.org/x/sync/errgroup"
 	"math/rand"
 	"os"
 	"path/filepath"
 	"time"
+
+	"golang.org/x/sync/errgroup"
+
+	"github.com/NamanBalaji/tdm/internal/chunk"
+	"github.com/NamanBalaji/tdm/internal/common"
+	"github.com/NamanBalaji/tdm/internal/connection"
+	"github.com/NamanBalaji/tdm/internal/logger"
 )
 
 // Start initiates the download process for the chunks
-func (d *Download) Start(pool *connection.Pool, completed chan<- uuid.UUID) {
+func (d *Download) Start(pool *connection.Pool) {
 	if d.GetStatus() == common.StatusActive {
 		return
 	}
@@ -27,8 +27,6 @@ func (d *Download) Start(pool *connection.Pool, completed chan<- uuid.UUID) {
 	defer func() {
 		close(d.done)
 		d.mu.Unlock()
-		completed <- d.ID
-
 	}()
 	d.SetStatus(common.StatusActive)
 	d.StartTime = time.Now()
@@ -125,62 +123,30 @@ func (d *Download) downloadChunkWithRetries(chunk *chunk.Chunk, pool *connection
 
 // downloadChunk downloads a chunk using the provided connection pool
 func (d *Download) downloadChunk(chunk *chunk.Chunk, pool *connection.Pool) error {
-	conn, err := d.getConnection(chunk, pool)
+	conn, err := pool.GetConnection(d.ctx, d.URL, d.Config.Headers)
 	if err != nil {
 		return err
+	}
+
+	if conn == nil {
+		conn, err = d.protocolHandler.CreateConnection(d.URL, chunk, d.Config)
+		if err != nil {
+			pool.ReleaseSlot(d.URL)
+			return err
+		}
+		pool.RegisterConnection(conn)
+	} else {
+		d.protocolHandler.UpdateConnection(conn, chunk)
+		if err := conn.Reset(d.ctx); err != nil {
+			pool.ReleaseConnection(conn)
+			return err
+		}
 	}
 
 	chunk.SetConnection(conn)
 	defer pool.ReleaseConnection(conn)
 
 	return chunk.Download(d.ctx)
-}
-
-// getConnection retrieves a connection from the pool or creates a new one if none are available
-func (d *Download) getConnection(chunk *chunk.Chunk, pool *connection.Pool) (connection.Connection, error) {
-	var conn connection.Connection
-
-	ticker := time.NewTicker(200 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		maxConnReached := false
-		select {
-		case <-d.ctx.Done():
-			return nil, d.ctx.Err()
-		case <-ticker.C:
-			c, m, err := pool.GetConnection(d.URL, d.Config.Headers)
-			maxConnReached = m
-			conn = c
-			if err != nil {
-				return nil, err
-			}
-		}
-		if !maxConnReached {
-			break
-		}
-	}
-
-	if conn == nil {
-		logger.Debugf("No connection available in pool, creating new one for chunk %s", chunk.ID)
-		conn, err := d.protocolHandler.CreateConnection(d.URL, chunk, d.Config)
-		if err != nil {
-			return nil, err
-		}
-
-		pool.RegisterConnection(conn)
-		return conn, nil
-	}
-
-	logger.Debugf("Reusing connection from pool for chunk %s", chunk.ID)
-	d.protocolHandler.UpdateConnection(conn, chunk)
-
-	if err := conn.Reset(d.ctx); err != nil {
-		pool.ReleaseConnection(conn)
-
-		return nil, err
-	}
-
-	return conn, nil
 }
 
 // finishDownload checks if all chunks are completed and merges them
@@ -253,7 +219,6 @@ func (d *Download) Stop(status common.Status, removeFiles bool) {
 		if err := d.chunkManager.CleanupChunks(d.Chunks); err != nil {
 			logger.Errorf("Failed to cleanup chunks for download %s: %s", d.ID, err)
 		}
-
 	}
 }
 

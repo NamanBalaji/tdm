@@ -79,7 +79,7 @@ func New(config *Config) (*Engine, error) {
 	}
 
 	protocolHandler := protocol.NewHandler()
-	connectionPool := connection.NewPool(16, 5*time.Minute)
+	connectionPool := connection.NewPool(config.MaxConnectionsPerHost, 5*time.Minute)
 
 	ctx, cancelFunc := context.WithCancel(context.Background())
 
@@ -122,11 +122,6 @@ func (e *Engine) Init() error {
 	e.queueProcessor = NewQueueProcessor(e.config.MaxConcurrentDownloads, e.StartDownload)
 
 	e.runTask(func() {
-		logger.Debugf("Starting queue processor")
-		e.queueProcessor.Start(e.ctx)
-	})
-
-	e.runTask(func() {
 		logger.Debugf("Starting periodic save with interval %d seconds", e.config.SaveInterval)
 		e.startPeriodicSave(e.ctx)
 	})
@@ -150,7 +145,7 @@ func (e *Engine) Init() error {
 		if download.GetStatus() == common.StatusQueued {
 			logger.Debugf("Enqueueing previously queued download: %s", download.ID)
 			download.SetStatus(common.StatusQueued)
-			e.queueProcessor.EnqueueDownload(download.ID, download.Config.Priority)
+			e.queueProcessor.Enqueue(download.ID, download.Config.Priority)
 			queuedCount++
 		}
 	}
@@ -290,7 +285,7 @@ func (e *Engine) AddDownload(url string, config *common.Config) (uuid.UUID, erro
 	if e.config.AutoStartDownloads {
 		logger.Debugf("Auto-starting download %s", download.ID)
 		download.SetStatus(common.StatusQueued)
-		e.queueProcessor.EnqueueDownload(download.ID, download.Config.Priority)
+		e.queueProcessor.Enqueue(download.ID, download.Config.Priority)
 	}
 
 	logger.Infof("Download added successfully with ID: %s", download.ID)
@@ -466,7 +461,7 @@ func (e *Engine) ResumeDownload(id uuid.UUID) error {
 
 	logger.Debugf("Enqueueing download %s for resumption", id)
 	download.SetStatus(common.StatusQueued)
-	e.queueProcessor.EnqueueDownload(download.ID, download.Config.Priority)
+	e.queueProcessor.Enqueue(download.ID, download.Config.Priority)
 	logger.Infof("Download %s resumed successfully", id)
 
 	return nil
@@ -487,17 +482,16 @@ func (e *Engine) StartDownload(id uuid.UUID) error {
 		return fmt.Errorf("failed to save download: %w", err)
 	}
 
-	completed := make(chan uuid.UUID)
-	e.runTask(func() {
-		e.queueProcessor.NotifyDownloadCompletion(<-completed)
-	})
+	logger.Debugf("Processing download %s", id)
+	download.Start(e.connectionPool)
 
-	e.runTask(func() {
-		logger.Debugf("Processing download %s in background", id)
-		download.Start(e.connectionPool, completed)
-	})
+	// Once done, persist the final state
+	if err := e.saveDownload(download); err != nil {
+		logger.Errorf("Failed to save download %s after completion: %v", id, err)
+		return fmt.Errorf("failed to save download: %w", err)
+	}
 
-	logger.Infof("Download %s started successfully", id)
+	logger.Infof("Download %s completed", id)
 	return nil
 }
 
@@ -530,11 +524,6 @@ func (e *Engine) Shutdown() error {
 		if err := e.PauseDownload(id); err != nil {
 			logger.Errorf("Errorf pausing download %s: %v", id, err)
 		}
-	}
-
-	logger.Infof("Stopping queue processor...")
-	if e.queueProcessor != nil {
-		e.queueProcessor.Stop()
 	}
 
 	logger.Debugf("Cancelling engine context")

@@ -1,187 +1,103 @@
 package engine
 
 import (
-	"context"
-	"sort"
+	"container/heap"
 	"sync"
 
-	"github.com/google/uuid"
-
 	"github.com/NamanBalaji/tdm/internal/logger"
+	"github.com/google/uuid"
 )
 
-// PrioritizedDownload represents a download with its priority in the queue.
-type PrioritizedDownload struct {
-	Id       uuid.UUID
+// DownloadItem wraps a download ID with its priority for the heap.
+type DownloadItem struct {
+	ID       uuid.UUID
 	Priority int
+	index    int // heap index
 }
 
-// QueueProcessor manages downloads with a priority queue system.
+// downloadHeap implements heap.Interface as a max-heap by Priority.
+type downloadHeap []*DownloadItem
+
+func (h downloadHeap) Len() int           { return len(h) }
+func (h downloadHeap) Less(i, j int) bool { return h[i].Priority > h[j].Priority }
+func (h downloadHeap) Swap(i, j int) {
+	h[i], h[j] = h[j], h[i]
+	h[i].index, h[j].index = i, j
+}
+func (h *downloadHeap) Push(x any) {
+	item := x.(*DownloadItem)
+	item.index = len(*h)
+	*h = append(*h, item)
+}
+func (h *downloadHeap) Pop() any {
+	old := *h
+	n := len(old)
+	item := old[n-1]
+	item.index = -1
+	*h = old[:n-1]
+	return item
+}
+
+// QueueProcessor manages prioritized downloads up to maxConcurrent.
 type QueueProcessor struct {
+	mu            sync.Mutex
+	cond          *sync.Cond
+	heap          downloadHeap
+	startFn       func(uuid.UUID) error
 	maxConcurrent int
-
-	queuedDownloads []*PrioritizedDownload
-	activeDownloads map[uuid.UUID]struct{}
-
-	startDownloadFn func(id uuid.UUID) error
-
-	completionCh chan uuid.UUID
-
-	done chan struct{}
-	mu   sync.Mutex
+	activeCount   int
 }
 
-// NewQueueProcessor creates a new queue processor.
-func NewQueueProcessor(maxConcurrent int, startDownloadFn func(id uuid.UUID) error) *QueueProcessor {
-	logger.Debugf("Creating new queue processor with maxConcurrent=%d", maxConcurrent)
-
-	return &QueueProcessor{
-		maxConcurrent:   maxConcurrent,
-		queuedDownloads: make([]*PrioritizedDownload, 0),
-		activeDownloads: make(map[uuid.UUID]struct{}),
-		startDownloadFn: startDownloadFn,
-		completionCh:    make(chan uuid.UUID, 10),
-		done:            make(chan struct{}),
+// NewQueueProcessor creates and starts the processor loop.
+func NewQueueProcessor(maxConcurrent int, startFn func(uuid.UUID) error) *QueueProcessor {
+	qp := &QueueProcessor{
+		heap:          make(downloadHeap, 0),
+		startFn:       startFn,
+		maxConcurrent: maxConcurrent,
 	}
+	qp.cond = sync.NewCond(&qp.mu)
+	// start the dispatch loop
+	go qp.dispatchLoop()
+	return qp
 }
 
-// Start begins queue processing.
-func (q *QueueProcessor) Start(ctx context.Context) {
-	logger.Debugf("Starting queue processor")
-	go q.processQueue(ctx)
+// Enqueue adds a download ID with its priority into the queue.
+func (q *QueueProcessor) Enqueue(id uuid.UUID, priority int) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	heap.Push(&q.heap, &DownloadItem{ID: id, Priority: priority})
+	logger.Infof("Enqueued download %s (priority %d)", id, priority)
+	q.cond.Signal()
 }
 
-// Stop stops the queue processor.
-func (q *QueueProcessor) Stop() {
-	logger.Debugf("Stopping queue processor")
-	close(q.done)
-}
-
-// processQueue is the main loop that handles queue events.
-func (q *QueueProcessor) processQueue(ctx context.Context) {
-	logger.Debugf("Queue processor main loop started")
-
+// dispatchLoop pops items when slots free and starts workers.
+func (q *QueueProcessor) dispatchLoop() {
 	for {
-		select {
-		case completedID := <-q.completionCh:
-			logger.Debugf("Queue processor received completion notification for download %s", completedID)
-			q.handleDownloadCompletion(completedID)
-		case <-ctx.Done():
-			logger.Debugf("Queue processor stopping due to context cancellation")
-			return
-		case <-q.done:
-			logger.Debugf("Queue processor stopping due to done signal")
-			return
+		q.mu.Lock()
+		// wait until we can start someone
+		for q.activeCount >= q.maxConcurrent || len(q.heap) == 0 {
+			q.cond.Wait()
 		}
-	}
-}
+		// pop highest priority
+		item := heap.Pop(&q.heap).(*DownloadItem)
+		q.activeCount++
+		q.mu.Unlock()
 
-// EnqueueDownload adds a download to the queue.
-func (q *QueueProcessor) EnqueueDownload(id uuid.UUID, priority int) {
-	logger.Infof("Enqueueing download %s with priority %d", id, priority)
+		// run download in its own goroutine
+		go func(id uuid.UUID) {
+			// when done, release slot and signal
+			defer func() {
+				q.mu.Lock()
+				q.activeCount--
+				q.cond.Signal()
+				q.mu.Unlock()
+			}()
 
-	q.mu.Lock()
-	defer q.mu.Unlock()
-
-	q.queuedDownloads = append(q.queuedDownloads, &PrioritizedDownload{
-		Id:       id,
-		Priority: priority,
-	})
-
-	logger.Infof("Enqueued download_id: %s", id)
-	q.sortQueue()
-
-	currentActive := len(q.activeDownloads)
-	currentQueued := len(q.queuedDownloads)
-	logger.Debugf("Queue status after enqueue: active=%d, queued=%d, maxConcurrent=%d",
-		currentActive, currentQueued, q.maxConcurrent)
-
-	q.fillAvailableSlots()
-}
-
-// NotifyDownloadCompletion informs the queue when a download completes/fails/cancels.
-func (q *QueueProcessor) NotifyDownloadCompletion(downloadID uuid.UUID) {
-	logger.Debugf("Notifying queue of download completion: %s", downloadID)
-	q.completionCh <- downloadID
-}
-
-// handleDownloadCompletion processes a download completion notification.
-func (q *QueueProcessor) handleDownloadCompletion(downloadID uuid.UUID) {
-	logger.Debugf("Handling download completion for %s", downloadID)
-
-	q.mu.Lock()
-	defer q.mu.Unlock()
-
-	_, exists := q.activeDownloads[downloadID]
-	if !exists {
-		logger.Warnf("Download %s not found in active downloads map", downloadID)
-	}
-
-	delete(q.activeDownloads, downloadID)
-	logger.Debugf("Removed download %s from active downloads", downloadID)
-
-	activeCount := len(q.activeDownloads)
-	queuedCount := len(q.queuedDownloads)
-	logger.Debugf("Queue status after completion: active=%d, queued=%d, maxConcurrent=%d",
-		activeCount, queuedCount, q.maxConcurrent)
-
-	q.fillAvailableSlots()
-}
-
-// sortQueue sorts the queue by priority (higher first).
-func (q *QueueProcessor) sortQueue() {
-	logger.Debugf("Sorting queue with %d downloads by priority", len(q.queuedDownloads))
-
-	sort.Slice(q.queuedDownloads, func(i, j int) bool {
-		return q.queuedDownloads[i].Priority > q.queuedDownloads[j].Priority
-	})
-
-	if len(q.queuedDownloads) > 0 {
-		// Log the highest priority downloads for debugging
-		maxToLog := min(3, len(q.queuedDownloads))
-		for i := range maxToLog {
-			logger.Debugf("Queue position %d: download_id=%s, priority=%d", i+1, q.queuedDownloads[i], q.queuedDownloads[i].Priority)
-		}
-	}
-}
-
-// fillAvailableSlots starts downloads if slots are available.
-func (q *QueueProcessor) fillAvailableSlots() {
-	available := q.maxConcurrent - len(q.activeDownloads)
-	logger.Debugf("Checking for available slots: active=%d, max=%d, available=%d, queued=%d",
-		len(q.activeDownloads), q.maxConcurrent, available, len(q.queuedDownloads))
-
-	if available <= 0 || len(q.queuedDownloads) == 0 {
-		if available <= 0 {
-			logger.Debugf("No available slots")
-		}
-		if len(q.queuedDownloads) == 0 {
-			logger.Debugf("No downloads in queue")
-		}
-		return
-	}
-
-	toStart := min(available, len(q.queuedDownloads))
-	logger.Debugf("Starting %d download(s) to fill available slots", toStart)
-
-	for range toStart {
-		pd := q.queuedDownloads[0]
-		priority := pd.Priority
-
-		logger.Debugf("Dequeuing download %s (priority %d) for start", pd.Id, priority)
-		q.queuedDownloads = q.queuedDownloads[1:]
-		q.activeDownloads[pd.Id] = struct{}{}
-		logger.Debugf("Added download %s to active downloads map", pd.Id)
-
-		go func() {
-			logger.Debugf("Starting download %s", pd.Id)
-			err := q.startDownloadFn(pd.Id)
+			logger.Infof("Starting download %s", id)
+			err := q.startFn(id)
 			if err != nil {
-				logger.Errorf("Download %s failed to start: %v", pd.Id, err)
-				q.NotifyDownloadCompletion(pd.Id)
+				logger.Errorf("Failed to start download %s: %v", id, err)
 			}
-		}()
+		}(item.ID)
 	}
-
-	logger.Debugf("After filling slots: active=%d, queued=%d", len(q.activeDownloads), len(q.queuedDownloads))
 }

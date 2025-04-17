@@ -1,9 +1,9 @@
 package chunk_test
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -12,225 +12,158 @@ import (
 	"github.com/NamanBalaji/tdm/internal/common"
 )
 
-func TestNewManager(t *testing.T) {
-	tempDir := t.TempDir()
-	mgr, err := chunk.NewManager(tempDir)
+func TestNewManager_CustomDir(t *testing.T) {
+	id := uuid.New()
+	tmp := t.TempDir()
+	m, err := chunk.NewManager(id.String(), tmp)
 	if err != nil {
-		t.Fatalf("failed to create chunk manager: %v", err)
+		t.Fatalf("Expected no error creating manager, got %v", err)
 	}
-	if mgr == nil {
-		t.Fatal("NewManager returned nil")
-	}
-
-	downloadID := uuid.New()
-	filesize := int64(100 * 1024)
-	chunks, err := mgr.CreateChunks(downloadID, filesize, true, 4, nil)
+	_, err = m.CreateChunks(id, chunk.MinChunkSize, false, 1, nil)
 	if err != nil {
-		t.Fatalf("CreateChunks returned error: %v", err)
+		t.Fatalf("Expected CreateChunks to succeed, got %v", err)
 	}
-	if len(chunks) != 1 {
-		t.Fatalf("expected 1 chunk, got %d", len(chunks))
-	}
-	if !strings.Contains(chunks[0].TempFilePath, tempDir) {
-		t.Errorf("TempFilePath %q does not contain tempDir %q", chunks[0].TempFilePath, tempDir)
+	sub := filepath.Join(tmp, id.String())
+	if fi, err := os.Stat(sub); err != nil || !fi.IsDir() {
+		t.Errorf("Expected temp subdir %s to exist, got error %v", sub, err)
 	}
 }
 
 func TestSetDefaultChunkSize(t *testing.T) {
-	tempDir := t.TempDir()
-	mgr, err := chunk.NewManager(tempDir)
-	if err != nil {
-		t.Fatalf("failed to create chunk manager: %v", err)
+	m, _ := chunk.NewManager("id", t.TempDir())
+	if err := m.SetDefaultChunkSize(chunk.MinChunkSize); err != nil {
+		t.Errorf("Expected no error for valid size, got %v", err)
 	}
-
-	err = mgr.SetDefaultChunkSize(chunk.MinChunkSize - 1)
-	if err == nil {
-		t.Error("expected error for chunk size below minimum")
+	if err := m.SetDefaultChunkSize(chunk.MinChunkSize - 1); !errors.Is(err, chunk.ErrInvalidChunkSize) {
+		t.Errorf("Expected ErrInvalidChunkSize for too small size, got %v", err)
 	}
-
-	err = mgr.SetDefaultChunkSize(chunk.MaxChunkSize + 1)
-	if err == nil {
-		t.Error("expected error for chunk size above maximum")
-	}
-
-	err = mgr.SetDefaultChunkSize(chunk.DefaultChunkSize)
-	if err != nil {
-		t.Errorf("unexpected error for valid chunk size: %v", err)
+	if err := m.SetDefaultChunkSize(chunk.MaxChunkSize + 1); !errors.Is(err, chunk.ErrInvalidChunkSize) {
+		t.Errorf("Expected ErrInvalidChunkSize for too large size, got %v", err)
 	}
 }
 
-func TestCreateChunks_SingleChunk(t *testing.T) {
-	tempDir := t.TempDir()
-	mgr, err := chunk.NewManager(tempDir)
+func TestCreateChunks_SingleChunkCases(t *testing.T) {
+	dlID := uuid.New()
+	m, _ := chunk.NewManager(dlID.String(), t.TempDir())
+	chunks, err := m.CreateChunks(dlID, chunk.DefaultChunkSize*2, false, 5, nil)
 	if err != nil {
-		t.Fatalf("failed to create chunk manager: %v", err)
-	}
-	downloadID := uuid.New()
-	filesize := int64(100 * 1024) // 100 KB (< 256 KB)
-	chunks, err := mgr.CreateChunks(downloadID, filesize, true, 4, nil)
-	if err != nil {
-		t.Fatalf("CreateChunks returned error: %v", err)
+		t.Fatalf("Expected no error, got %v", err)
 	}
 	if len(chunks) != 1 {
-		t.Fatalf("expected 1 chunk, got %d", len(chunks))
+		t.Errorf("Expected 1 chunk when no range, got %d", len(chunks))
 	}
-	if chunks[0].SequentialDownload {
-		t.Error("expected SequentialDownload to be false when supportsRange is true")
+	if !chunks[0].SequentialDownload {
+		t.Errorf("Expected SequentialDownload true when no range")
 	}
-	if chunks[0].StartByte != 0 || chunks[0].EndByte != filesize-1 {
-		t.Errorf("unexpected chunk boundaries: got %d-%d, expected 0-%d", chunks[0].StartByte, chunks[0].EndByte, filesize-1)
+	small := chunk.MinChunkSize - 10
+	chunks2, err := m.CreateChunks(dlID, small, true, 3, nil)
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+	if len(chunks2) != 1 {
+		t.Errorf("Expected 1 chunk for small file, got %d", len(chunks2))
+	}
+	if chunks2[0].SequentialDownload {
+		t.Errorf("Expected SequentialDownload false when range supported even if small file")
 	}
 }
 
-func TestCreateChunks_MultipleChunks(t *testing.T) {
-	tempDir := t.TempDir()
-	mgr, err := chunk.NewManager(tempDir)
+func TestCreateChunks_MultipleChunksAndMinAdjust(t *testing.T) {
+	dlID := uuid.New()
+	m, _ := chunk.NewManager(dlID.String(), t.TempDir())
+	filesize := chunk.DefaultChunkSize * 3
+	chs, err := m.CreateChunks(dlID, filesize, true, 3, nil)
 	if err != nil {
-		t.Fatalf("failed to create chunk manager: %v", err)
+		t.Fatalf("Expected no error, got %v", err)
 	}
-	downloadID := uuid.New()
-	filesize := int64(10 * 1024 * 1024) // 10 MB
-	maxConns := 4
-	chunks, err := mgr.CreateChunks(downloadID, filesize, true, maxConns, nil)
+	if len(chs) != 3 {
+		t.Errorf("Expected 3 chunks, got %d", len(chs))
+	}
+	var total int64
+	for _, c := range chs {
+		total += c.EndByte - c.StartByte + 1
+	}
+	if total != filesize {
+		t.Errorf("Chunks total size %d does not equal filesize %d", total, filesize)
+	}
+	smallSize := chunk.MinChunkSize*2 + 10
+	chs2, err := m.CreateChunks(dlID, smallSize, true, 10, nil)
 	if err != nil {
-		t.Fatalf("CreateChunks returned error: %v", err)
+		t.Fatalf("Expected no error, got %v", err)
 	}
-	if len(chunks) < 2 {
-		t.Fatalf("expected multiple chunks, got %d", len(chunks))
+	expected := int((smallSize + chunk.MinChunkSize - 1) / chunk.MinChunkSize)
+	if len(chs2) != expected {
+		t.Errorf("Expected %d chunks after adjust, got %d", expected, len(chs2))
 	}
-	if chunks[0].StartByte != 0 {
-		t.Errorf("first chunk should start at 0, got %d", chunks[0].StartByte)
+}
+
+func TestMergeChunks(t *testing.T) {
+	dlID := uuid.New()
+	tmp := t.TempDir()
+	m, _ := chunk.NewManager(dlID.String(), tmp)
+	if err := m.MergeChunks(nil, filepath.Join(tmp, "out.bin")); err != nil {
+		t.Errorf("Expected no error merging empty, got %v", err)
 	}
-	lastChunk := chunks[len(chunks)-1]
-	if lastChunk.EndByte != filesize-1 {
-		t.Errorf("last chunk should end at %d, got %d", filesize-1, lastChunk.EndByte)
+	c := &chunk.Chunk{DownloadID: dlID, Status: common.StatusPending}
+	if err := m.MergeChunks([]*chunk.Chunk{c}, filepath.Join(tmp, "out.bin")); !errors.Is(err, chunk.ErrMergeIncomplete) {
+		t.Errorf("Expected ErrMergeIncomplete, got %v", err)
 	}
-	for i := range len(chunks) - 1 {
-		if chunks[i].EndByte+1 != chunks[i+1].StartByte {
-			t.Errorf("chunks not contiguous: chunk %d end %d, next start %d", i, chunks[i].EndByte, chunks[i+1].StartByte)
+	var files []string
+	var chunks []*chunk.Chunk
+	for i := range 2 {
+		ch := &chunk.Chunk{DownloadID: dlID, Status: common.StatusCompleted}
+		path := filepath.Join(tmp, dlID.String(), uuid.New().String())
+		_ = os.MkdirAll(filepath.Dir(path), 0o755)
+		content := []byte{byte('A' + i)}
+		err := os.WriteFile(path, content, 0o644)
+		if err != nil {
+			t.Fatalf("failed write chunk file: %v", err)
 		}
+		ch.TempFilePath = path
+		chunks = append(chunks, ch)
+		files = append(files, string(content))
 	}
-}
-
-func TestMergeChunks_Success(t *testing.T) {
-	tempDir := t.TempDir()
-	mgr, err := chunk.NewManager(tempDir)
+	out := filepath.Join(tmp, "merged.bin")
+	err := m.MergeChunks(chunks, out)
 	if err != nil {
-		t.Fatalf("failed to create chunk manager: %v", err)
+		t.Fatalf("Expected merge success, got %v", err)
 	}
-	downloadID := uuid.New()
-
-	data1 := []byte("Hello ")
-	data2 := []byte("World!")
-	chunk1 := chunk.NewChunk(downloadID, 0, int64(len(data1))-1, nil)
-	chunk2 := chunk.NewChunk(downloadID, int64(len(data1)), int64(len(data1)+len(data2))-1, nil)
-
-	downloadTempDir := filepath.Join(tempDir, downloadID.String())
-	err = os.MkdirAll(downloadTempDir, 0755)
+	data, err := os.ReadFile(out)
 	if err != nil {
-		t.Fatalf("failed to create download temp directory: %v", err)
+		t.Fatalf("read merged file: %v", err)
 	}
-
-	file1 := filepath.Join(downloadTempDir, chunk1.ID.String())
-	file2 := filepath.Join(downloadTempDir, chunk2.ID.String())
-
-	if err := os.WriteFile(file1, data1, 0644); err != nil {
-		t.Fatalf("failed to write chunk1 file: %v", err)
-	}
-	if err := os.WriteFile(file2, data2, 0644); err != nil {
-		t.Fatalf("failed to write chunk2 file: %v", err)
-	}
-
-	chunk1.TempFilePath = file1
-	chunk2.TempFilePath = file2
-	chunk1.Status = common.StatusCompleted
-	chunk2.Status = common.StatusCompleted
-
-	chunks := []*chunk.Chunk{chunk1, chunk2}
-	targetFile := filepath.Join(tempDir, "merged.txt")
-	err = mgr.MergeChunks(chunks, targetFile)
-	if err != nil {
-		t.Fatalf("MergeChunks returned error: %v", err)
-	}
-
-	mergedData, err := os.ReadFile(targetFile)
-	if err != nil {
-		t.Fatalf("failed to read merged file: %v", err)
-	}
-	expected := string(data1) + string(data2)
-	if string(mergedData) != expected {
-		t.Errorf("expected merged data %q, got %q", expected, mergedData)
-	}
-}
-
-func TestMergeChunks_IncompleteChunk(t *testing.T) {
-	tempDir := t.TempDir()
-	mgr, err := chunk.NewManager(tempDir)
-	if err != nil {
-		t.Fatalf("failed to create chunk manager: %v", err)
-	}
-	downloadID := uuid.New()
-	data := []byte("Incomplete data")
-	chunk1 := chunk.NewChunk(downloadID, 0, int64(len(data))-1, nil)
-	downloadTempDir := filepath.Join(tempDir, downloadID.String())
-	err = os.MkdirAll(downloadTempDir, 0755)
-	if err != nil {
-		t.Fatalf("failed to create download temp directory: %v", err)
-	}
-	file1 := filepath.Join(downloadTempDir, chunk1.ID.String())
-	if err := os.WriteFile(file1, data, 0644); err != nil {
-		t.Fatalf("failed to write chunk file: %v", err)
-	}
-	chunk1.TempFilePath = file1
-	chunk1.Status = common.StatusFailed
-	chunks := []*chunk.Chunk{chunk1}
-	targetFile := filepath.Join(tempDir, "merged.txt")
-	err = mgr.MergeChunks(chunks, targetFile)
-	if err == nil {
-		t.Error("expected error when merging incomplete chunks, got nil")
+	if string(data) != files[0]+files[1] {
+		t.Errorf("Merged content mismatch: got %s", string(data))
 	}
 }
 
 func TestCleanupChunks(t *testing.T) {
-	tempDir := t.TempDir()
-	mgr, err := chunk.NewManager(tempDir)
+	dlID := uuid.New()
+	tmp := t.TempDir()
+	m, _ := chunk.NewManager(dlID.String(), tmp)
+	if err := m.CleanupChunks(nil); err != nil {
+		t.Errorf("Expected no error cleaning empty, got %v", err)
+	}
+	var chunks []*chunk.Chunk
+	for range 2 {
+		ch := &chunk.Chunk{DownloadID: dlID}
+		path := filepath.Join(tmp, dlID.String(), uuid.New().String())
+		_ = os.MkdirAll(filepath.Dir(path), 0o755)
+		if err := os.WriteFile(path, []byte{1, 2, 3}, 0o644); err != nil {
+			t.Fatalf("write chunk file: %v", err)
+		}
+		ch.TempFilePath = path
+		chunks = append(chunks, ch)
+	}
+	dir := filepath.Join(tmp, dlID.String())
+	if _, err := os.Stat(dir); err != nil {
+		t.Fatalf("dir missing before cleanup: %v", err)
+	}
+	err := m.CleanupChunks(chunks)
 	if err != nil {
-		t.Fatalf("failed to create chunk manager: %v", err)
+		t.Errorf("Expected cleanup no error, got %v", err)
 	}
-	downloadID := uuid.New()
-	downloadTempDir := filepath.Join(tempDir, downloadID.String())
-
-	err = os.MkdirAll(downloadTempDir, 0755)
-	if err != nil {
-		t.Fatalf("failed to create download temp directory: %v", err)
-	}
-	chunk1 := chunk.NewChunk(downloadID, 0, 99, nil)
-	file1 := filepath.Join(downloadTempDir, chunk1.ID.String())
-	if err := os.WriteFile(file1, []byte("dummy"), 0644); err != nil {
-		t.Fatalf("failed to write dummy chunk file: %v", err)
-	}
-	chunk1.TempFilePath = file1
-	chunks := []*chunk.Chunk{chunk1}
-	err = mgr.CleanupChunks(chunks)
-	if err != nil {
-		t.Fatalf("CleanupChunks returned error: %v", err)
-	}
-	if _, err := os.Stat(file1); !os.IsNotExist(err) {
-		t.Errorf("expected chunk file %q to be removed", file1)
-	}
-	if _, err := os.Stat(downloadTempDir); !os.IsNotExist(err) {
-		t.Errorf("expected download directory %q to be removed", downloadTempDir)
-	}
-}
-
-func TestCleanupChunks_Empty(t *testing.T) {
-	tempDir := t.TempDir()
-	mgr, err := chunk.NewManager(tempDir)
-	if err != nil {
-		t.Fatalf("failed to create chunk manager: %v", err)
-	}
-	err = mgr.CleanupChunks(nil)
-	if err != nil {
-		t.Errorf("expected nil error when cleaning up empty chunk slice, got %v", err)
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Errorf("Expected dir removed, got %v", err)
 	}
 }
