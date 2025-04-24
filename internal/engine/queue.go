@@ -12,7 +12,7 @@ import (
 type DownloadItem struct {
 	ID       uuid.UUID
 	Priority int
-	index    int // heap index
+	index    int
 }
 
 // downloadHeap implements heap.Interface as a max-heap by Priority.
@@ -24,11 +24,13 @@ func (h downloadHeap) Swap(i, j int) {
 	h[i], h[j] = h[j], h[i]
 	h[i].index, h[j].index = i, j
 }
+
 func (h *downloadHeap) Push(x any) {
 	item := x.(*DownloadItem)
 	item.index = len(*h)
 	*h = append(*h, item)
 }
+
 func (h *downloadHeap) Pop() any {
 	old := *h
 	n := len(old)
@@ -38,7 +40,8 @@ func (h *downloadHeap) Pop() any {
 	return item
 }
 
-// QueueProcessor manages prioritized downloads up to maxConcurrent.
+// QueueProcessor manages prioritized downloads up to maxConcurrent,
+// and will exit its dispatchLoop when stopCh is closed.
 type QueueProcessor struct {
 	mu            sync.Mutex
 	cond          *sync.Cond
@@ -46,46 +49,74 @@ type QueueProcessor struct {
 	startFn       func(uuid.UUID) error
 	maxConcurrent int
 	activeCount   int
+	stopCh        <-chan struct{}
 }
 
 // NewQueueProcessor creates and starts the processor loop.
-func NewQueueProcessor(maxConcurrent int, startFn func(uuid.UUID) error) *QueueProcessor {
+// When stopCh is closed, dispatchLoop will wake up and return.
+func NewQueueProcessor(maxConcurrent int, startFn func(uuid.UUID) error, stopCh <-chan struct{}) *QueueProcessor {
 	qp := &QueueProcessor{
 		heap:          make(downloadHeap, 0),
 		startFn:       startFn,
 		maxConcurrent: maxConcurrent,
+		stopCh:        stopCh,
 	}
 	qp.cond = sync.NewCond(&qp.mu)
-	// start the dispatch loop
+
+	// Kick off the dispatch goroutine
 	go qp.dispatchLoop()
+
+	// Also watch stopCh so we can wake any waiting cond.Wait()
+	go func() {
+		<-stopCh
+		qp.cond.L.Lock()
+		qp.cond.Broadcast()
+		qp.cond.L.Unlock()
+	}()
+
 	return qp
 }
 
 // Enqueue adds a download ID with its priority into the queue.
 func (q *QueueProcessor) Enqueue(id uuid.UUID, priority int) {
 	q.mu.Lock()
-	defer q.mu.Unlock()
 	heap.Push(&q.heap, &DownloadItem{ID: id, Priority: priority})
 	logger.Infof("Enqueued download %s (priority %d)", id, priority)
 	q.cond.Signal()
+	q.mu.Unlock()
 }
 
 // dispatchLoop pops items when slots free and starts workers.
+// It will return as soon as stopCh is closed.
 func (q *QueueProcessor) dispatchLoop() {
 	for {
 		q.mu.Lock()
-		// wait until we can start someone
+		// Wait until: a slot is free AND there's work OR we’ve been asked to stop.
 		for q.activeCount >= q.maxConcurrent || len(q.heap) == 0 {
 			q.cond.Wait()
+			// After waking, check for shutdown.
+			select {
+			case <-q.stopCh:
+				q.mu.Unlock()
+				return
+			default:
+			}
 		}
-		// pop highest priority
+
+		select {
+		case <-q.stopCh:
+			q.mu.Unlock()
+			return
+		default:
+		}
+
+		// Pop highest-priority item and consume a slot
 		item := heap.Pop(&q.heap).(*DownloadItem)
 		q.activeCount++
 		q.mu.Unlock()
 
-		// run download in its own goroutine
+		// Launch the download; when done, free the slot and signal.
 		go func(id uuid.UUID) {
-			// when done, release slot and signal
 			defer func() {
 				q.mu.Lock()
 				q.activeCount--
@@ -94,8 +125,7 @@ func (q *QueueProcessor) dispatchLoop() {
 			}()
 
 			logger.Infof("Starting download %s", id)
-			err := q.startFn(id)
-			if err != nil {
+			if err := q.startFn(id); err != nil {
 				logger.Errorf("Failed to start download %s: %v", id, err)
 			}
 		}(item.ID)

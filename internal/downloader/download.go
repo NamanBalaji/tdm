@@ -37,8 +37,8 @@ type Download struct {
 	// runtime fields
 	error           error
 	mu              sync.RWMutex
-	ctx             context.Context
 	cancelFunc      context.CancelFunc
+	isExternal      int32 // 0 means false, 1 means true
 	chunkManager    *chunk.Manager
 	protocolHandler protocol.Protocol
 	done            chan struct{}
@@ -55,6 +55,23 @@ func (d *Download) SetStatus(status common.Status) {
 // GetStatus returns the current Status of the Download.
 func (d *Download) GetStatus() common.Status {
 	return common.Status(atomic.LoadInt32((*int32)(&d.Status)))
+}
+
+// GetIsExternal returns the isExternal status of the Download.
+func (d *Download) GetIsExternal() bool {
+	val := atomic.LoadInt32(&d.isExternal)
+	return val == 1
+}
+
+// SetIsExternal sets the isExternal status of the Download.
+func (d *Download) SetIsExternal(isExternal bool) {
+	if isExternal {
+		atomic.StoreInt32(&d.isExternal, int32(1))
+
+		return
+	}
+
+	atomic.StoreInt32(&d.isExternal, int32(0))
 }
 
 // GetTotalChunks returns the total number of chunks.
@@ -107,7 +124,6 @@ func NewDownload(ctx context.Context, url string, proto *protocol.Handler, confi
 		return nil, fmt.Errorf("failed to create directory for download: %w", err)
 	}
 
-	ctx, cancel := context.WithCancel(ctx)
 	download := &Download{
 		ID:              id,
 		URL:             url,
@@ -122,8 +138,6 @@ func NewDownload(ctx context.Context, url string, proto *protocol.Handler, confi
 		done:            make(chan struct{}),
 		speedCalculator: NewSpeedCalculator(5),
 		StartTime:       time.Now(),
-		ctx:             ctx,
-		cancelFunc:      cancel,
 		saveStateChan:   saveStateChan,
 	}
 
@@ -158,7 +172,7 @@ func (d *Download) GetStats() Stats {
 	completedChunks := 0
 
 	for _, c := range d.Chunks {
-		switch c.Status {
+		switch c.GetStatus() {
 		case common.StatusActive:
 			activeChunks++
 		case common.StatusCompleted:
@@ -208,6 +222,9 @@ func (d *Download) GetStats() Stats {
 func (d *Download) PrepareForSerialization() {
 	logger.Debugf("Preparing download %s for serialization", d.ID)
 
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	
 	d.Downloaded = atomic.LoadInt64(&d.Downloaded)
 	d.Status = d.GetStatus()
 
@@ -252,8 +269,6 @@ func (d *Download) RestoreFromSerialization(ctx context.Context, proto *protocol
 		return err
 	}
 	d.chunkManager = chunkManager
-
-	d.ctx, d.cancelFunc = context.WithCancel(ctx)
 
 	d.progressCh = make(chan common.Progress, 10)
 	d.saveStateChan = saveStateChan

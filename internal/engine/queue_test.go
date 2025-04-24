@@ -23,7 +23,10 @@ func TestQueueProcessor_PriorityAndBlocking(t *testing.T) {
 		return nil
 	}
 
-	qp := NewQueueProcessor(1, startFn)
+	doneCh := make(chan struct{})
+	qp := NewQueueProcessor(1, startFn, doneCh)
+	defer close(doneCh)
+
 	idLow := uuid.New()
 	idHigh := uuid.New()
 
@@ -74,7 +77,10 @@ func TestQueueProcessor_MultipleConcurrent(t *testing.T) {
 		return nil
 	}
 
-	qp := NewQueueProcessor(2, startFn)
+	doneCh := make(chan struct{})
+	qp := NewQueueProcessor(2, startFn, doneCh)
+	defer close(doneCh)
+
 	ids := []uuid.UUID{uuid.New(), uuid.New(), uuid.New()}
 	prios := []int{1, 2, 3}
 	for i, id := range ids {

@@ -18,7 +18,7 @@ import (
 )
 
 // Start initiates the download process for the chunks
-func (d *Download) Start(pool *connection.Pool) {
+func (d *Download) Start(ctx context.Context, pool *connection.Pool) {
 	if d.GetStatus() == common.StatusActive {
 		return
 	}
@@ -37,12 +37,15 @@ func (d *Download) Start(pool *connection.Pool) {
 		d.finishDownload()
 	}
 
-	d.processDownload(chunks, pool)
+	d.processDownload(ctx, chunks, pool)
 }
 
 // processDownload downloads the chunks concurrently using a connection pool
-func (d *Download) processDownload(chunks []*chunk.Chunk, pool *connection.Pool) {
-	g, ctx := errgroup.WithContext(d.ctx)
+func (d *Download) processDownload(ctx context.Context, chunks []*chunk.Chunk, pool *connection.Pool) {
+	g, ctx := errgroup.WithContext(ctx)
+	ctx, cancel := context.WithCancel(ctx)
+	d.cancelFunc = cancel
+
 	sem := make(chan struct{}, d.Config.Connections)
 	for _, c := range chunks {
 		c := c
@@ -55,7 +58,7 @@ func (d *Download) processDownload(chunks []*chunk.Chunk, pool *connection.Pool)
 				defer func() { <-sem }()
 			}
 
-			return d.downloadChunkWithRetries(c, pool)
+			return d.downloadChunkWithRetries(ctx, c, pool)
 		})
 	}
 
@@ -65,7 +68,7 @@ func (d *Download) processDownload(chunks []*chunk.Chunk, pool *connection.Pool)
 		return
 	}
 	if errors.Is(err, context.Canceled) {
-		if d.ctx.Value("stop") != nil {
+		if d.GetIsExternal() {
 			d.SetStatus(common.StatusPaused)
 		}
 		return
@@ -87,8 +90,8 @@ func (d *Download) getPendingChunks() []*chunk.Chunk {
 }
 
 // downloadChunkWithRetries attempts to download a chunk with retries
-func (d *Download) downloadChunkWithRetries(chunk *chunk.Chunk, pool *connection.Pool) error {
-	err := d.downloadChunk(chunk, pool)
+func (d *Download) downloadChunkWithRetries(ctx context.Context, chunk *chunk.Chunk, pool *connection.Pool) error {
+	err := d.downloadChunk(ctx, chunk, pool)
 	if err == nil || errors.Is(err, context.Canceled) || !isRetryableError(err) {
 		return err
 	}
@@ -102,7 +105,7 @@ func (d *Download) downloadChunkWithRetries(chunk *chunk.Chunk, pool *connection
 
 		select {
 		case <-time.After(backoff):
-			err = d.downloadChunk(chunk, pool)
+			err = d.downloadChunk(ctx, chunk, pool)
 			if err == nil || errors.Is(err, context.Canceled) {
 				return err
 			}
@@ -111,7 +114,7 @@ func (d *Download) downloadChunkWithRetries(chunk *chunk.Chunk, pool *connection
 				return err
 			}
 
-		case <-d.ctx.Done():
+		case <-ctx.Done():
 			logger.Debugf("Context cancelled while waiting to retry chunk %s", chunk.ID)
 			chunk.SetStatus(common.StatusPaused)
 			return err
@@ -122,8 +125,8 @@ func (d *Download) downloadChunkWithRetries(chunk *chunk.Chunk, pool *connection
 }
 
 // downloadChunk downloads a chunk using the provided connection pool
-func (d *Download) downloadChunk(chunk *chunk.Chunk, pool *connection.Pool) error {
-	conn, err := pool.GetConnection(d.ctx, d.URL, d.Config.Headers)
+func (d *Download) downloadChunk(ctx context.Context, chunk *chunk.Chunk, pool *connection.Pool) error {
+	conn, err := pool.GetConnection(ctx, d.URL, d.Config.Headers)
 	if err != nil {
 		return err
 	}
@@ -137,7 +140,7 @@ func (d *Download) downloadChunk(chunk *chunk.Chunk, pool *connection.Pool) erro
 		pool.RegisterConnection(conn)
 	} else {
 		d.protocolHandler.UpdateConnection(conn, chunk)
-		if err := conn.Reset(d.ctx); err != nil {
+		if err := conn.Reset(ctx); err != nil {
 			pool.ReleaseConnection(conn)
 			return err
 		}
@@ -146,7 +149,7 @@ func (d *Download) downloadChunk(chunk *chunk.Chunk, pool *connection.Pool) erro
 	chunk.SetConnection(conn)
 	defer pool.ReleaseConnection(conn)
 
-	return chunk.Download(d.ctx)
+	return chunk.Download(ctx)
 }
 
 // finishDownload checks if all chunks are completed and merges them
@@ -206,7 +209,6 @@ func (d *Download) Stop(status common.Status, removeFiles bool) {
 		return
 	}
 
-	d.ctx = context.WithValue(d.ctx, "stop", true)
 	d.cancelFunc()
 	<-d.done
 	d.SetStatus(status)
@@ -240,8 +242,7 @@ func (d *Download) Resume(ctx context.Context) bool {
 	if d.GetStatus() != common.StatusPaused && d.GetStatus() != common.StatusFailed {
 		return false
 	}
-
 	d.done = make(chan struct{})
-	d.ctx, d.cancelFunc = context.WithCancel(ctx)
+
 	return true
 }
