@@ -124,7 +124,7 @@ func (r *rangedProtocol) CreateConnection(u string, c *chunk.Chunk, cfg *common.
 func (r *rangedProtocol) UpdateConnection(conn connection.Connection, c *chunk.Chunk) {}
 
 func TestNewDownloadErrorEmptyURL(t *testing.T) {
-	_, err := downloader.NewDownload(context.Background(), "", protocol.NewHandler(), &common.Config{}, make(chan *downloader.Download, 1))
+	_, err := downloader.NewDownload(t.Context(), "", protocol.NewHandler(), &common.Config{}, make(chan *downloader.Download, 1))
 	if err == nil {
 		t.Fatal("expected error for empty URL")
 	}
@@ -137,7 +137,7 @@ func TestNewDownloadSuccess(t *testing.T) {
 	h := protocol.NewHandler()
 	h.RegisterProtocol(&fakeProtocol{})
 	ch := make(chan *downloader.Download, 1)
-	dl, err := downloader.NewDownload(context.Background(), "file://x", h, cfg, ch)
+	dl, err := downloader.NewDownload(t.Context(), "file://x", h, cfg, ch)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,12 +153,12 @@ func TestStartAndStats(t *testing.T) {
 	h := protocol.NewHandler()
 	h.RegisterProtocol(&fakeProtocol{})
 	ch := make(chan *downloader.Download, 1)
-	dl, err := downloader.NewDownload(context.Background(), "file://stats", h, cfg, ch)
+	dl, err := downloader.NewDownload(t.Context(), "file://stats", h, cfg, ch)
 	if err != nil {
 		t.Fatal(err)
 	}
 	pool := connection.NewPool(1, time.Second)
-	dl.Start(context.Background(), pool)
+	dl.Start(t.Context(), pool)
 	if dl.GetStatus() != common.StatusCompleted {
 		t.Errorf("expected Completed, got %v", dl.GetStatus())
 	}
@@ -175,12 +175,12 @@ func TestStopCancels(t *testing.T) {
 	h := protocol.NewHandler()
 	h.RegisterProtocol(&blockingProtocol{conn: &blockingConn{}})
 	ch := make(chan *downloader.Download, 1)
-	dl, err := downloader.NewDownload(context.Background(), "file://block", h, cfg, ch)
+	dl, err := downloader.NewDownload(t.Context(), "file://block", h, cfg, ch)
 	if err != nil {
 		t.Fatal(err)
 	}
 	pool := connection.NewPool(1, time.Second)
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	go dl.Start(ctx, pool)
 	time.Sleep(10 * time.Millisecond)
 	cancel()
@@ -205,15 +205,15 @@ func TestRemove(t *testing.T) {
 func TestResumeBehavior(t *testing.T) {
 	dl := &downloader.Download{}
 	dl.SetStatus(common.StatusPending)
-	if dl.Resume(context.Background()) {
+	if dl.Resume(t.Context()) {
 		t.Error("should not resume Pending")
 	}
 	dl.SetStatus(common.StatusPaused)
-	if !dl.Resume(context.Background()) {
+	if !dl.Resume(t.Context()) {
 		t.Error("should resume Paused")
 	}
 	dl.SetStatus(common.StatusFailed)
-	if !dl.Resume(context.Background()) {
+	if !dl.Resume(t.Context()) {
 		t.Error("should resume Failed")
 	}
 }
@@ -225,12 +225,12 @@ func TestRetryLogic(t *testing.T) {
 	h := protocol.NewHandler()
 	h.RegisterProtocol(&flappyProtocol{})
 	ch := make(chan *downloader.Download, 1)
-	dl, err := downloader.NewDownload(context.Background(), "file://retry", h, cfg, ch)
+	dl, err := downloader.NewDownload(t.Context(), "file://retry", h, cfg, ch)
 	if err != nil {
 		t.Fatal(err)
 	}
 	pool := connection.NewPool(1, time.Second)
-	dl.Start(context.Background(), pool)
+	dl.Start(t.Context(), pool)
 	if dl.GetStatus() != common.StatusCompleted {
 		t.Errorf("retry failed, got %v", dl.GetStatus())
 	}
@@ -268,7 +268,7 @@ func TestMultiChunkCreation(t *testing.T) {
 	h := protocol.NewHandler()
 	h.RegisterProtocol(r)
 	ch := make(chan *downloader.Download, 1)
-	dl, err := downloader.NewDownload(context.Background(), "http://example.com/file", h, cfg, ch)
+	dl, err := downloader.NewDownload(t.Context(), "http://example.com/file", h, cfg, ch)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -302,7 +302,7 @@ func TestPrepareRestoreSerialization(t *testing.T) {
 	h := protocol.NewHandler()
 	h.RegisterProtocol(&fakeProtocol{})
 	save := make(chan *downloader.Download, 1)
-	dl1, err := downloader.NewDownload(context.Background(), "file://prs", h, cfg, save)
+	dl1, err := downloader.NewDownload(t.Context(), "file://prs", h, cfg, save)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -320,7 +320,7 @@ func TestPrepareRestoreSerialization(t *testing.T) {
 		Status:     dl1.GetStatus(),
 		Downloaded: dl1.GetDownloaded(),
 	}
-	err = dl2.RestoreFromSerialization(context.Background(), h, save)
+	err = dl2.RestoreFromSerialization(t.Context(), h, save)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -17,7 +17,7 @@ import (
 	"github.com/NamanBalaji/tdm/internal/logger"
 )
 
-// Start initiates the download process for the chunks
+// Start initiates the download process for the chunks.
 func (d *Download) Start(ctx context.Context, pool *connection.Pool) {
 	if d.GetStatus() == common.StatusActive {
 		return
@@ -40,7 +40,7 @@ func (d *Download) Start(ctx context.Context, pool *connection.Pool) {
 	d.processDownload(ctx, chunks, pool)
 }
 
-// processDownload downloads the chunks concurrently using a connection pool
+// processDownload downloads the chunks concurrently using a connection pool.
 func (d *Download) processDownload(ctx context.Context, chunks []*chunk.Chunk, pool *connection.Pool) {
 	g, ctx := errgroup.WithContext(ctx)
 	ctx, cancel := context.WithCancel(ctx)
@@ -48,7 +48,7 @@ func (d *Download) processDownload(ctx context.Context, chunks []*chunk.Chunk, p
 
 	sem := make(chan struct{}, d.Config.Connections)
 	for _, c := range chunks {
-		c := c
+
 		g.Go(func() error {
 			select {
 			case <-ctx.Done():
@@ -77,7 +77,7 @@ func (d *Download) processDownload(ctx context.Context, chunks []*chunk.Chunk, p
 	d.handleDownloadFailure(err)
 }
 
-// getPendingChunks returns a list of chunks that are not completed
+// getPendingChunks returns a list of chunks that are not completed.
 func (d *Download) getPendingChunks() []*chunk.Chunk {
 	var pending []*chunk.Chunk
 	for _, c := range d.Chunks {
@@ -89,7 +89,7 @@ func (d *Download) getPendingChunks() []*chunk.Chunk {
 	return pending
 }
 
-// downloadChunkWithRetries attempts to download a chunk with retries
+// downloadChunkWithRetries attempts to download a chunk with retries.
 func (d *Download) downloadChunkWithRetries(ctx context.Context, chunk *chunk.Chunk, pool *connection.Pool) error {
 	err := d.downloadChunk(ctx, chunk, pool)
 	if err == nil || errors.Is(err, context.Canceled) || !isRetryableError(err) {
@@ -124,7 +124,7 @@ func (d *Download) downloadChunkWithRetries(ctx context.Context, chunk *chunk.Ch
 	return err
 }
 
-// downloadChunk downloads a chunk using the provided connection pool
+// downloadChunk downloads a chunk using the provided connection pool.
 func (d *Download) downloadChunk(ctx context.Context, chunk *chunk.Chunk, pool *connection.Pool) error {
 	conn, err := pool.GetConnection(ctx, d.URL, d.Config.Headers)
 	if err != nil {
@@ -152,7 +152,7 @@ func (d *Download) downloadChunk(ctx context.Context, chunk *chunk.Chunk, pool *
 	return chunk.Download(ctx)
 }
 
-// finishDownload checks if all chunks are completed and merges them
+// finishDownload checks if all chunks are completed and merges them.
 func (d *Download) finishDownload() {
 	for _, c := range d.Chunks {
 		if c.GetStatus() != common.StatusCompleted {
@@ -179,7 +179,7 @@ func (d *Download) finishDownload() {
 	}
 }
 
-// handleDownloadFailure sets the status and error on a filed download
+// handleDownloadFailure sets the status and error on a filed download.
 func (d *Download) handleDownloadFailure(err error) {
 	d.SetStatus(common.StatusFailed)
 	d.error = err
@@ -203,7 +203,7 @@ func calculateBackoff(retryCount int, baseDelay time.Duration) time.Duration {
 	return jitter
 }
 
-// Stop stops the download process and cleans up resources
+// Stop stops the download process and cleans up resources.
 func (d *Download) Stop(status common.Status, removeFiles bool) {
 	if d.GetStatus() != common.StatusActive && status == common.StatusPaused {
 		return
@@ -224,7 +224,7 @@ func (d *Download) Stop(status common.Status, removeFiles bool) {
 	}
 }
 
-// Remove deletes the output file and cleans up the chunks
+// Remove deletes the output file and cleans up the chunks.
 func (d *Download) Remove() {
 	if d.GetStatus() == common.StatusActive {
 		d.Stop(common.StatusCancelled, true)
@@ -237,7 +237,7 @@ func (d *Download) Remove() {
 	}
 }
 
-// Resume resumes a paused or failed download
+// Resume resumes a paused or failed download.
 func (d *Download) Resume(ctx context.Context) bool {
 	if d.GetStatus() != common.StatusPaused && d.GetStatus() != common.StatusFailed {
 		return false

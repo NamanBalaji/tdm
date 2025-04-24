@@ -4,9 +4,10 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/google/uuid"
+
 	"github.com/NamanBalaji/tdm/internal/downloader"
 	"github.com/NamanBalaji/tdm/internal/repository"
-	"github.com/google/uuid"
 )
 
 func TestNewBboltRepository_OpenError(t *testing.T) {

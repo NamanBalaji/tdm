@@ -224,7 +224,7 @@ func (d *Download) PrepareForSerialization() {
 
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	
+
 	d.Downloaded = atomic.LoadInt64(&d.Downloaded)
 	d.Status = d.GetStatus()
 

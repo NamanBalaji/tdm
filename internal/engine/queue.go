@@ -4,8 +4,9 @@ import (
 	"container/heap"
 	"sync"
 
-	"github.com/NamanBalaji/tdm/internal/logger"
 	"github.com/google/uuid"
+
+	"github.com/NamanBalaji/tdm/internal/logger"
 )
 
 // DownloadItem wraps a download ID with its priority for the heap.

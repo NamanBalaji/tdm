@@ -26,7 +26,7 @@ func (d *dummyConnection) Close() error {
 func (d *dummyConnection) IsAlive() bool { return d.alive }
 func (d *dummyConnection) Reset(ctx context.Context) error {
 	if !d.alive {
-		return fmt.Errorf("connection not alive")
+		return errors.New("connection not alive")
 	}
 	return nil
 }
@@ -48,7 +48,7 @@ func (d *dummyConnection) SetTimeout(timeout time.Duration) {}
 
 func TestGetConnection_InvalidURL(t *testing.T) {
 	p := connection.NewPool(1, time.Second)
-	_, err := p.GetConnection(context.Background(), "%%%://bad-url", nil)
+	_, err := p.GetConnection(t.Context(), "%%%://bad-url", nil)
 	if err == nil {
 		t.Error("Expected error for invalid URL, got nil")
 	}
@@ -59,7 +59,7 @@ func TestRegisterAndReuse(t *testing.T) {
 	url := "http://example.com"
 	headers := map[string]string{"A": "1"}
 
-	conn1, err := p.GetConnection(context.Background(), url, headers)
+	conn1, err := p.GetConnection(t.Context(), url, headers)
 	if err != nil {
 		t.Fatalf("Unexpected error on first GetConnection: %v", err)
 	}
@@ -90,7 +90,7 @@ func TestRegisterAndReuse(t *testing.T) {
 		t.Errorf("Expected IdleConnections=1 after release, got %d", stats.IdleConnections)
 	}
 
-	conn2, err := p.GetConnection(context.Background(), url, headers)
+	conn2, err := p.GetConnection(t.Context(), url, headers)
 	if err != nil {
 		t.Fatalf("Unexpected error on second GetConnection: %v", err)
 	}
@@ -109,7 +109,7 @@ func TestMaxPerHostEnforcement(t *testing.T) {
 	headers := map[string]string{}
 
 	// Acquire two slots
-	ctx := context.Background()
+	ctx := t.Context()
 	_, err := p.GetConnection(ctx, url, headers)
 	if err != nil {
 		t.Fatalf("Failed to acquire first slot: %v", err)
@@ -119,7 +119,7 @@ func TestMaxPerHostEnforcement(t *testing.T) {
 		t.Fatalf("Failed to acquire second slot: %v", err)
 	}
 
-	timedCtx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	timedCtx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
 	defer cancel()
 	start := time.Now()
 	_, err = p.GetConnection(timedCtx, url, headers)
@@ -136,14 +136,14 @@ func TestReleaseSlot(t *testing.T) {
 	url := "http://release.com"
 	headers := map[string]string{}
 
-	_, err := p.GetConnection(context.Background(), url, headers)
+	_, err := p.GetConnection(t.Context(), url, headers)
 	if err != nil {
 		t.Fatalf("Failed to acquire slot: %v", err)
 	}
 
 	blocked := make(chan struct{})
 	go func() {
-		conn, err := p.GetConnection(context.Background(), url, headers)
+		conn, err := p.GetConnection(t.Context(), url, headers)
 		if err != nil {
 			t.Errorf("Unexpected error after ReleaseSlot: %v", err)
 		}
@@ -170,7 +170,7 @@ func TestCleanupIdleConnections(t *testing.T) {
 	url := "http://clean.com"
 	headers := map[string]string{}
 
-	_, err := p.GetConnection(context.Background(), url, headers)
+	_, err := p.GetConnection(t.Context(), url, headers)
 	if err != nil {
 		t.Fatalf("Failed to acquire slot for cleanup test: %v", err)
 	}
