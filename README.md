@@ -1,4 +1,6 @@
 # TDM (Terminal Download Manager)
+![Build Status](https://github.com/NamanBalaji/tdm/actions/workflows/ci.yml/badge.svg)
+[![Go Report Card](https://goreportcard.com/badge/github.com/NamanBalaji/tdm)](https://goreportcard.com/report/github.com/NamanBalaji/tdm)
 
 ## 🚀 Overview
 
