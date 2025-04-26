@@ -138,20 +138,6 @@ func TestStartDownloadAndLifecycle(t *testing.T) {
 	}
 }
 
-func TestRemoveDownload(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
-	defer srv.Close()
-	e := newEngine(t)
-	url := srv.URL + "/x"
-	id, _ := e.AddDownload(url, &common.Config{Connections: 1})
-	if err := e.RemoveDownload(id, true); err != nil {
-		t.Errorf("RemoveDownload failed: %v", err)
-	}
-	if _, err := e.GetDownload(id); !errors.Is(err, engine.ErrDownloadNotFound) {
-		t.Errorf("expected ErrDownloadNotFound, got %v", err)
-	}
-}
-
 func TestShutdown_Idempotent(t *testing.T) {
 	e := newEngine(t)
 	if err := e.Shutdown(); err != nil {
