@@ -15,7 +15,6 @@ import (
 func main() {
 	config := engine.DefaultConfig()
 
-	// Initialize logging
 	debug := flag.Bool("debug", false, "debug flag")
 	flag.Parse()
 
@@ -24,26 +23,23 @@ func main() {
 	}
 	defer logger.Close()
 
-	// Create and initialize the engine
 	eng, err := engine.New(config)
 	if err != nil {
-		fmt.Printf("Error creating engine: %v\n", err)
+		logger.Errorf("Error creating engine: %v\n", err)
 		os.Exit(1)
 	}
 
-	// Initialize the engine
 	if err := eng.Init(); err != nil {
-		fmt.Printf("Error initializing engine: %v\n", err)
+		logger.Errorf("Error initializing engine: %v\n", err)
 		os.Exit(1)
 	}
 
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
-	// Handle signals in a goroutine
 	go func() {
 		<-sigChan
-		fmt.Println("\nReceived interrupt signal, shutting down...")
+		logger.Infof("\nReceived interrupt signal, shutting down...")
 		if err := eng.Shutdown(); err != nil {
 			fmt.Printf("Error during shutdown: %v\n", err)
 		}

@@ -19,14 +19,14 @@ type DownloadInfo struct {
 
 type ChunkInfo struct {
 	ID                 string    `json:"id"`
-	StartByte          int64     `json:"start_byte"`
-	EndByte            int64     `json:"end_byte"`
+	StartByte          int64     `json:"startByte"`
+	EndByte            int64     `json:"endByte"`
 	Downloaded         int64     `json:"downloaded"`
 	Status             Status    `json:"status"`
-	RetryCount         int       `json:"retry_count"`
-	TempFilePath       string    `json:"temp_file_path"`
-	SequentialDownload bool      `json:"sequential_download"`
-	LastActive         time.Time `json:"last_active,omitempty"`
+	RetryCount         int       `json:"retryCount"`
+	TempFilePath       string    `json:"tempFilePath"`
+	SequentialDownload bool      `json:"sequentialDownload"`
+	LastActive         time.Time `json:"lastActive,omitempty"`
 }
 
 // GlobalStats contains aggregated statistics across all downloads.
@@ -45,21 +45,21 @@ type GlobalStats struct {
 
 // Config contains all download configuration options.
 type Config struct {
-	Directory   string            `json:"directory"` // Target directory
-	TempDir     string            `json:"temp_dir"`
-	Connections int               `json:"connections"`       // Number of parallel connections
-	Headers     map[string]string `json:"headers,omitempty"` // Custom headers
+	Directory   string            `json:"directory"`
+	TempDir     string            `json:"tempDir"`
+	Connections int               `json:"connections"`
+	Headers     map[string]string `json:"headers,omitempty"`
 
-	MaxRetries int           `json:"max_retries"`           // Maximum number of retries
-	RetryDelay time.Duration `json:"retry_delay,omitempty"` // Delay between retries
+	MaxRetries int           `json:"maxRetries"`
+	RetryDelay time.Duration `json:"retryDelay,omitempty"`
 
-	ThrottleSpeed      int64 `json:"throttle_speed,omitempty"`      // Bandwidth throttle in bytes/sec
-	DisableParallelism bool  `json:"disable_parallelism,omitempty"` // Force single connection
+	ThrottleSpeed      int64 `json:"throttleSpeed,omitempty"`
+	DisableParallelism bool  `json:"disableParallelism,omitempty"`
 
-	Priority int `json:"priority"` // Priority level (higher = more important)
+	Priority int `json:"priority"`
 
-	Checksum          string `json:"checksum,omitempty"`           // File checksum
-	ChecksumAlgorithm string `json:"checksum_algorithm,omitempty"` // Checksum algorithm
+	Checksum          string `json:"checksum,omitempty"`
+	ChecksumAlgorithm string `json:"checksumAlgorithm,omitempty"`
 
-	UseExistingFile bool `json:"use_existing_file,omitempty"` // Resume from existing file
+	UseExistingFile bool `json:"useExistingFile,omitempty"` // Resume from existing file
 }

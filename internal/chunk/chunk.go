@@ -17,20 +17,26 @@ import (
 
 type Chunk struct {
 	mu           sync.RWMutex
-	ID           uuid.UUID             `json:"ID"`           // Unique identifier
-	DownloadID   uuid.UUID             `json:"DownloadID"`   // ID of the parent download
-	StartByte    int64                 `json:"StartByte"`    // Starting byte position in the original file
-	EndByte      int64                 `json:"EndByte"`      // Ending byte position in the original file
-	Downloaded   int64                 `json:"Downloaded"`   // Number of bytes downloaded (atomic)
-	Status       common.Status         `json:"Status"`       // Current status
-	TempFilePath string                `json:"TempFilePath"` // Path to temporary file for this chunk
-	Error        error                 `json:"_"`            // Last error encountered
+	ID           uuid.UUID             `json:"id"`
+	DownloadID   uuid.UUID             `json:"downloadId"`
+	StartByte    int64                 `json:"startByte"`
+	EndByte      int64                 `json:"endByte"`
+	Downloaded   int64                 `json:"downloaded"`
+	Status       common.Status         `json:"status"`
+	TempFilePath string                `json:"tempFilePath"`
+	Error        error                 `json:"-"`
 	Connection   connection.Connection `json:"-"`
-	RetryCount   int                   `json:"RetryCount"`           // Number of times this chunk has been retried
-	LastActive   time.Time             `json:"LastActive,omitempty"` // Last time data was received
+	RetryCount   int                   `json:"retryCount"`
+	LastActive   time.Time             `json:"lastActive,omitempty"`
 	progressFn   func(int64)
-	// Special flags
-	SequentialDownload bool `json:"SequentialDownload"` // True if server doesn't support ranges and we need sequential download
+
+	SequentialDownload bool `json:"sequentialDownload"` // True if server doesn't support ranges and we need sequential download
+}
+
+func (c *Chunk) GetLastActive() time.Time {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.LastActive
 }
 
 // Progress represents a progress update event for the chunk.
@@ -42,7 +48,7 @@ type Progress struct {
 	Status             common.Status
 	Error              error
 	Timestamp          time.Time
-	SequentialDownload bool // True if server doesn't support ranges and we need sequential download
+	SequentialDownload bool
 }
 
 // NewChunk creates a new chunk with specified parameters.
@@ -122,8 +128,8 @@ func (c *Chunk) Size() int64 {
 	return c.EndByte - c.StartByte + 1
 }
 
-// based on what has been downloaded so far.
-func (c *Chunk) GetCurrentByteRange() (start int64, end int64) {
+// GetCurrentByteRange returns the current byte range of the chunk.
+func (c *Chunk) GetCurrentByteRange() (int64, int64) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 

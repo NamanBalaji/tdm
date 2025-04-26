@@ -13,10 +13,10 @@ import (
 
 // SpeedCalculator handles download speed measurement.
 type SpeedCalculator struct {
-	samples        []int64   // Recent speed samples
-	lastCheck      time.Time // Time of last measurement
-	bytesSinceLast int64     // Bytes downloaded since last check
-	windowSize     int       // Number of samples to keep
+	samples        []int64
+	lastCheck      time.Time
+	bytesSinceLast int64
+	windowSize     int
 	mu             sync.Mutex
 }
 
@@ -38,7 +38,7 @@ func (sc *SpeedCalculator) AddBytes(bytes int64) {
 	atomic.AddInt64(&sc.bytesSinceLast, bytes)
 }
 
-// GetSpeed calculates current download speed in bytes/sec.
+// GetSpeed calculates the current download speed in bytes/sec.
 func (sc *SpeedCalculator) GetSpeed() int64 {
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
@@ -65,7 +65,7 @@ func (sc *SpeedCalculator) GetSpeed() int64 {
 	return sc.getAverageSpeed()
 }
 
-// getAverageSpeed calculates average of recent speed samples.
+// getAverageSpeed calculates the average of recent speed samples.
 func (sc *SpeedCalculator) getAverageSpeed() int64 {
 	if len(sc.samples) == 0 {
 		return 0
@@ -79,9 +79,10 @@ func (sc *SpeedCalculator) getAverageSpeed() int64 {
 	return sum / int64(len(sc.samples))
 }
 
-// Stats represents current download statistics.
+// Stats represent current download statistics.
 type Stats struct {
 	ID              uuid.UUID
+	Filename        string
 	Status          common.Status
 	TotalSize       int64
 	Downloaded      int64

@@ -2,6 +2,7 @@ package downloader
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -25,88 +26,88 @@ type Download struct {
 	Filename     string             `json:"filename"`
 	Config       *common.Config     `json:"config"`
 	Status       common.Status      `json:"status"`
-	TotalSize    int64              `json:"total_size"`
-	Downloaded   int64              `json:"downloaded"` // Downloaded bytes so far
-	StartTime    time.Time          `json:"start_time,omitempty"`
-	EndTime      time.Time          `json:"end_time,omitempty"`
-	ChunkInfos   []common.ChunkInfo `json:"chunk_infos"` // Chunk data for serialization
-	Chunks       []*chunk.Chunk     `json:"-"`
-	TotalChunks  int32              `json:"total_chunks"`
-	ErrorMessage string             `json:"error_message,omitempty"` // For persistent storage
+	TotalSize    int64              `json:"totalSize"`
+	Downloaded   int64              `json:"downloaded"`
+	StartTime    time.Time          `json:"startTime,omitempty"`
+	EndTime      time.Time          `json:"endTime,omitempty"`
+	ChunkInfos   []common.ChunkInfo `json:"chunkInfos"`
+	ErrorMessage string             `json:"errorMessage,omitempty"`
+	TotalChunks  int32              `json:"totalChunks"`
 
-	// runtime fields
-	error           error
 	mu              sync.RWMutex
+	status          common.Status
+	downloaded      int64
+	totalChunks     int32
+	Chunks          []*chunk.Chunk
+	error           error
 	cancelFunc      context.CancelFunc
 	isExternal      int32 // 0 means false, 1 means true
 	chunkManager    *chunk.Manager
 	protocolHandler protocol.Protocol
 	done            chan struct{}
 	progressCh      chan common.Progress
-	saveStateChan   chan *Download
+	saveStateChan   chan<- *Download
 	speedCalculator *SpeedCalculator
 }
 
-// SetStatus sets the Status of a Download.
+// SetStatus sets the Status of a Download atomically and updates the internal field.
 func (d *Download) SetStatus(status common.Status) {
-	atomic.StoreInt32((*int32)(&d.Status), int32(status))
+	atomic.StoreInt32((*int32)(&d.status), int32(status))
 }
 
-// GetStatus returns the current Status of the Download.
+// GetStatus returns the current Status of the Download atomically.
 func (d *Download) GetStatus() common.Status {
-	return common.Status(atomic.LoadInt32((*int32)(&d.Status)))
+	return common.Status(atomic.LoadInt32((*int32)(&d.status)))
 }
 
-// GetIsExternal returns the isExternal status of the Download.
+// GetIsExternal returns the isExternal status of the Download atomically.
 func (d *Download) GetIsExternal() bool {
 	val := atomic.LoadInt32(&d.isExternal)
 	return val == 1
 }
 
-// SetIsExternal sets the isExternal status of the Download.
+// SetIsExternal sets the isExternal status of the Download atomically.
 func (d *Download) SetIsExternal(isExternal bool) {
+	val := int32(0)
 	if isExternal {
-		atomic.StoreInt32(&d.isExternal, int32(1))
-
-		return
+		val = 1
 	}
-
-	atomic.StoreInt32(&d.isExternal, int32(0))
+	atomic.StoreInt32(&d.isExternal, val)
 }
 
-// GetTotalChunks returns the total number of chunks.
+// GetTotalChunks returns the total number of chunks atomically.
 func (d *Download) GetTotalChunks() int {
-	return int(atomic.LoadInt32(&d.TotalChunks))
+	return int(atomic.LoadInt32(&d.totalChunks))
 }
 
+// SetTotalChunks sets the total number of chunks atomically (internal helper).
 func (d *Download) SetTotalChunks(total int) {
-	atomic.StoreInt32(&d.TotalChunks, int32(total))
+	atomic.StoreInt32(&d.totalChunks, int32(total))
 }
 
-// addChunks adds chunks to the Download.
+// addChunks adds chunks to the Download, protected by a write lock.
 func (d *Download) addChunks(chunks ...*chunk.Chunk) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	for _, c := range chunks {
-		d.Chunks = append(d.Chunks, c)
-		logger.Debugf("Added chunk %s to download %s", c.ID, d.ID)
-	}
+	d.Chunks = append(d.Chunks, chunks...)
+	logger.Debugf("Added %d chunks to download %s. Total chunks now: %d", len(chunks), d.ID, len(d.Chunks))
+
 	d.SetTotalChunks(len(d.Chunks))
 }
 
-// GetDownloaded returns the number of bytes downloaded.
+// GetDownloaded returns the number of bytes downloaded atomically.
 func (d *Download) GetDownloaded() int64 {
-	return atomic.LoadInt64(&d.Downloaded)
+	return atomic.LoadInt64(&d.downloaded)
 }
 
-// GetTotalSize returns the total size of the Download.
+// GetTotalSize returns the total size of the Download (read-only after init, no lock needed).
 func (d *Download) GetTotalSize() int64 {
-	return atomic.LoadInt64(&d.TotalSize)
+	return d.TotalSize
 }
 
 // NewDownload creates a new Download instance.
-func NewDownload(ctx context.Context, url string, proto *protocol.Handler, config *common.Config, saveStateChan chan *Download) (*Download, error) {
+func NewDownload(ctx context.Context, url string, proto *protocol.Handler, config *common.Config, saveStateChan chan<- *Download) (*Download, error) {
 	id := uuid.New()
 	logger.Infof("Creating new download: id=%s, url=%s", id, url)
 
@@ -131,36 +132,55 @@ func NewDownload(ctx context.Context, url string, proto *protocol.Handler, confi
 		Filename:        info.Filename,
 		TotalSize:       info.TotalSize,
 		Config:          config,
-		Status:          common.StatusPending,
+		status:          common.StatusPending,
 		ChunkInfos:      make([]common.ChunkInfo, 0),
 		Chunks:          make([]*chunk.Chunk, 0),
 		progressCh:      make(chan common.Progress, 10),
 		done:            make(chan struct{}),
 		speedCalculator: NewSpeedCalculator(5),
-		StartTime:       time.Now(),
-		saveStateChan:   saveStateChan,
+
+		saveStateChan: saveStateChan,
 	}
+	download.SetStatus(common.StatusPending)
 
 	chunkManager, err := chunk.NewManager(id.String(), config.TempDir)
 	if err != nil {
 		return nil, err
 	}
-	chunks, err := chunkManager.CreateChunks(id, info.TotalSize, info.SupportsRanges, config.Connections, download.addProgress)
-
-	download.addChunks(chunks...)
 	download.chunkManager = chunkManager
 
+	chunks, err := chunkManager.CreateChunks(id, info.TotalSize, info.SupportsRanges, config.Connections, download.addProgress)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create chunks: %w", err)
+	}
+	download.addChunks(chunks...)
+	download.setProgressFunction()
+
+	logger.Infof("New download %s created with %d chunks", id, download.GetTotalChunks())
 	return download, nil
 }
 
-// GetStats returns current download statistics.
+// GetStats returns current download statistics, protected by a read lock.
 func (d *Download) GetStats() Stats {
-	downloadedBytes := atomic.LoadInt64(&d.Downloaded)
-	logger.Debugf("Getting stats for download %s: downloaded=%d bytes", d.ID, downloadedBytes)
+	d.mu.RLock()
+
+	downloadedBytes := d.GetDownloaded()
+	status := d.GetStatus()
+	totalChunks := d.GetTotalChunks()
+	filename := d.Filename
+	totalSize := d.GetTotalSize()
+	startTime := d.StartTime
+	err := d.error
+	errorMsg := d.ErrorMessage
+	chunks := d.Chunks
+
+	d.mu.RUnlock()
+
+	logger.Debugf("Getting stats for download %s: downloaded=%d bytes, status=%s", d.ID, downloadedBytes, status)
 
 	var progress float64
-	if d.TotalSize > 0 {
-		progress = float64(downloadedBytes) / float64(d.TotalSize) * 100
+	if totalSize > 0 {
+		progress = float64(downloadedBytes) / float64(totalSize) * 100
 	}
 
 	var speed int64
@@ -171,8 +191,9 @@ func (d *Download) GetStats() Stats {
 	activeChunks := 0
 	completedChunks := 0
 
-	for _, c := range d.Chunks {
-		switch c.GetStatus() {
+	for _, c := range chunks {
+		chunkStatus := c.GetStatus()
+		switch chunkStatus {
 		case common.StatusActive:
 			activeChunks++
 		case common.StatusCompleted:
@@ -180,26 +201,31 @@ func (d *Download) GetStats() Stats {
 		}
 	}
 
-	timeElapsed := time.Since(d.StartTime)
+	timeElapsed := time.Duration(0)
+	if !startTime.IsZero() {
+		timeElapsed = time.Since(startTime)
+	}
+
 	var timeRemaining time.Duration
-	if speed > 0 {
-		bytesRemaining := d.TotalSize - downloadedBytes
+	if speed > 0 && status == common.StatusActive {
+		bytesRemaining := totalSize - downloadedBytes
 		if bytesRemaining > 0 {
 			timeRemaining = time.Duration(bytesRemaining/speed) * time.Second
 		}
 	}
 
-	errorMsg := ""
-	if d.error != nil {
-		errorMsg = d.error.Error()
-	} else if d.ErrorMessage != "" {
-		errorMsg = d.ErrorMessage
+	currentErrorMsg := ""
+	if err != nil {
+		currentErrorMsg = err.Error()
+	} else if errorMsg != "" {
+		currentErrorMsg = errorMsg
 	}
 
 	stats := Stats{
 		ID:              d.ID,
-		Status:          d.GetStatus(),
-		TotalSize:       d.GetTotalSize(),
+		Filename:        filename,
+		Status:          status,
+		TotalSize:       totalSize,
 		Downloaded:      downloadedBytes,
 		Progress:        progress,
 		Speed:           speed,
@@ -207,31 +233,52 @@ func (d *Download) GetStats() Stats {
 		TimeRemaining:   timeRemaining,
 		ActiveChunks:    activeChunks,
 		CompletedChunks: completedChunks,
-		TotalChunks:     d.GetTotalChunks(),
-		Error:           errorMsg,
+		TotalChunks:     totalChunks,
+		Error:           currentErrorMsg,
 		LastUpdated:     time.Now(),
 	}
-
-	logger.Debugf("Download %s stats: progress=%.2f%%, speed=%d B/s, active=%d, completed=%d, total=%d",
-		d.ID, stats.Progress, stats.Speed, stats.ActiveChunks, stats.CompletedChunks, stats.TotalChunks)
 
 	return stats
 }
 
-// PrepareForSerialization prepares the download for storage.
-func (d *Download) PrepareForSerialization() {
-	logger.Debugf("Preparing download %s for serialization", d.ID)
-
+func (d *Download) MarshalJSON() ([]byte, error) {
 	d.mu.Lock()
-	defer d.mu.Unlock()
 
-	d.Downloaded = atomic.LoadInt64(&d.Downloaded)
-	d.Status = d.GetStatus()
+	snapshot := struct {
+		ID           uuid.UUID          `json:"id"`
+		URL          string             `json:"url"`
+		Filename     string             `json:"filename"`
+		Config       *common.Config     `json:"config"`
+		Status       common.Status      `json:"status"`
+		TotalSize    int64              `json:"totalSize"`
+		Downloaded   int64              `json:"downloaded"`
+		StartTime    time.Time          `json:"startTime,omitempty"`
+		EndTime      time.Time          `json:"endTime,omitempty"`
+		ChunkInfos   []common.ChunkInfo `json:"chunkInfos"`
+		ErrorMessage string             `json:"errorMessage,omitempty"`
+		TotalChunks  int32              `json:"totalChunks"`
+	}{
+		ID:          d.ID,
+		URL:         d.URL,
+		Filename:    d.Filename,
+		Config:      d.Config,
+		Status:      d.GetStatus(),
+		TotalSize:   d.TotalSize,
+		Downloaded:  d.GetDownloaded(),
+		StartTime:   d.StartTime,
+		EndTime:     d.EndTime,
+		TotalChunks: int32(d.GetTotalChunks()),
+	}
 
-	// Save chunk information for serialization
-	d.ChunkInfos = make([]common.ChunkInfo, len(d.Chunks))
-	for i, c := range d.Chunks {
-		d.ChunkInfos[i] = common.ChunkInfo{
+	if d.error != nil {
+		snapshot.ErrorMessage = d.error.Error()
+	} else {
+		snapshot.ErrorMessage = d.ErrorMessage
+	}
+
+	snapshot.ChunkInfos = make([]common.ChunkInfo, 0, len(d.Chunks))
+	for _, c := range d.Chunks {
+		snapshot.ChunkInfos = append(snapshot.ChunkInfos, common.ChunkInfo{
 			ID:                 c.ID.String(),
 			StartByte:          c.GetStartByte(),
 			EndByte:            c.GetEndByte(),
@@ -240,32 +287,30 @@ func (d *Download) PrepareForSerialization() {
 			RetryCount:         c.GetRetryCount(),
 			TempFilePath:       c.TempFilePath,
 			SequentialDownload: c.SequentialDownload,
-			LastActive:         c.LastActive,
-		}
-
-		logger.Debugf("Serialized chunk %d/%d: id=%s, range=%d-%d, downloaded=%d, status=%s",
-			i+1, len(d.Chunks), c.ID, c.StartByte, c.EndByte, c.Downloaded, c.Status)
+			LastActive:         c.GetLastActive(),
+		})
 	}
+	d.mu.Unlock()
 
-	if d.error != nil {
-		d.ErrorMessage = d.error.Error()
-		logger.Debugf("Serialized error message: %s", d.ErrorMessage)
-	}
-
-	logger.Debugf("Download %s prepared for serialization with %d chunks", d.ID, len(d.ChunkInfos))
+	return json.Marshal(snapshot)
 }
 
 // RestoreFromSerialization restores runtime fields after loading from storage.
-func (d *Download) RestoreFromSerialization(ctx context.Context, proto *protocol.Handler, saveStateChan chan *Download) error {
+func (d *Download) RestoreFromSerialization(ctx context.Context, proto *protocol.Handler, saveStateChan chan<- *Download) error {
 	logger.Debugf("Restoring download %s from serialization", d.ID)
+
+	d.mu.Lock()
+
 	protocolHandler, err := proto.GetHandler(d.URL)
 	if err != nil {
+		d.mu.Unlock()
 		return err
 	}
 	d.protocolHandler = protocolHandler
 
 	chunkManager, err := chunk.NewManager(d.ID.String(), d.Config.TempDir)
 	if err != nil {
+		d.mu.Unlock()
 		return err
 	}
 	d.chunkManager = chunkManager
@@ -274,54 +319,94 @@ func (d *Download) RestoreFromSerialization(ctx context.Context, proto *protocol
 	d.saveStateChan = saveStateChan
 	d.done = make(chan struct{})
 	d.speedCalculator = NewSpeedCalculator(5)
-	d.SetTotalChunks(len(d.ChunkInfos))
+
+	d.SetStatus(d.Status)
+	atomic.StoreInt64(&d.downloaded, d.Downloaded)
+	d.SetTotalChunks(int(d.TotalChunks))
 
 	if d.ErrorMessage != "" && d.error == nil {
 		d.error = errors.New(d.ErrorMessage)
 		logger.Debugf("Restored error message: %s", d.ErrorMessage)
+	} else if d.ErrorMessage == "" {
+		d.error = nil
 	}
+
+	d.Chunks = make([]*chunk.Chunk, 0, d.GetTotalChunks())
+
+	d.mu.Unlock()
 
 	err = d.restoreChunks()
 	if err != nil {
 		return fmt.Errorf("failed to restore chunks: %w", err)
 	}
 
+	d.mu.Lock()
 	savingNeeded := false
-	if d.GetStatus() == common.StatusActive {
+	currentStatus := d.GetStatus()
+
+	if currentStatus == common.StatusActive {
+		logger.Warnf("Download %s was saved in Active state, setting to Paused", d.ID)
 		d.SetStatus(common.StatusPaused)
+		d.Status = common.StatusPaused
 		savingNeeded = true
 	}
-	if d.GetStatus() == common.StatusCompleted {
+
+	if currentStatus == common.StatusCompleted {
 		outputPath := filepath.Join(d.Config.Directory, d.Filename)
-		if _, err := os.Stat(outputPath); os.IsNotExist(err) {
+		if _, statErr := os.Stat(outputPath); os.IsNotExist(statErr) {
+			logger.Errorf("Download %s was Completed, but output file %s missing. Setting to Failed.", d.ID, outputPath)
 			d.SetStatus(common.StatusFailed)
-			d.error = errors.New("output file missing")
+			d.Status = common.StatusFailed
+			d.error = errors.New("output file missing after restore")
+			d.ErrorMessage = d.error.Error()
 			savingNeeded = true
+		} else if statErr != nil {
+			logger.Warnf("Error stating output file %s during restore check: %v", outputPath, statErr)
+		}
+	}
+	d.mu.Unlock()
+
+	if savingNeeded {
+		select {
+		case d.saveStateChan <- d:
+			logger.Debugf("Queued download %s for saving after restore adjustments.", d.ID)
+		default:
+			logger.Warnf("Save channel full, could not queue download %s for saving after restore.", d.ID)
 		}
 	}
 
-	if savingNeeded {
-		d.saveStateChan <- d
-	}
-
-	logger.Debugf("Download %s restored from serialization (chunks will be restored separately)", d.ID)
-
+	logger.Debugf("Download %s restored from serialization. Status: %s, Chunks: %d", d.ID, d.GetStatus(), d.GetTotalChunks())
 	return nil
 }
 
 // restoreChunks restores the chunks from the serialized Download data.
 func (d *Download) restoreChunks() error {
-	if len(d.ChunkInfos) == 0 {
-		logger.Debugf("No chunk information available for download %s", d.ID)
+	numChunks := len(d.ChunkInfos)
+	if numChunks == 0 {
+		totalChunksAtomic := d.GetTotalChunks()
+		if totalChunksAtomic > 0 {
+			logger.Warnf("Download %s: TotalChunks is %d but ChunkInfos is empty during restore.", d.ID, totalChunksAtomic)
+			d.SetTotalChunks(0)
+		}
+		logger.Debugf("No chunk information available to restore for download %s", d.ID)
+
 		return nil
 	}
 
-	chunks := make([]*chunk.Chunk, d.TotalChunks)
+	serializedTotalChunks := d.GetTotalChunks()
+	if serializedTotalChunks != numChunks {
+		logger.Warnf("Download %s: Serialized TotalChunks (%d) differs from length of ChunkInfos (%d). Using length of ChunkInfos.", d.ID, serializedTotalChunks, numChunks)
+		d.SetTotalChunks(numChunks)
+	}
+
+	restoredChunks := make([]*chunk.Chunk, numChunks)
+	var accumulatedDownloaded int64 = 0
+
 	for i, info := range d.ChunkInfos {
 		chunkID, err := uuid.Parse(info.ID)
 		if err != nil {
 			logger.Errorf("Failed to parse chunk ID %s: %v", info.ID, err)
-			return err
+			return fmt.Errorf("invalid chunk ID %s found during restore", info.ID)
 		}
 
 		newChunk := &chunk.Chunk{
@@ -329,46 +414,56 @@ func (d *Download) restoreChunks() error {
 			DownloadID:         d.ID,
 			StartByte:          info.StartByte,
 			EndByte:            info.EndByte,
-			Downloaded:         info.Downloaded,
-			Status:             info.Status,
-			RetryCount:         info.RetryCount,
 			TempFilePath:       info.TempFilePath,
 			SequentialDownload: info.SequentialDownload,
 			LastActive:         info.LastActive,
 		}
 
+		newChunk.SetDownloaded(info.Downloaded)
+		newChunk.SetStatus(info.Status)
+		newChunk.SetRetryCount(info.RetryCount)
+
 		if _, err := os.Stat(newChunk.TempFilePath); os.IsNotExist(err) {
 			logger.Debugf("Chunk file %s does not exist, checking directory", newChunk.TempFilePath)
 			chunkDir := filepath.Dir(newChunk.TempFilePath)
-			if _, err := os.Stat(chunkDir); os.IsNotExist(err) {
-				logger.Debugf("Creating chunk directory: %s", chunkDir)
-				if err := os.MkdirAll(chunkDir, 0o755); err != nil {
-					logger.Warnf("Failed to create chunk directory %s: %v", chunkDir, err)
-				}
+			if err := os.MkdirAll(chunkDir, 0o755); err != nil && !os.IsExist(err) {
+				logger.Warnf("Failed to create chunk directory %s: %v", chunkDir, err)
 			}
 
 			if newChunk.GetStatus() == common.StatusCompleted {
-				logger.Debugf("Resetting completed chunk %s as file is missing", newChunk.ID)
+				logger.Warnf("Resetting completed chunk %s as file %s is missing", newChunk.ID, newChunk.TempFilePath)
 				newChunk.SetStatus(common.StatusPending)
-				newChunk.Downloaded = 0
+				newChunk.SetDownloaded(0)
+			} else {
+				if newChunk.GetDownloaded() > 0 {
+					logger.Warnf("Resetting downloaded count for chunk %s as file %s is missing", newChunk.ID, newChunk.TempFilePath)
+					newChunk.SetDownloaded(0)
+				}
 			}
+		} else if err != nil {
+			logger.Warnf("Error stating chunk file %s: %v", newChunk.TempFilePath, err)
 		}
 
-		chunks[i] = newChunk
+		accumulatedDownloaded += newChunk.GetDownloaded()
+
+		restoredChunks[i] = newChunk
 		logger.Debugf("Restored chunk %s with status %s, range: %d-%d, downloaded: %d",
 			newChunk.ID, newChunk.GetStatus(), newChunk.GetStartByte(), newChunk.GetEndByte(), newChunk.GetDownloaded())
 	}
 
-	d.addChunks(chunks...)
+	d.addChunks(restoredChunks...)
+
+	atomic.StoreInt64(&d.downloaded, accumulatedDownloaded)
+	logger.Infof("Download %s: Restored %d chunks. Total downloaded recalculated to %d bytes.", d.ID, len(restoredChunks), accumulatedDownloaded)
+
 	d.setProgressFunction()
-	logger.Debugf("All chunks restored for download %s", d.ID)
 
 	return nil
 }
 
-// AddProgress adds progress to the download.
+// addProgress adds progress to the download atomically.
 func (d *Download) addProgress(bytes int64) {
-	atomic.AddInt64(&d.Downloaded, bytes)
+	newDownloaded := atomic.AddInt64(&d.downloaded, bytes)
 
 	if d.speedCalculator != nil {
 		d.speedCalculator.AddBytes(bytes)
@@ -377,19 +472,21 @@ func (d *Download) addProgress(bytes int64) {
 	select {
 	case d.progressCh <- common.Progress{
 		DownloadID:     d.ID,
-		BytesCompleted: atomic.LoadInt64(&d.Downloaded),
-		TotalBytes:     d.TotalSize,
+		BytesCompleted: newDownloaded,
+		TotalBytes:     d.GetTotalSize(),
 		Speed:          d.speedCalculator.GetSpeed(),
 		Status:         d.GetStatus(),
 		Timestamp:      time.Now(),
 	}:
 	default:
-		// Channel full, skip this update
 	}
 }
 
 // setProgressFunction sets the progress function for each chunk.
 func (d *Download) setProgressFunction() {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
 	logger.Debugf("Setting progress function for %d chunks in download %s", len(d.Chunks), d.ID)
 
 	for i, c := range d.Chunks {

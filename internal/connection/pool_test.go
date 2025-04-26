@@ -2,7 +2,7 @@ package connection_test
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"testing"
 	"time"
 

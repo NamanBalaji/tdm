@@ -81,8 +81,6 @@ func (r *BboltRepository) Save(download *downloader.Download) error {
 		return errors.New("cannot save nil download")
 	}
 
-	download.PrepareForSerialization()
-
 	return r.db.Update(func(tx *bbolt.Tx) error {
 		bucket := tx.Bucket([]byte(downloadsBucket))
 		if bucket == nil {

@@ -31,11 +31,9 @@ type ManagedConnection struct {
 	conn       Connection
 	url        string
 	host       string
-	path       string
 	headers    map[string]string
 	createdAt  time.Time
 	lastUsedAt time.Time
-	totalBytes int64
 	inUse      bool
 }
 
@@ -102,12 +100,10 @@ func (p *Pool) GetConnection(ctx context.Context, urlStr string, headers map[str
 	}
 	host := u.Hostname()
 
-	// 1) Acquire a host-slot (blocks fairly FIFO)
 	if err := p.hostSem(host).Acquire(ctx, 1); err != nil {
 		return nil, err
 	}
 
-	// 2) Cleanup expired connections and look for idle
 	now := time.Now()
 	p.mu.Lock()
 	active := p.hostConnections[host][:0]
@@ -120,7 +116,6 @@ func (p *Pool) GetConnection(ctx context.Context, urlStr string, headers map[str
 	}
 	p.hostConnections[host] = active
 
-	// reuse idle if headers compatible
 	for _, m := range active {
 		if !m.inUse && headersCompatible(m.headers, headers) {
 			m.inUse = true
@@ -134,7 +129,6 @@ func (p *Pool) GetConnection(ctx context.Context, urlStr string, headers map[str
 	}
 	p.mu.Unlock()
 
-	// no idle, caller must CreateConnection and then RegisterConnection
 	return nil, nil
 }
 

@@ -20,129 +20,179 @@ import (
 // Start initiates the download process for the chunks.
 func (d *Download) Start(ctx context.Context, pool *connection.Pool) {
 	if d.GetStatus() == common.StatusActive {
+		logger.Debugf("Download %s already active, returning.", d.ID)
 		return
 	}
 
 	d.mu.Lock()
-	defer func() {
-		close(d.done)
-		d.mu.Unlock()
-	}()
-	d.SetStatus(common.StatusActive)
-	d.StartTime = time.Now()
 
-	chunks := d.getPendingChunks()
-	if len(chunks) == 0 {
-		logger.Debugf("No pending chunks found for download %s", d.ID)
-		d.finishDownload()
+	if d.GetStatus() == common.StatusActive {
+		d.mu.Unlock()
+		logger.Debugf("Download %s became active concurrently, returning.", d.ID)
+		return
 	}
 
-	d.processDownload(ctx, chunks, pool)
+	d.SetStatus(common.StatusActive)
+	d.StartTime = time.Now()
+	d.error = nil
+	d.ErrorMessage = ""
+
+	if d.done == nil {
+		d.done = make(chan struct{})
+	}
+
+	runCtx, cancel := context.WithCancel(ctx)
+	d.cancelFunc = cancel
+
+	chunksToProcess := make([]*chunk.Chunk, 0, len(d.Chunks))
+	for _, c := range d.Chunks {
+		if c.GetStatus() != common.StatusCompleted {
+			chunksToProcess = append(chunksToProcess, c)
+		}
+	}
+
+	if len(chunksToProcess) == 0 {
+		logger.Debugf("No pending chunks found for download %s", d.ID)
+		d.mu.Unlock()
+		d.finishDownload()
+		return
+	}
+
+	maxConns := d.Config.Connections
+	downloadID := d.ID
+
+	d.mu.Unlock()
+
+	logger.Debugf("Starting download process for %s with %d pending chunks", downloadID, len(chunksToProcess))
+	d.processDownload(runCtx, chunksToProcess, pool, maxConns)
 }
 
 // processDownload downloads the chunks concurrently using a connection pool.
-func (d *Download) processDownload(ctx context.Context, chunks []*chunk.Chunk, pool *connection.Pool) {
-	g, ctx := errgroup.WithContext(ctx)
-	ctx, cancel := context.WithCancel(ctx)
-	d.cancelFunc = cancel
+func (d *Download) processDownload(runCtx context.Context, chunks []*chunk.Chunk, pool *connection.Pool, maxConns int) {
+	defer func() {
+		d.mu.Lock()
+		if d.done != nil {
+			close(d.done)
+			d.done = nil
+		}
+		d.mu.Unlock()
+	}()
 
-	sem := make(chan struct{}, d.Config.Connections)
-	for _, c := range chunks {
+	g, groupCtx := errgroup.WithContext(runCtx)
+	sem := make(chan struct{}, maxConns)
+
+	for _, currentChunk := range chunks {
+		c := currentChunk
 
 		g.Go(func() error {
 			select {
-			case <-ctx.Done():
-				logger.Debugf("Download cancelled for chunk %s", c.ID)
-				return ctx.Err()
+			case <-groupCtx.Done():
+				logger.Debugf("Context cancelled before starting chunk %s", c.ID)
+				if errors.Is(groupCtx.Err(), context.Canceled) && d.GetStatus() != common.StatusActive {
+					c.SetStatus(common.StatusPaused)
+				}
+				return groupCtx.Err()
 			case sem <- struct{}{}:
 				defer func() { <-sem }()
 			}
 
-			return d.downloadChunkWithRetries(ctx, c, pool)
+			err := d.downloadChunkWithRetries(groupCtx, c, pool)
+			if err != nil {
+				if errors.Is(err, context.Canceled) && groupCtx.Err() != nil {
+					logger.Debugf("Download cancelled for chunk %s", c.ID)
+					d.mu.RLock()
+					isStopping := d.GetStatus() != common.StatusActive
+					d.mu.RUnlock()
+					if isStopping {
+						c.SetStatus(common.StatusPaused)
+					}
+					return groupCtx.Err()
+				}
+				if !errors.Is(err, context.Canceled) {
+					logger.Errorf("Error downloading chunk %s: %v", c.ID, err)
+				}
+				return err
+			}
+			return nil
 		})
 	}
 
 	err := g.Wait()
+
 	if err == nil {
 		d.finishDownload()
-		return
+	} else if errors.Is(err, context.Canceled) {
+		logger.Infof("Download %s cancelled or stopped.", d.ID)
+	} else {
+		logger.Errorf("Download %s failed: %v", d.ID, err)
+		d.handleDownloadFailure(err)
 	}
-	if errors.Is(err, context.Canceled) {
-		if d.GetIsExternal() {
-			d.SetStatus(common.StatusPaused)
-		}
-		return
-	}
-
-	d.handleDownloadFailure(err)
-}
-
-// getPendingChunks returns a list of chunks that are not completed.
-func (d *Download) getPendingChunks() []*chunk.Chunk {
-	var pending []*chunk.Chunk
-	for _, c := range d.Chunks {
-		if c.GetStatus() != common.StatusCompleted {
-			pending = append(pending, c)
-		}
-	}
-	logger.Debugf("Found %d pending chunks for download %s", len(pending), d.ID)
-	return pending
 }
 
 // downloadChunkWithRetries attempts to download a chunk with retries.
 func (d *Download) downloadChunkWithRetries(ctx context.Context, chunk *chunk.Chunk, pool *connection.Pool) error {
+	d.mu.RLock()
+	maxRetries := d.Config.MaxRetries
+	retryDelay := d.Config.RetryDelay
+	d.mu.RUnlock()
+
 	err := d.downloadChunk(ctx, chunk, pool)
 	if err == nil || errors.Is(err, context.Canceled) || !isRetryableError(err) {
 		return err
 	}
 
-	for chunk.GetRetryCount() < d.Config.MaxRetries {
-		chunk.Reset()
-
+	for chunk.GetRetryCount() < maxRetries {
 		retryCount := chunk.GetRetryCount()
-		backoff := calculateBackoff(retryCount, d.Config.RetryDelay)
-		logger.Debugf("Waiting %v before retrying chunk %s", backoff, chunk.ID)
+		backoff := calculateBackoff(retryCount, retryDelay)
+		logger.Debugf("Waiting %v before retrying chunk %s (attempt %d/%d)", backoff, chunk.ID, retryCount+1, maxRetries)
 
 		select {
 		case <-time.After(backoff):
 			err = d.downloadChunk(ctx, chunk, pool)
-			if err == nil || errors.Is(err, context.Canceled) {
-				return err
-			}
-
-			if !isRetryableError(err) {
+			if err == nil || errors.Is(err, context.Canceled) || !isRetryableError(err) {
 				return err
 			}
 
 		case <-ctx.Done():
 			logger.Debugf("Context cancelled while waiting to retry chunk %s", chunk.ID)
-			chunk.SetStatus(common.StatusPaused)
-			return err
+			return ctx.Err()
 		}
 	}
 
-	return err
+	logger.Errorf("Chunk %s failed after %d retries: %v", chunk.ID, maxRetries, err)
+	chunk.SetStatus(common.StatusFailed)
+	return fmt.Errorf("chunk %s failed after %d retries: %w", chunk.ID, maxRetries, err)
 }
 
-// downloadChunk downloads a chunk using the provided connection pool.
+// downloadChunk downloads a single chunk using the provided connection pool.
 func (d *Download) downloadChunk(ctx context.Context, chunk *chunk.Chunk, pool *connection.Pool) error {
-	conn, err := pool.GetConnection(ctx, d.URL, d.Config.Headers)
+	d.mu.RLock()
+	url := d.URL
+	config := d.Config
+	handler := d.protocolHandler
+	d.mu.RUnlock()
+
+	if handler == nil {
+		return errors.New("protocol handler is nil")
+	}
+
+	conn, err := pool.GetConnection(ctx, url, config.Headers)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to get connection from pool for chunk %s: %w", chunk.ID, err)
 	}
 
 	if conn == nil {
-		conn, err = d.protocolHandler.CreateConnection(d.URL, chunk, d.Config)
+		conn, err = handler.CreateConnection(url, chunk, config)
 		if err != nil {
-			pool.ReleaseSlot(d.URL)
-			return err
+			pool.ReleaseSlot(url)
+			return fmt.Errorf("failed to create connection for chunk %s: %w", chunk.ID, err)
 		}
 		pool.RegisterConnection(conn)
 	} else {
-		d.protocolHandler.UpdateConnection(conn, chunk)
+		handler.UpdateConnection(conn, chunk)
 		if err := conn.Reset(ctx); err != nil {
 			pool.ReleaseConnection(conn)
-			return err
+			return fmt.Errorf("failed to reset connection for chunk %s: %w", chunk.ID, err)
 		}
 	}
 
@@ -154,47 +204,73 @@ func (d *Download) downloadChunk(ctx context.Context, chunk *chunk.Chunk, pool *
 
 // finishDownload checks if all chunks are completed and merges them.
 func (d *Download) finishDownload() {
-	for _, c := range d.Chunks {
+	d.mu.RLock()
+	chunks := make([]*chunk.Chunk, len(d.Chunks))
+	copy(chunks, d.Chunks)
+	d.mu.RUnlock()
+
+	for _, c := range chunks {
 		if c.GetStatus() != common.StatusCompleted {
-			err := fmt.Errorf("cannot finish download: chunk %s is in state %s", c.ID, c.Status)
-			d.handleDownloadFailure(err)
+			d.handleDownloadFailure(
+				fmt.Errorf("cannot finish download: chunk %s is in state %s",
+					c.ID, c.GetStatus()),
+			)
+			return
 		}
 	}
 
 	targetPath := filepath.Join(d.Config.Directory, d.Filename)
-
-	if err := d.chunkManager.MergeChunks(d.Chunks, targetPath); err != nil {
+	if err := d.chunkManager.MergeChunks(chunks, targetPath); err != nil {
 		logger.Errorf("Failed to merge chunks for download %s: %v", d.ID, err)
-		d.handleDownloadFailure(err)
+		d.handleDownloadFailure(fmt.Errorf("merge failed: %w", err))
+		return
 	}
 
-	d.SetStatus(common.StatusCompleted)
-	d.EndTime = time.Now()
+	d.mu.Lock()
+	if d.GetStatus() == common.StatusActive {
+		d.SetStatus(common.StatusCompleted)
+		d.EndTime = time.Now()
+		select {
+		case d.saveStateChan <- d:
+		default:
+			logger.Warnf("Save channel full, skipping save for download %s", d.ID)
+		}
+	}
+	d.mu.Unlock()
 
-	go func() {
-		d.saveStateChan <- d
-	}()
-	if err := d.chunkManager.CleanupChunks(d.Chunks); err != nil {
+	if err := d.chunkManager.CleanupChunks(chunks); err != nil {
 		logger.Warnf("Failed to cleanup chunks for download %s: %s", d.ID, err)
 	}
 }
 
-// handleDownloadFailure sets the status and error on a filed download.
+// handleDownloadFailure sets the status and error on a failed download.
 func (d *Download) handleDownloadFailure(err error) {
-	d.SetStatus(common.StatusFailed)
-	d.error = err
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if d.GetStatus() == common.StatusActive {
+		d.SetStatus(common.StatusFailed)
+		d.error = err
+		d.ErrorMessage = err.Error()
+		logger.Errorf("Download %s failed with error: %v", d.ID, err)
+
+		select {
+		case d.saveStateChan <- d:
+		default:
+			logger.Warnf("Save channel full, could not save failed state for download %s", d.ID)
+		}
+	} else {
+		logger.Errorf("Download %s encountered error while in status %s: %v", d.ID, d.GetStatus(), err)
+	}
 }
 
 // calculateBackoff calculates a backoff duration with jitter.
 func calculateBackoff(retryCount int, baseDelay time.Duration) time.Duration {
-	// Exponential backoff: 2^retryCount * baseDelay
 	delay := baseDelay * (1 << uint(retryCount))
 
-	// Apply jitter to avoid thundering herd (between 75% and 125% of computed delay)
 	jitterFactor := 0.75 + 0.5*rand.Float64()
 	jitter := time.Duration(float64(delay) * jitterFactor)
 
-	// Cap maximum delay at 2 minutes
 	maxDelay := 2 * time.Minute
 	if jitter > maxDelay {
 		jitter = maxDelay
@@ -205,21 +281,55 @@ func calculateBackoff(retryCount int, baseDelay time.Duration) time.Duration {
 
 // Stop stops the download process and cleans up resources.
 func (d *Download) Stop(status common.Status, removeFiles bool) {
-	if d.GetStatus() != common.StatusActive && status == common.StatusPaused {
+	d.mu.Lock()
+	currentStatus := d.GetStatus()
+
+	if status != common.StatusCancelled &&
+		(currentStatus == common.StatusPaused ||
+			currentStatus == common.StatusCancelled ||
+			currentStatus == common.StatusCompleted ||
+			currentStatus == common.StatusFailed) {
+		logger.Debugf("Stop called for download %s, but status is already %s. Ignoring.", d.ID, currentStatus)
+		d.mu.Unlock()
 		return
 	}
 
-	d.cancelFunc()
-	<-d.done
-	d.SetStatus(status)
+	if currentStatus != common.StatusActive && status == common.StatusPaused {
+		logger.Debugf("Stop called with Pause for download %s, but status is %s. Ignoring.", d.ID, currentStatus)
+		d.mu.Unlock()
+		return
+	}
 
-	go func() {
-		d.saveStateChan <- d
-	}()
+	cancel := d.cancelFunc
+	doneChan := d.done // Copy channel reference
+	chunksToClean := make([]*chunk.Chunk, len(d.Chunks))
+	copy(chunksToClean, d.Chunks)
+	chunkMgr := d.chunkManager
+	downloadID := d.ID
+
+	d.mu.Unlock()
+
+	logger.Infof("Stopping download %s with status %s", downloadID, status)
+
+	if cancel != nil {
+		cancel()
+	}
+
+	if doneChan != nil {
+		<-doneChan
+		d.SetStatus(status)
+		logger.Debugf("Download %s processDownload finished after stop.", downloadID)
+	}
+
+	select {
+	case d.saveStateChan <- d:
+	default:
+		logger.Warnf("Save channel full, could not save final state for stopped download %s", downloadID)
+	}
 
 	if removeFiles {
-		if err := d.chunkManager.CleanupChunks(d.Chunks); err != nil {
-			logger.Errorf("Failed to cleanup chunks for download %s: %s", d.ID, err)
+		if err := chunkMgr.CleanupChunks(chunksToClean); err != nil {
+			logger.Errorf("Failed to cleanup chunks for stopped download %s: %s", downloadID, err)
 		}
 	}
 }
@@ -228,21 +338,49 @@ func (d *Download) Stop(status common.Status, removeFiles bool) {
 func (d *Download) Remove() {
 	if d.GetStatus() == common.StatusActive {
 		d.Stop(common.StatusCancelled, true)
-	}
-	outputPath := filepath.Join(d.Config.Directory, d.Filename)
-	if _, err := os.Stat(outputPath); err == nil {
-		if err := os.Remove(outputPath); err != nil {
-			logger.Warnf("Failed to remove output file: %v", err)
+	} else {
+		d.mu.RLock()
+		chunksToClean := make([]*chunk.Chunk, len(d.Chunks))
+		copy(chunksToClean, d.Chunks)
+		chunkMgr := d.chunkManager
+		d.mu.RUnlock()
+		if chunkMgr != nil {
+			if err := chunkMgr.CleanupChunks(chunksToClean); err != nil {
+				logger.Errorf("Failed to cleanup chunks during Remove for non-active download %s: %s", d.ID, err)
+			}
 		}
+	}
+
+	d.mu.RLock()
+	targetPath := filepath.Join(d.Config.Directory, d.Filename)
+	downloadID := d.ID
+	d.mu.RUnlock()
+
+	if _, err := os.Stat(targetPath); err == nil {
+		logger.Infof("Removing output file %s for download %s", targetPath, downloadID)
+		if err := os.Remove(targetPath); err != nil {
+			logger.Warnf("Failed to remove output file %s: %v", targetPath, err)
+		}
+	} else if !os.IsNotExist(err) {
+		logger.Warnf("Failed to stat output file %s before removal: %v", targetPath, err)
 	}
 }
 
 // Resume resumes a paused or failed download.
 func (d *Download) Resume(ctx context.Context) bool {
-	if d.GetStatus() != common.StatusPaused && d.GetStatus() != common.StatusFailed {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	currentStatus := d.GetStatus()
+	if currentStatus != common.StatusPaused && currentStatus != common.StatusFailed {
+		logger.Debugf("Cannot resume download %s from status %s", d.ID, currentStatus)
 		return false
 	}
+
+	logger.Infof("Resuming download %s from status %s", d.ID, currentStatus)
+
 	d.done = make(chan struct{})
+	d.error = nil
 
 	return true
 }

@@ -37,9 +37,9 @@ type Engine struct {
 	repository      *repository.BboltRepository
 	queueProcessor  *QueueProcessor
 
-	stopCh chan struct{} // closed exactly once in Shutdown()
+	stopCh chan struct{}
 
-	wg            sync.WaitGroup // tracks helper goroutines
+	wg            sync.WaitGroup
 	saveStateChan chan *downloader.Download
 	running       bool
 }
@@ -94,12 +94,10 @@ func (e *Engine) Init() error {
 		return err
 	}
 
-	e.queueProcessor = NewQueueProcessor(e.config.MaxConcurrentDownloads, e.StartDownload, e.stopCh)
+	e.queueProcessor = NewQueueProcessor(e.config.MaxConcurrentDownloads, e.StartDownload)
 
-	// periodic save ticker
 	e.runTask(e.startPeriodicSave)
 
-	// async save requests from downloads
 	e.runTask(func() {
 		for {
 			select {
@@ -111,7 +109,6 @@ func (e *Engine) Init() error {
 		}
 	})
 
-	// enqueue any downloads that were queued before last shutdown
 	for _, dl := range e.downloads {
 		if dl.GetStatus() == common.StatusQueued {
 			e.queueProcessor.Enqueue(dl.ID, dl.Config.Priority)
@@ -121,8 +118,6 @@ func (e *Engine) Init() error {
 	logger.Infof("Engine initialised and running")
 	return nil
 }
-
-// ------------------- repository / restore helpers -------------------------
 
 func (e *Engine) initRepository() error {
 	dir := e.config.ConfigDir
@@ -212,8 +207,9 @@ func (e *Engine) AddDownload(url string, cfg *common.Config) (uuid.UUID, error) 
 	e.downloads[dl.ID] = dl
 	e.mu.Unlock()
 
-	if err := e.saveDownload(dl); err != nil {
-		return uuid.Nil, err
+	select {
+	case e.saveStateChan <- dl:
+	default:
 	}
 
 	if e.config.AutoStartDownloads {
@@ -231,13 +227,14 @@ func (e *Engine) StartDownload(id uuid.UUID) error {
 		return err
 	}
 
-	// persist initial state
-	_ = e.saveDownload(dl)
+	select {
+	case e.saveStateChan <- dl:
+	default:
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// link it to stopCh so Shutdown() aborts running downloads:
 	go func() {
 		select {
 		case <-e.stopCh:
@@ -248,7 +245,12 @@ func (e *Engine) StartDownload(id uuid.UUID) error {
 
 	dl.Start(ctx, e.connectionPool)
 
-	return e.saveDownload(dl)
+	select {
+	case e.saveStateChan <- dl:
+	default:
+	}
+
+	return nil
 }
 
 func (e *Engine) PauseDownload(id uuid.UUID) error {
