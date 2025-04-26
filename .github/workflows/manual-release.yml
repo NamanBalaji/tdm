@@ -1,0 +1,91 @@
+name: Manual Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g. v1.2.3)'
+        required: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os: [linux, macos, windows]
+        arch: [amd64]
+    name: Build ${{ matrix.os }} / ${{ matrix.arch }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.x'
+          cache: true
+
+      - name: Build binary
+        run: |
+          BINARY_NAME=tdm-${{ matrix.os }}-${{ matrix.arch }}
+          GOOS=${{ matrix.os }} GOARCH=${{ matrix.arch }} go build -o $BINARY_NAME ./cmd/tdm
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.os }}-artifact
+          path: ${{ matrix.os }}-${{ matrix.arch }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Linux artifact
+        uses: actions/download-artifact@v3
+        with:
+          name: linux-artifact
+
+      - name: Download macOS artifact
+        uses: actions/download-artifact@v3
+        with:
+          name: macos-artifact
+
+      - name: Download Windows artifact
+        uses: actions/download-artifact@v3
+        with:
+          name: windows-artifact
+
+      - name: Create GitHub Release
+        id: create_release
+        uses: actions/create-release@v1
+        with:
+          tag_name: ${{ github.event.inputs.version }}
+          release_name: Release ${{ github.event.inputs.version }}
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload Linux asset
+        uses: actions/upload-release-asset@v1
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./linux-amd64
+          asset_name: tdm-linux-amd64
+          asset_content_type: application/octet-stream
+
+      - name: Upload macOS asset
+        uses: actions/upload-release-asset@v1
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./macos-amd64
+          asset_name: tdm-macos-amd64
+          asset_content_type: application/octet-stream
+
+      - name: Upload Windows asset
+        uses: actions/upload-release-asset@v1
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./windows-amd64.exe
+          asset_name: tdm-windows-amd64.exe
+          asset_content_type: application/octet-stream
