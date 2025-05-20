@@ -3,7 +3,6 @@ package bencode
 import (
 	"errors"
 	"strconv"
-	"strings"
 )
 
 var (
@@ -11,130 +10,111 @@ var (
 	ErrInvalidString = errors.New("invalid bencoded string")
 )
 
-// Decode is now a thin wrapper around decodeElement + a trailing-data check.
+// Decode parses a complete bencoded input and returns the corresponding Go value.
 func Decode(input string) (any, error) {
 	if len(input) == 0 {
 		return nil, ErrEmptyString
 	}
-	val, n, err := decodeElement(input)
+	v, next, err := parseValue(input, 0)
 	if err != nil {
 		return nil, err
 	}
-	if n != len(input) {
+	if next != len(input) {
 		return nil, ErrInvalidString
 	}
-	return val, nil
+	return v, nil
 }
 
-// decodeString parses <length>:<data>.
-func decodeString(str string) (string, int, error) {
-	colon := strings.IndexByte(str, ':')
-	if colon < 0 {
-		return "", -1, ErrInvalidString
-	}
-	length, err := strconv.Atoi(str[:colon])
-	if err != nil || length < 0 {
-		return "", -1, ErrInvalidString
-	}
-	start, end := colon+1, colon+1+length
-	if end > len(str) {
-		return "", -1, ErrInvalidString
-	}
-	return str[start:end], end, nil
-}
-
-// decodeInt parses i<digits>e.
-func decodeInt(str string) (int, int, error) {
-	if len(str) < 3 || str[0] != 'i' {
-		return 0, -1, ErrInvalidString
-	}
-	ePos := strings.IndexByte(str, 'e')
-	if ePos < 0 {
-		return 0, -1, ErrInvalidString
-	}
-	val, err := strconv.Atoi(str[1:ePos])
-	if err != nil {
-		return 0, -1, ErrInvalidString
-	}
-	return val, ePos + 1, nil
-}
-
-// decodeList parses l <elements> e, using decodeElement for each item.
-func decodeList(str string) ([]any, int, error) {
-	if len(str) == 0 || str[0] != 'l' {
+// parseValue parses exactly one element starting at input[pos].
+// It returns the parsed Go value (int, string, []any or map[string]any),
+// the index immediately after the parsed element, or an error.
+func parseValue(input string, pos int) (any, int, error) {
+	if pos >= len(input) {
 		return nil, -1, ErrInvalidString
 	}
-	var (
-		items []any
-		i     = 1
-	)
-	for i < len(str) && str[i] != 'e' {
-		elem, n, err := decodeElement(str[i:])
-		if err != nil {
-			return nil, -1, err
-		}
-		items = append(items, elem)
-		i += n
-	}
-	if i >= len(str) || str[i] != 'e' {
-		return nil, -1, ErrInvalidString
-	}
-	return items, i + 1, nil
-}
-
-// decodeDict parses d <key><value> … e, using decodeString for keys and decodeElement for values.
-func decodeDict(str string) (map[string]any, int, error) {
-	if len(str) == 0 || str[0] != 'd' {
-		return nil, -1, ErrInvalidString
-	}
-	dict := make(map[string]any)
-	var (
-		i       = 1
-		prevKey string
-	)
-	for i < len(str) && str[i] != 'e' {
-		// decode key
-		key, nKey, err := decodeString(str[i:])
-		if err != nil {
-			return nil, -1, err
-		}
-		if prevKey != "" && key <= prevKey {
-			return nil, -1, ErrInvalidString
-		}
-		prevKey, i = key, i+nKey
-
-		// decode value
-		val, nVal, err := decodeElement(str[i:])
-		if err != nil {
-			return nil, -1, err
-		}
-		dict[key] = val
-		i += nVal
-	}
-	if i >= len(str) || str[i] != 'e' {
-		return nil, -1, ErrInvalidString
-	}
-	return dict, i + 1, nil
-}
-
-// decodeElement dispatches on the leading prefix and calls the appropriate decoder.
-func decodeElement(str string) (any, int, error) {
-	if len(str) == 0 {
-		return nil, -1, ErrEmptyString
-	}
-
-	switch str[0] {
+	switch input[pos] {
 	case 'i':
-		return decodeInt(str)
-	case 'l':
-		return decodeList(str)
-	case 'd':
-		return decodeDict(str)
-	default:
-		// must be a byte-string
-		if str[0] < '0' || str[0] > '9' {
+		// integer: i<digits>e
+		end := pos + 1
+		for end < len(input) && input[end] != 'e' {
+			end++
+		}
+		if end >= len(input) || input[end] != 'e' {
 			return nil, -1, ErrInvalidString
 		}
-		return decodeString(str)
+		n, err := strconv.Atoi(input[pos+1 : end])
+		if err != nil {
+			return nil, -1, ErrInvalidString
+		}
+		return n, end + 1, nil
+
+	case 'l':
+		// list: l <elements> e
+		var list []any
+		i := pos + 1
+		for i < len(input) && input[i] != 'e' {
+			elem, next, err := parseValue(input, i)
+			if err != nil {
+				return nil, -1, err
+			}
+			list = append(list, elem)
+			i = next
+		}
+		if i >= len(input) || input[i] != 'e' {
+			return nil, -1, ErrInvalidString
+		}
+		return list, i + 1, nil
+
+	case 'd':
+		// dict: d < key value pairs > e
+		dict := make(map[string]any, 0)
+		i := pos + 1
+		var prevKey string
+		for i < len(input) && input[i] != 'e' {
+			keyVal, next, err := parseValue(input, i)
+			if err != nil {
+				return nil, -1, err
+			}
+			key, ok := keyVal.(string)
+			if !ok {
+				return nil, -1, ErrInvalidString
+			}
+			if prevKey != "" && key <= prevKey {
+				return nil, -1, ErrInvalidString
+			}
+			prevKey = key
+			i = next
+
+			val, next2, err := parseValue(input, i)
+			if err != nil {
+				return nil, -1, err
+			}
+			dict[key] = val
+			i = next2
+		}
+		if i >= len(input) || input[i] != 'e' {
+			return nil, -1, ErrInvalidString
+		}
+		return dict, i + 1, nil
+
+	default:
+		// must be a byte-string: <length>:<data>
+		end := pos
+		for end < len(input) && input[end] >= '0' && input[end] <= '9' {
+			end++
+		}
+		if end == pos || end >= len(input) || input[end] != ':' {
+			return nil, -1, ErrInvalidString
+		}
+		length, err := strconv.Atoi(input[pos:end])
+		if err != nil || length < 0 {
+			return nil, -1, ErrInvalidString
+		}
+		start := end + 1
+		finish := start + length
+		if finish > len(input) {
+			return nil, -1, ErrInvalidString
+		}
+		return input[start:finish], finish, nil
 	}
 }
