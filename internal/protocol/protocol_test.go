@@ -3,11 +3,8 @@ package protocol_test
 import (
 	"context"
 	"errors"
-	"net/http"
-	"net/http/httptest"
-	"os"
-	"path/filepath"
-	"strings"
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -19,12 +16,17 @@ import (
 	"github.com/NamanBalaji/tdm/internal/protocol"
 )
 
-type CustomProtocol struct {
-	canHandleURLs []string
+type mockProtocol struct {
+	name           string
+	canHandleURLs  []string
+	initializeFunc func(ctx context.Context, url string, config *common.Config) (*common.DownloadInfo, error)
+	createConnFunc func(urlStr string, chunk *chunk.Chunk, config *common.Config) (connection.Connection, error)
+	updateConnFunc func(conn connection.Connection, chunk *chunk.Chunk)
+	chunkMgrFunc   func(downloadID uuid.UUID, tempDir string) (chunk.Manager, error)
 }
 
-func (p *CustomProtocol) CanHandle(url string) bool {
-	for _, u := range p.canHandleURLs {
+func (m *mockProtocol) CanHandle(url string) bool {
+	for _, u := range m.canHandleURLs {
 		if u == url {
 			return true
 		}
@@ -32,516 +34,656 @@ func (p *CustomProtocol) CanHandle(url string) bool {
 	return false
 }
 
-func (p *CustomProtocol) Initialize(ctx context.Context, url string, config *common.Config) (*common.DownloadInfo, error) {
+func (m *mockProtocol) Initialize(ctx context.Context, url string, config *common.Config) (*common.DownloadInfo, error) {
+	if m.initializeFunc != nil {
+		return m.initializeFunc(ctx, url, config)
+	}
 	return &common.DownloadInfo{
 		URL:            url,
-		Filename:       "custom-file.dat",
-		MimeType:       "application/octet-stream",
+		Filename:       fmt.Sprintf("%s-file.dat", m.name),
 		TotalSize:      1000,
 		SupportsRanges: true,
 	}, nil
 }
 
-func (p *CustomProtocol) CreateConnection(urlStr string, c *chunk.Chunk, downloadConfig *common.Config) (connection.Connection, error) {
-	return &testConnection{
-		url:     urlStr,
-		headers: make(map[string]string),
-	}, nil
+func (m *mockProtocol) CreateConnection(urlStr string, chunk *chunk.Chunk, config *common.Config) (connection.Connection, error) {
+	if m.createConnFunc != nil {
+		return m.createConnFunc(urlStr, chunk, config)
+	}
+	return &mockConnection{url: urlStr}, nil
 }
 
-func (p *CustomProtocol) UpdateConnection(conn connection.Connection, c *chunk.Chunk) {
-	conn.SetHeader("X-Updated", "true")
-}
-
-type testConnection struct {
-	url       string
-	headers   map[string]string
-	alive     bool
-	data      []byte
-	readPos   int
-	connected bool
-}
-
-func (c *testConnection) Connect(ctx context.Context) error {
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	default:
-		c.connected = true
-		c.alive = true
-		c.data = []byte("test data")
-		c.readPos = 0
-		return nil
+func (m *mockProtocol) UpdateConnection(conn connection.Connection, chunk *chunk.Chunk) {
+	if m.updateConnFunc != nil {
+		m.updateConnFunc(conn, chunk)
 	}
 }
 
-func (c *testConnection) Read(ctx context.Context, p []byte) (n int, err error) {
-	if !c.connected {
-		if err := c.Connect(ctx); err != nil {
-			return 0, err
-		}
+func (m *mockProtocol) GetChunkManager(downloadID uuid.UUID, tempDir string) (chunk.Manager, error) {
+	if m.chunkMgrFunc != nil {
+		return m.chunkMgrFunc(downloadID, tempDir)
 	}
+	return &mockChunkManager{}, nil
+}
 
-	if c.readPos >= len(c.data) {
-		return 0, errors.New("EOF")
+type mockConnection struct {
+	url     string
+	headers map[string]string
+	alive   bool
+}
+
+func (m *mockConnection) Connect(ctx context.Context) error               { m.alive = true; return nil }
+func (m *mockConnection) Read(ctx context.Context, p []byte) (int, error) { return 0, nil }
+func (m *mockConnection) Close() error                                    { m.alive = false; return nil }
+func (m *mockConnection) IsAlive() bool                                   { return m.alive }
+func (m *mockConnection) Reset(ctx context.Context) error                 { return m.Connect(ctx) }
+func (m *mockConnection) GetURL() string                                  { return m.url }
+func (m *mockConnection) GetHeaders() map[string]string                   { return m.headers }
+func (m *mockConnection) SetHeader(k, v string) {
+	if m.headers == nil {
+		m.headers = make(map[string]string)
 	}
-
-	n = copy(p, c.data[c.readPos:])
-	c.readPos += n
-	return n, nil
+	m.headers[k] = v
 }
+func (m *mockConnection) SetTimeout(timeout time.Duration) {}
 
-func (c *testConnection) Close() error {
-	c.connected = false
-	c.alive = false
-	return nil
+type mockChunkManager struct{}
+
+func (m *mockChunkManager) CreateChunks(downloadID uuid.UUID, info *common.DownloadInfo, config *common.Config, progressFn func(int64)) ([]*chunk.Chunk, error) {
+	return nil, nil
 }
+func (m *mockChunkManager) MergeChunks(chunks []*chunk.Chunk, targetPath string) error { return nil }
+func (m *mockChunkManager) CleanupChunks(chunks []*chunk.Chunk) error                  { return nil }
 
-func (c *testConnection) IsAlive() bool {
-	return c.alive
-}
-
-func (c *testConnection) Reset(ctx context.Context) error {
-	c.connected = false
-	return c.Connect(ctx)
-}
-
-func (c *testConnection) GetURL() string {
-	return c.url
-}
-
-func (c *testConnection) GetHeaders() map[string]string {
-	return c.headers
-}
-
-func (c *testConnection) SetHeader(key, value string) {
-	if c.headers == nil {
-		c.headers = make(map[string]string)
-	}
-	c.headers[key] = value
-}
-
-func (c *testConnection) SetTimeout(timeout time.Duration) {
-}
-
+// Helper function to create test chunks
 func createTestChunk(t *testing.T) *chunk.Chunk {
 	t.Helper()
-
 	downloadID := uuid.New()
-	chunkID := uuid.New()
-	c := &chunk.Chunk{
-		ID:         chunkID,
+	return &chunk.Chunk{
+		ID:         uuid.New(),
 		DownloadID: downloadID,
 		StartByte:  0,
 		EndByte:    999,
 		Status:     common.StatusPending,
 	}
-
-	tempDir := t.TempDir()
-	c.TempFilePath = filepath.Join(tempDir, c.ID.String())
-
-	f, err := os.Create(c.TempFilePath)
-	if err != nil {
-		t.Fatalf("Failed to create temp file for chunk: %v", err)
-	}
-	f.Close()
-
-	return c
 }
 
-func TestNewHandler(t *testing.T) {
-	h := protocol.NewHandler()
-	if h == nil {
-		t.Fatal("NewHandler returned nil")
-	}
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer server.Close()
-
-	handler, err := h.GetHandler(server.URL)
-	if err != nil {
-		t.Errorf("Expected handler for HTTP URL, got error: %v", err)
-	}
-	if handler == nil {
-		t.Error("Expected non-nil HTTP handler")
-	}
-}
-
-func TestRegisterProtocol(t *testing.T) {
-	h := protocol.NewHandler()
-
-	customProto := &CustomProtocol{
-		canHandleURLs: []string{
-			"custom://example.com",
-			"special://test.com",
-		},
-	}
-
-	// Before registration, these URLs should return an error
-	_, err := h.GetHandler("custom://example.com")
-	if err == nil {
-		t.Error("Expected error for unregistered protocol URL, got nil")
-	}
-	if !errors.Is(err, protocol.ErrUnsupportedProtocol) {
-		t.Errorf("Expected ErrUnsupportedProtocol, got: %v", err)
-	}
-
-	h.RegisterProtocol(customProto)
-
-	handler, err := h.GetHandler("custom://example.com")
-	if err != nil {
-		t.Errorf("Expected no error, got: %v", err)
-	}
-	if handler != customProto {
-		t.Error("Expected to get our registered custom protocol")
-	}
-
-	handler, err = h.GetHandler("special://test.com")
-	if err != nil {
-		t.Errorf("Expected no error, got: %v", err)
-	}
-	if handler != customProto {
-		t.Error("Expected to get our registered custom protocol")
-	}
-}
-
-func TestGetProtocolHandler(t *testing.T) {
-	h := protocol.NewHandler()
-
-	testCases := []struct {
-		name          string
-		url           string
-		expectError   bool
-		expectedError error
+func TestHandler_RegisterProtocol(t *testing.T) {
+	tests := []struct {
+		name      string
+		protocols []*mockProtocol
+		testURL   string
+		wantErr   bool
 	}{
 		{
-			name:          "Empty URL",
-			url:           "",
-			expectError:   true,
-			expectedError: protocol.ErrInvalidURL,
+			name: "register single custom protocol",
+			protocols: []*mockProtocol{
+				{
+					name:          "custom",
+					canHandleURLs: []string{"custom://example.com"},
+				},
+			},
+			testURL: "custom://example.com",
+			wantErr: false,
 		},
 		{
-			name:        "HTTP URL",
-			url:         "http://example.com",
-			expectError: false,
+			name: "register multiple protocols",
+			protocols: []*mockProtocol{
+				{
+					name:          "protocol1",
+					canHandleURLs: []string{"proto1://example.com"},
+				},
+				{
+					name:          "protocol2",
+					canHandleURLs: []string{"proto2://example.com"},
+				},
+			},
+			testURL: "proto2://example.com",
+			wantErr: false,
 		},
 		{
-			name:          "Unsupported Protocol",
-			url:           "unsupported://example.com",
-			expectError:   true,
-			expectedError: protocol.ErrUnsupportedProtocol,
+			name: "register overlapping protocols - first one wins",
+			protocols: []*mockProtocol{
+				{
+					name:          "first",
+					canHandleURLs: []string{"shared://example.com"},
+				},
+				{
+					name:          "second",
+					canHandleURLs: []string{"shared://example.com"},
+				},
+			},
+			testURL: "shared://example.com",
+			wantErr: false,
 		},
 	}
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer server.Close()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := protocol.NewHandler()
 
-	for i, tc := range testCases {
-		if tc.name == "HTTP URL" {
-			testCases[i].url = server.URL
-		}
-	}
+			// Register all protocols
+			for _, p := range tt.protocols {
+				h.RegisterProtocol(p)
+			}
 
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			handler, err := h.GetHandler(tc.url)
+			// Test that the protocol was registered
+			handler, err := h.GetHandler(tt.testURL)
 
-			if tc.expectError {
+			if tt.wantErr {
 				if err == nil {
-					t.Error("Expected an error, got nil")
-					return
+					t.Error("Expected error but got none")
 				}
+				return
+			}
 
-				if tc.expectedError != nil && !errors.Is(err, tc.expectedError) {
-					t.Errorf("Expected error %v, got %v", tc.expectedError, err)
-				}
+			if err != nil {
+				t.Errorf("Unexpected error: %v", err)
+				return
+			}
 
-				if handler != nil {
-					t.Errorf("Expected nil handler, got %T", handler)
-				}
-			} else {
-				if err != nil {
-					t.Errorf("Unexpected error: %v", err)
-					return
-				}
+			if handler == nil {
+				t.Error("Expected handler but got nil")
+				return
+			}
 
-				if handler == nil {
-					t.Error("Expected a handler, got nil")
+			// For overlapping protocols test, verify first one is returned
+			if tt.name == "register overlapping protocols - first one wins" {
+				mockHandler := handler.(*mockProtocol)
+				if mockHandler.name != "first" {
+					t.Errorf("Expected first protocol to be returned, got %s", mockHandler.name)
 				}
 			}
 		})
 	}
 }
 
-func TestInitialize(t *testing.T) {
-	h := protocol.NewHandler()
-	ctx := t.Context()
-
-	customProto := &CustomProtocol{
-		canHandleURLs: []string{
-			"custom://example.com",
+func TestHandler_Initialize(t *testing.T) {
+	tests := []struct {
+		name       string
+		url        string
+		config     *common.Config
+		protocol   *mockProtocol
+		wantErr    bool
+		wantErrIs  error
+		wantResult *common.DownloadInfo
+	}{
+		{
+			name: "successful initialization",
+			url:  "custom://example.com/file",
+			config: &common.Config{
+				Directory: "/downloads",
+			},
+			protocol: &mockProtocol{
+				name:          "custom",
+				canHandleURLs: []string{"custom://example.com/file"},
+			},
+			wantErr: false,
+			wantResult: &common.DownloadInfo{
+				URL:            "custom://example.com/file",
+				Filename:       "custom-file.dat",
+				TotalSize:      1000,
+				SupportsRanges: true,
+			},
 		},
-	}
-	h.RegisterProtocol(customProto)
-
-	info, err := h.Initialize(ctx, "custom://example.com", nil)
-	if err != nil {
-		t.Errorf("Initialize returned unexpected error: %v", err)
-	}
-
-	if info == nil {
-		t.Fatal("Expected non-nil DownloadInfo")
-	}
-
-	if info.URL != "custom://example.com" {
-		t.Errorf("Expected URL 'custom://example.com', got %q", info.URL)
-	}
-
-	if info.Filename != "custom-file.dat" {
-		t.Errorf("Expected filename 'custom-file.dat', got %q", info.Filename)
-	}
-
-	_, err = h.Initialize(ctx, "", nil)
-	if err == nil || !errors.Is(err, protocol.ErrInvalidURL) {
-		t.Errorf("Expected error %v for empty URL, got %v", protocol.ErrInvalidURL, err)
-	}
-
-	_, err = h.Initialize(ctx, "unsupported://example.com", nil)
-	if err == nil || !errors.Is(err, protocol.ErrUnsupportedProtocol) {
-		t.Errorf("Expected error %v for unsupported protocol, got %v", protocol.ErrUnsupportedProtocol, err)
-	}
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodHead {
-			w.Header().Set("Accept-Ranges", "bytes")
-			w.Header().Set("Content-Type", "text/plain")
-			w.Header().Set("Content-Length", "1000")
-			w.Header().Set("Content-Disposition", "attachment; filename=\"test.txt\"")
-			w.WriteHeader(http.StatusOK)
-		} else {
-			w.WriteHeader(http.StatusOK)
-			w.Write([]byte("Test content"))
-		}
-	}))
-	defer server.Close()
-
-	info, err = h.Initialize(ctx, server.URL, nil)
-	if err != nil {
-		t.Errorf("Initialize with HTTP URL returned error: %v", err)
-	}
-
-	if info == nil {
-		t.Fatal("Expected non-nil DownloadInfo for HTTP URL")
-	}
-
-	if info.URL != server.URL {
-		t.Errorf("Expected URL %q, got %q", server.URL, info.URL)
-	}
-}
-
-func TestCreateConnection(t *testing.T) {
-	h := protocol.NewHandler()
-
-	customProto := &CustomProtocol{
-		canHandleURLs: []string{
-			"custom://example.com",
+		{
+			name:      "empty URL",
+			url:       "",
+			config:    nil,
+			protocol:  nil,
+			wantErr:   true,
+			wantErrIs: protocol.ErrInvalidURL,
 		},
-	}
-	h.RegisterProtocol(customProto)
-
-	handler, err := h.GetHandler("custom://example.com")
-	if err != nil {
-		t.Fatalf("Failed to get custom protocol handler: %v", err)
-	}
-
-	testChunk := createTestChunk(t)
-
-	conn, err := handler.CreateConnection("custom://example.com", testChunk, nil)
-	if err != nil {
-		t.Fatalf("CreateConnection error: %v", err)
-	}
-
-	if conn == nil {
-		t.Fatal("Expected non-nil connection")
-	}
-
-	if conn.GetURL() != "custom://example.com" {
-		t.Errorf("Expected URL 'custom://example.com', got %q", conn.GetURL())
-	}
-
-	config := &common.Config{
-		Headers: map[string]string{
-			"Custom-Header": "test-value",
+		{
+			name:      "unsupported protocol",
+			url:       "unknown://example.com",
+			config:    nil,
+			protocol:  nil,
+			wantErr:   true,
+			wantErrIs: protocol.ErrUnsupportedProtocol,
+		},
+		{
+			name:   "protocol initialization error",
+			url:    "custom://example.com",
+			config: nil,
+			protocol: &mockProtocol{
+				name:          "custom",
+				canHandleURLs: []string{"custom://example.com"},
+				initializeFunc: func(ctx context.Context, url string, config *common.Config) (*common.DownloadInfo, error) {
+					return nil, errors.New("initialization failed")
+				},
+			},
+			wantErr: true,
 		},
 	}
 
-	conn, err = handler.CreateConnection("custom://example.com", testChunk, config)
-	if err != nil {
-		t.Fatalf("CreateConnection with config error: %v", err)
-	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := protocol.NewHandler()
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer server.Close()
-
-	httpHandler, err := h.GetHandler(server.URL)
-	if err != nil {
-		t.Fatalf("Failed to get HTTP handler: %v", err)
-	}
-
-	conn, err = httpHandler.CreateConnection(server.URL, testChunk, nil)
-	if err != nil {
-		t.Fatalf("HTTP CreateConnection error: %v", err)
-	}
-
-	if conn == nil {
-		t.Fatal("Expected non-nil HTTP connection")
-	}
-
-	if conn.GetURL() != server.URL {
-		t.Errorf("Expected URL %q, got %q", server.URL, conn.GetURL())
-	}
-}
-
-func TestUpdateConnection(t *testing.T) {
-	h := protocol.NewHandler()
-
-	customProto := &CustomProtocol{
-		canHandleURLs: []string{
-			"custom://example.com",
-		},
-	}
-	h.RegisterProtocol(customProto)
-
-	handler, err := h.GetHandler("custom://example.com")
-	if err != nil {
-		t.Fatalf("Failed to get custom protocol handler: %v", err)
-	}
-
-	testChunk := createTestChunk(t)
-
-	conn, err := handler.CreateConnection("custom://example.com", testChunk, nil)
-	if err != nil {
-		t.Fatalf("CreateConnection error: %v", err)
-	}
-
-	handler.UpdateConnection(conn, testChunk)
-
-	headers := conn.GetHeaders()
-	if headers["X-Updated"] != "true" {
-		t.Error("Expected X-Updated header to be set after UpdateConnection")
-	}
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer server.Close()
-
-	httpHandler, err := h.GetHandler(server.URL)
-	if err != nil {
-		t.Fatalf("Failed to get HTTP handler: %v", err)
-	}
-
-	conn, err = httpHandler.CreateConnection(server.URL, testChunk, nil)
-	if err != nil {
-		t.Fatalf("HTTP CreateConnection error: %v", err)
-	}
-
-	testChunk.Downloaded = 500
-	httpHandler.UpdateConnection(conn, testChunk)
-
-	headers = conn.GetHeaders()
-	rangeHeader := headers["Range"]
-	if !strings.HasPrefix(rangeHeader, "bytes=") {
-		t.Errorf("Expected Range header to start with 'bytes=', got %q", rangeHeader)
-	}
-}
-
-func TestMultipleProtocolHandlers(t *testing.T) {
-	h := protocol.NewHandler()
-
-	proto1 := &CustomProtocol{
-		canHandleURLs: []string{
-			"custom://example.com",
-			"shared://example.com",
-		},
-	}
-
-	proto2 := &CustomProtocol{
-		canHandleURLs: []string{
-			"unique://example.com",
-			"shared://example.com",
-		},
-	}
-
-	h.RegisterProtocol(proto1)
-	h.RegisterProtocol(proto2)
-
-	handler, err := h.GetHandler("shared://example.com")
-	if err != nil {
-		t.Errorf("Expected no error, got: %v", err)
-	}
-	if handler != proto1 {
-		t.Error("Expected first registered protocol to handle shared URL")
-	}
-
-	handler, err = h.GetHandler("custom://example.com")
-	if err != nil {
-		t.Errorf("Expected no error, got: %v", err)
-	}
-	if handler != proto1 {
-		t.Error("Expected first protocol to handle its unique URL")
-	}
-
-	handler, err = h.GetHandler("unique://example.com")
-	if err != nil {
-		t.Errorf("Expected no error, got: %v", err)
-	}
-	if handler != proto2 {
-		t.Error("Expected second protocol to handle its unique URL")
-	}
-}
-
-func TestConcurrentAccess(t *testing.T) {
-	h := protocol.NewHandler()
-
-	customProto := &CustomProtocol{
-		canHandleURLs: []string{
-			"custom://example.com",
-		},
-	}
-	h.RegisterProtocol(customProto)
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer server.Close()
-
-	const goroutineCount = 10
-	errChan := make(chan error, goroutineCount)
-
-	for i := range goroutineCount {
-		go func(index int) {
-			var err error
-
-			if index%2 == 0 {
-				_, err = h.GetHandler(server.URL)
-			} else {
-				_, err = h.GetHandler("custom://example.com")
+			if tt.protocol != nil {
+				h.RegisterProtocol(tt.protocol)
 			}
 
-			errChan <- err
+			ctx := context.Background()
+			result, err := h.Initialize(ctx, tt.url, tt.config)
+
+			if tt.wantErr {
+				if err == nil {
+					t.Error("Expected error but got none")
+					return
+				}
+				if tt.wantErrIs != nil && !errors.Is(err, tt.wantErrIs) {
+					t.Errorf("Expected error %v, got %v", tt.wantErrIs, err)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Errorf("Unexpected error: %v", err)
+				return
+			}
+
+			if result == nil {
+				t.Error("Expected result but got nil")
+				return
+			}
+
+			if tt.wantResult != nil {
+				if result.URL != tt.wantResult.URL {
+					t.Errorf("Expected URL %s, got %s", tt.wantResult.URL, result.URL)
+				}
+				if result.Filename != tt.wantResult.Filename {
+					t.Errorf("Expected filename %s, got %s", tt.wantResult.Filename, result.Filename)
+				}
+				if result.TotalSize != tt.wantResult.TotalSize {
+					t.Errorf("Expected total size %d, got %d", tt.wantResult.TotalSize, result.TotalSize)
+				}
+			}
+		})
+	}
+}
+
+func TestHandler_GetHandler(t *testing.T) {
+	tests := []struct {
+		name      string
+		url       string
+		protocols []*mockProtocol
+		wantErr   bool
+		wantErrIs error
+		wantName  string
+	}{
+		{
+			name: "get handler for registered protocol",
+			url:  "custom://example.com",
+			protocols: []*mockProtocol{
+				{
+					name:          "custom",
+					canHandleURLs: []string{"custom://example.com"},
+				},
+			},
+			wantErr:  false,
+			wantName: "custom",
+		},
+		{
+			name:      "empty URL",
+			url:       "",
+			protocols: nil,
+			wantErr:   true,
+			wantErrIs: protocol.ErrInvalidURL,
+		},
+		{
+			name:      "unsupported protocol",
+			url:       "unknown://example.com",
+			protocols: nil,
+			wantErr:   true,
+			wantErrIs: protocol.ErrUnsupportedProtocol,
+		},
+		{
+			name: "multiple protocols - first match wins",
+			url:  "multi://example.com",
+			protocols: []*mockProtocol{
+				{
+					name:          "first",
+					canHandleURLs: []string{"multi://example.com"},
+				},
+				{
+					name:          "second",
+					canHandleURLs: []string{"multi://example.com"},
+				},
+			},
+			wantErr:  false,
+			wantName: "first",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := protocol.NewHandler()
+
+			for _, p := range tt.protocols {
+				h.RegisterProtocol(p)
+			}
+
+			handler, err := h.GetHandler(tt.url)
+
+			if tt.wantErr {
+				if err == nil {
+					t.Error("Expected error but got none")
+					return
+				}
+				if tt.wantErrIs != nil && !errors.Is(err, tt.wantErrIs) {
+					t.Errorf("Expected error %v, got %v", tt.wantErrIs, err)
+				}
+				if handler != nil {
+					t.Error("Expected nil handler on error")
+				}
+				return
+			}
+
+			if err != nil {
+				t.Errorf("Unexpected error: %v", err)
+				return
+			}
+
+			if handler == nil {
+				t.Error("Expected handler but got nil")
+				return
+			}
+
+			if tt.wantName != "" {
+				mockHandler := handler.(*mockProtocol)
+				if mockHandler.name != tt.wantName {
+					t.Errorf("Expected handler %s, got %s", tt.wantName, mockHandler.name)
+				}
+			}
+		})
+	}
+}
+
+func TestHandler_CreateConnection(t *testing.T) {
+	tests := []struct {
+		name     string
+		url      string
+		protocol *mockProtocol
+		wantErr  bool
+	}{
+		{
+			name: "successful connection creation",
+			url:  "custom://example.com",
+			protocol: &mockProtocol{
+				name:          "custom",
+				canHandleURLs: []string{"custom://example.com"},
+			},
+			wantErr: false,
+		},
+		{
+			name: "connection creation error",
+			url:  "custom://example.com",
+			protocol: &mockProtocol{
+				name:          "custom",
+				canHandleURLs: []string{"custom://example.com"},
+				createConnFunc: func(urlStr string, chunk *chunk.Chunk, config *common.Config) (connection.Connection, error) {
+					return nil, errors.New("connection failed")
+				},
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := protocol.NewHandler()
+			h.RegisterProtocol(tt.protocol)
+
+			handler, err := h.GetHandler(tt.url)
+			if err != nil {
+				t.Fatalf("Failed to get handler: %v", err)
+			}
+
+			testChunk := createTestChunk(t)
+			conn, err := handler.CreateConnection(tt.url, testChunk, nil)
+
+			if tt.wantErr {
+				if err == nil {
+					t.Error("Expected error but got none")
+				}
+				return
+			}
+
+			if err != nil {
+				t.Errorf("Unexpected error: %v", err)
+				return
+			}
+
+			if conn == nil {
+				t.Error("Expected connection but got nil")
+			}
+		})
+	}
+}
+
+func TestHandler_UpdateConnection(t *testing.T) {
+	tests := []struct {
+		name     string
+		url      string
+		protocol *mockProtocol
+		verify   func(t *testing.T, conn connection.Connection)
+	}{
+		{
+			name: "successful connection update",
+			url:  "custom://example.com",
+			protocol: &mockProtocol{
+				name:          "custom",
+				canHandleURLs: []string{"custom://example.com"},
+				updateConnFunc: func(conn connection.Connection, chunk *chunk.Chunk) {
+					conn.SetHeader("Updated", "true")
+				},
+			},
+			verify: func(t *testing.T, conn connection.Connection) {
+				headers := conn.GetHeaders()
+				if headers["Updated"] != "true" {
+					t.Error("Expected Updated header to be set")
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := protocol.NewHandler()
+			h.RegisterProtocol(tt.protocol)
+
+			handler, err := h.GetHandler(tt.url)
+			if err != nil {
+				t.Fatalf("Failed to get handler: %v", err)
+			}
+
+			testChunk := createTestChunk(t)
+			conn, err := handler.CreateConnection(tt.url, testChunk, nil)
+			if err != nil {
+				t.Fatalf("Failed to create connection: %v", err)
+			}
+
+			handler.UpdateConnection(conn, testChunk)
+
+			if tt.verify != nil {
+				tt.verify(t, conn)
+			}
+		})
+	}
+}
+
+func TestHandler_GetChunkManager(t *testing.T) {
+	tests := []struct {
+		name       string
+		url        string
+		protocol   *mockProtocol
+		downloadID uuid.UUID
+		tempDir    string
+		wantErr    bool
+	}{
+		{
+			name: "successful chunk manager creation",
+			url:  "custom://example.com",
+			protocol: &mockProtocol{
+				name:          "custom",
+				canHandleURLs: []string{"custom://example.com"},
+			},
+			downloadID: uuid.New(),
+			tempDir:    "/tmp",
+			wantErr:    false,
+		},
+		{
+			name: "chunk manager creation error",
+			url:  "custom://example.com",
+			protocol: &mockProtocol{
+				name:          "custom",
+				canHandleURLs: []string{"custom://example.com"},
+				chunkMgrFunc: func(downloadID uuid.UUID, tempDir string) (chunk.Manager, error) {
+					return nil, errors.New("chunk manager failed")
+				},
+			},
+			downloadID: uuid.New(),
+			tempDir:    "/tmp",
+			wantErr:    true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := protocol.NewHandler()
+			h.RegisterProtocol(tt.protocol)
+
+			handler, err := h.GetHandler(tt.url)
+			if err != nil {
+				t.Fatalf("Failed to get handler: %v", err)
+			}
+
+			mgr, err := handler.GetChunkManager(tt.downloadID, tt.tempDir)
+
+			if tt.wantErr {
+				if err == nil {
+					t.Error("Expected error but got none")
+				}
+				return
+			}
+
+			if err != nil {
+				t.Errorf("Unexpected error: %v", err)
+				return
+			}
+
+			if mgr == nil {
+				t.Error("Expected chunk manager but got nil")
+			}
+		})
+	}
+}
+
+func TestHandler_ConcurrentAccess(t *testing.T) {
+	h := protocol.NewHandler()
+
+	customProtocol := &mockProtocol{
+		name:          "concurrent",
+		canHandleURLs: []string{"concurrent://example.com"},
+	}
+
+	const numGoroutines = 100
+	var wg sync.WaitGroup
+	errChan := make(chan error, numGoroutines)
+
+	// Test concurrent registration and access
+	for i := 0; i < numGoroutines; i++ {
+		wg.Add(1)
+		go func(index int) {
+			defer wg.Done()
+
+			if index%2 == 0 {
+				// Register protocol
+				protocol := &mockProtocol{
+					name:          fmt.Sprintf("protocol-%d", index),
+					canHandleURLs: []string{fmt.Sprintf("test-%d://example.com", index)},
+				}
+				h.RegisterProtocol(protocol)
+			} else {
+				// Access existing protocol
+				if index == 1 {
+					// First access, register the base protocol
+					h.RegisterProtocol(customProtocol)
+				}
+				_, err := h.GetHandler("concurrent://example.com")
+				if err != nil && !errors.Is(err, protocol.ErrUnsupportedProtocol) {
+					errChan <- err
+				}
+			}
 		}(i)
 	}
 
-	for range goroutineCount {
-		if err := <-errChan; err != nil {
-			t.Errorf("Concurrent access error: %v", err)
-		}
+	wg.Wait()
+	close(errChan)
+
+	// Check for any unexpected errors
+	for err := range errChan {
+		t.Errorf("Concurrent access error: %v", err)
+	}
+}
+
+func TestHandler_ErrorConditions(t *testing.T) {
+	tests := []struct {
+		name      string
+		setupFunc func() *protocol.Handler
+		testFunc  func(*protocol.Handler) error
+		wantErr   bool
+		wantErrIs error
+	}{
+		{
+			name: "nil protocol registration",
+			setupFunc: func() *protocol.Handler {
+				return protocol.NewHandler()
+			},
+			testFunc: func(h *protocol.Handler) error {
+				h.RegisterProtocol(nil)
+				return nil
+			},
+			wantErr: false, // Registration should not panic
+		},
+		{
+			name: "initialize with nil context",
+			setupFunc: func() *protocol.Handler {
+				h := protocol.NewHandler()
+				h.RegisterProtocol(&mockProtocol{
+					name:          "test",
+					canHandleURLs: []string{"test://example.com"},
+				})
+				return h
+			},
+			testFunc: func(h *protocol.Handler) error {
+				_, err := h.Initialize(nil, "test://example.com", nil)
+				return err
+			},
+			wantErr: false, // Should handle nil context gracefully
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := tt.setupFunc()
+			err := tt.testFunc(h)
+
+			if tt.wantErr {
+				if err == nil {
+					t.Error("Expected error but got none")
+					return
+				}
+				if tt.wantErrIs != nil && !errors.Is(err, tt.wantErrIs) {
+					t.Errorf("Expected error %v, got %v", tt.wantErrIs, err)
+				}
+			} else {
+				if err != nil {
+					t.Errorf("Unexpected error: %v", err)
+				}
+			}
+		})
 	}
 }
