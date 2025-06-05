@@ -31,8 +31,8 @@ var (
 	ErrContextCancelled = errors.New("operation cancelled")
 )
 
-// classifyHTTPError converts an HTTP status code into an appropriate error.
-func classifyHTTPError(statusCode int) error {
+// ClassifyHTTPError converts an HTTP status code into an appropriate error.
+func ClassifyHTTPError(statusCode int) error {
 	switch statusCode {
 	case http.StatusNotFound:
 		return ErrResourceNotFound
@@ -60,8 +60,8 @@ func classifyHTTPError(statusCode int) error {
 	}
 }
 
-// classifyError categorizes a general error into a sentinel error.
-func classifyError(err error) error {
+// ClassifyError categorizes a general error into a sentinel error.
+func ClassifyError(err error) error {
 	if err == nil {
 		return nil
 	}

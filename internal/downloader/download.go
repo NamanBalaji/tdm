@@ -42,7 +42,7 @@ type Download struct {
 	error           error
 	cancelFunc      context.CancelFunc
 	isExternal      int32 // 0 means false, 1 means true
-	chunkManager    *chunk.Manager
+	chunkManager    chunk.Manager
 	protocolHandler protocol.Protocol
 	done            chan struct{}
 	progressCh      chan common.Progress
@@ -143,13 +143,13 @@ func NewDownload(ctx context.Context, url string, proto *protocol.Handler, confi
 	}
 	download.SetStatus(common.StatusPending)
 
-	chunkManager, err := chunk.NewManager(id.String(), config.TempDir)
+	chunkManager, err := handler.GetChunkManager(id, config.TempDir)
 	if err != nil {
 		return nil, err
 	}
 	download.chunkManager = chunkManager
 
-	chunks, err := chunkManager.CreateChunks(id, info.TotalSize, info.SupportsRanges, config.Connections, download.addProgress)
+	chunks, err := chunkManager.CreateChunks(id, info, config, download.addProgress)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create chunks: %w", err)
 	}
@@ -296,7 +296,7 @@ func (d *Download) MarshalJSON() ([]byte, error) {
 }
 
 // RestoreFromSerialization restores runtime fields after loading from storage.
-func (d *Download) RestoreFromSerialization(ctx context.Context, proto *protocol.Handler, saveStateChan chan<- *Download) error {
+func (d *Download) RestoreFromSerialization(proto *protocol.Handler, saveStateChan chan<- *Download) error {
 	logger.Debugf("Restoring download %s from serialization", d.ID)
 
 	d.mu.Lock()
@@ -308,7 +308,7 @@ func (d *Download) RestoreFromSerialization(ctx context.Context, proto *protocol
 	}
 	d.protocolHandler = protocolHandler
 
-	chunkManager, err := chunk.NewManager(d.ID.String(), d.Config.TempDir)
+	chunkManager, err := d.protocolHandler.GetChunkManager(d.ID, d.Config.TempDir)
 	if err != nil {
 		d.mu.Unlock()
 		return err

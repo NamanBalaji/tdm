@@ -150,7 +150,7 @@ func (e *Engine) loadDownloads() error {
 	}
 
 	for _, dl := range dls {
-		if err := dl.RestoreFromSerialization(context.Background(), e.protocolHandler, e.saveStateChan); err != nil {
+		if err := dl.RestoreFromSerialization(e.protocolHandler, e.saveStateChan); err != nil {
 			logger.Errorf("restore %s: %v", dl.ID, err)
 			continue
 		}

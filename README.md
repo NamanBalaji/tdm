@@ -13,8 +13,8 @@ TDM is a fast, lightweight, and feature-rich download manager that runs directly
     - Parallel connections per file (8-16 by default)
     - Automatic fallback to a single connection for unsupported servers
 - **Intelligent Chunk Management**
-    - Dynamic chunk sizing
-    - Automatic chunk merging and verification
+    - Dynamic c sizing
+    - Automatic c merging and verification
 - **Robust Resume/Recovery**
     - Automatic resume for interrupted downloads
     - Graceful handling of partial content downloads
@@ -72,7 +72,7 @@ TDM offers extensive configuration options:
 - [ ] BitTorrent implementation
 
 ### 🧠 Smart Download Optimization
-- [ ] Dynamic chunk size calculation
+- [ ] Dynamic c size calculation
 - [ ] Adaptive bandwidth management
 
 

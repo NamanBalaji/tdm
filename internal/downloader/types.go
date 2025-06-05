@@ -1,6 +1,7 @@
 package downloader
 
 import (
+	httpPkg "github.com/NamanBalaji/tdm/pkg/http"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -8,7 +9,6 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/NamanBalaji/tdm/internal/common"
-	"github.com/NamanBalaji/tdm/internal/protocol/http"
 )
 
 // SpeedCalculator handles download speed measurement.
@@ -98,10 +98,10 @@ type Stats struct {
 }
 
 var retryableErrors = map[error]struct{}{
-	http.ErrNetworkProblem:  {},
-	http.ErrServerProblem:   {},
-	http.ErrTooManyRequests: {},
-	http.ErrTimeout:         {},
+	httpPkg.ErrNetworkProblem:  {},
+	httpPkg.ErrServerProblem:   {},
+	httpPkg.ErrTooManyRequests: {},
+	httpPkg.ErrTimeout:         {},
 }
 
 // isRetryableError checks if the error is in the retryable.

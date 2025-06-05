@@ -2,6 +2,7 @@ package http
 
 import (
 	"context"
+	httpPkg "github.com/NamanBalaji/tdm/pkg/http"
 	"io"
 	"net/http"
 	"time"
@@ -11,7 +12,7 @@ import (
 type Connection struct {
 	url         string
 	headers     map[string]string
-	client      *http.Client
+	client      *httpPkg.Client
 	resp        *http.Response
 	startByte   int64
 	endByte     int64
@@ -19,7 +20,7 @@ type Connection struct {
 	initialized bool
 }
 
-func NewConnection(url string, headers map[string]string, client *http.Client,
+func NewConnection(url string, headers map[string]string, client *httpPkg.Client,
 	startByte, endByte int64) *Connection {
 	return &Connection{
 		url:       url,
@@ -34,7 +35,7 @@ func NewConnection(url string, headers map[string]string, client *http.Client,
 func (c *Connection) Connect(ctx context.Context) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.url, http.NoBody)
 	if err != nil {
-		return ErrRequestCreation
+		return httpPkg.ErrRequestCreation
 	}
 
 	for key, value := range c.headers {
@@ -43,12 +44,12 @@ func (c *Connection) Connect(ctx context.Context) error {
 
 	resp, err := c.client.Do(req)
 	if err != nil {
-		return classifyError(err)
+		return httpPkg.ClassifyError(err)
 	}
 
 	if resp.StatusCode >= 400 {
 		resp.Body.Close()
-		return classifyHTTPError(resp.StatusCode)
+		return httpPkg.ClassifyHTTPError(resp.StatusCode)
 	}
 
 	rangeHeader := req.Header.Get("Range")
@@ -61,7 +62,7 @@ func (c *Connection) Connect(ctx context.Context) error {
 			// This is inefficient but necessary for servers without range support
 			if _, err := io.CopyN(io.Discard, resp.Body, c.startByte); err != nil {
 				resp.Body.Close()
-				return ErrIOProblem
+				return httpPkg.ErrIOProblem
 			}
 		}
 	}

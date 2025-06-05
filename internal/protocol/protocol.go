@@ -3,12 +3,13 @@ package protocol
 import (
 	"context"
 	"errors"
+	"github.com/google/uuid"
 	"sync"
 
 	"github.com/NamanBalaji/tdm/internal/chunk"
 	"github.com/NamanBalaji/tdm/internal/common"
 	"github.com/NamanBalaji/tdm/internal/connection"
-	"github.com/NamanBalaji/tdm/internal/protocol/http"
+	httpPkg "github.com/NamanBalaji/tdm/internal/http"
 )
 
 var (
@@ -26,6 +27,8 @@ type Protocol interface {
 	CreateConnection(urlStr string, chunk *chunk.Chunk, downloadConfig *common.Config) (connection.Connection, error)
 	// UpdateConnection updates the connection with new parameters
 	UpdateConnection(conn connection.Connection, chunk *chunk.Chunk)
+	// GetChunkManager returns the chunk manager for this protocol
+	GetChunkManager(downloadID uuid.UUID, tempDir string) (chunk.Manager, error)
 }
 
 type Handler struct {
@@ -36,7 +39,7 @@ type Handler struct {
 func NewHandler() *Handler {
 	return &Handler{
 		protocols: []Protocol{
-			http.NewHandler(),
+			httpPkg.NewHandler(),
 		},
 	}
 }

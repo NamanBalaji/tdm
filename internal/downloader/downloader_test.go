@@ -2,6 +2,7 @@ package downloader_test
 
 import (
 	"context"
+	httpPkg "github.com/NamanBalaji/tdm/pkg/http"
 	"io"
 	"path/filepath"
 	"testing"
@@ -12,7 +13,6 @@ import (
 	"github.com/NamanBalaji/tdm/internal/connection"
 	"github.com/NamanBalaji/tdm/internal/downloader"
 	"github.com/NamanBalaji/tdm/internal/protocol"
-	httpProto "github.com/NamanBalaji/tdm/internal/protocol/http"
 )
 
 type fakeProtocol struct{}
@@ -58,7 +58,7 @@ func (f *flappyConn) Connect(ctx context.Context) error { return nil }
 func (f *flappyConn) Read(ctx context.Context, p []byte) (int, error) {
 	f.tries++
 	if f.tries == 1 {
-		return 0, httpProto.ErrNetworkProblem
+		return 0, httpPkg.ErrNetworkProblem
 	}
 	return 0, io.EOF
 }
