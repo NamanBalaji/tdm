@@ -27,8 +27,8 @@ type ChunkManager struct {
 	defaultChunkSize int64
 }
 
-// newChunkManager creates a new chunk manager.
-func newChunkManager(downloadID, tempDir string) (*ChunkManager, error) {
+// NewChunkManager creates a new chunk manager.
+func NewChunkManager(downloadID, tempDir string) (*ChunkManager, error) {
 	if tempDir == "" {
 		defaultTemp := filepath.Join(os.TempDir(), downloadID)
 		logger.Debugf("No temp directory specified, using default: %s", defaultTemp)

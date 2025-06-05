@@ -214,24 +214,23 @@ func GetFilename(resp *http.Response) string {
 	contentDisposition := resp.Header.Get("Content-Disposition")
 	if contentDisposition != "" {
 		if _, params, err := mime.ParseMediaType(contentDisposition); err == nil {
-			if filename, ok := params["filename"]; ok {
-				return filename
-			} else if filename, ok := params["filename*"]; ok {
-				return filename
+			if fName, ok := params["filename"]; ok {
+				return fName
+			}
+			if fName, ok := params["filename*"]; ok {
+				return fName
 			}
 		}
 	}
 
-	// Fallback to URL-derived name
 	u := resp.Request.URL
+	if qname := u.Query().Get("filename"); qname != "" {
+		return qname
+	}
+
 	base := path.Base(u.Path)
 	if base != "" && base != "/" {
 		return base
-	}
-
-	vals := u.Query()
-	if filename := vals.Get("filename"); filename != "" {
-		return filename
 	}
 
 	return defaultDownloadName

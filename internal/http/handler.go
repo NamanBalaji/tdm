@@ -188,5 +188,5 @@ func generateInfo(resp *http.Response, canRange bool, totalSize int64) *common.D
 }
 
 func (h *Handler) GetChunkManager(downloadID uuid.UUID, tempDir string) (chunk.Manager, error) {
-	return newChunkManager(downloadID.String(), tempDir)
+	return NewChunkManager(downloadID.String(), tempDir)
 }
