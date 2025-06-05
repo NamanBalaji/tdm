@@ -1,8 +1,9 @@
 package chunk
 
 import (
-	"github.com/NamanBalaji/tdm/internal/common"
 	"github.com/google/uuid"
+
+	"github.com/NamanBalaji/tdm/internal/common"
 )
 
 // Manager defines the interface for managing chunks in a download process.

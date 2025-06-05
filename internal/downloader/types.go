@@ -1,7 +1,6 @@
 package downloader
 
 import (
-	httpPkg "github.com/NamanBalaji/tdm/pkg/http"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -9,6 +8,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/NamanBalaji/tdm/internal/common"
+	httpPkg "github.com/NamanBalaji/tdm/pkg/http"
 )
 
 // SpeedCalculator handles download speed measurement.

@@ -3,7 +3,6 @@ package http
 import (
 	"context"
 	"fmt"
-	"github.com/NamanBalaji/tdm/internal/logger"
 	"mime"
 	"net"
 	"net/http"
@@ -11,6 +10,8 @@ import (
 	"path"
 	"strings"
 	"time"
+
+	"github.com/NamanBalaji/tdm/internal/logger"
 )
 
 const (

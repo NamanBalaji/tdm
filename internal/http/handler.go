@@ -3,16 +3,17 @@ package http
 import (
 	"context"
 	"fmt"
-	httpPkg "github.com/NamanBalaji/tdm/pkg/http"
-	"github.com/google/uuid"
 	"net/http"
 	"strconv"
 	"strings"
+
+	"github.com/google/uuid"
 
 	"github.com/NamanBalaji/tdm/internal/chunk"
 	"github.com/NamanBalaji/tdm/internal/common"
 	"github.com/NamanBalaji/tdm/internal/connection"
 	"github.com/NamanBalaji/tdm/internal/logger"
+	httpPkg "github.com/NamanBalaji/tdm/pkg/http"
 )
 
 // Handler implements the Protocol interface for HTTP/HTTPS.

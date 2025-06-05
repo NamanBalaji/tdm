@@ -2,10 +2,11 @@ package http
 
 import (
 	"context"
-	httpPkg "github.com/NamanBalaji/tdm/pkg/http"
 	"io"
 	"net/http"
 	"time"
+
+	httpPkg "github.com/NamanBalaji/tdm/pkg/http"
 )
 
 // Connection implements the Connection interface for HTTP.
