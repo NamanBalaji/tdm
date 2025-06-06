@@ -194,38 +194,6 @@ func decodeBase32(s string) ([]byte, error) {
 	return output, nil
 }
 
-func (m *MagnetLink) String() string {
-	params := url.Values{}
-
-	params.Set("xt", "urn:btih:"+m.InfoHashHex)
-
-	if m.DisplayName != "" {
-		params.Set("dn", m.DisplayName)
-	}
-
-	if m.ExactLength > 0 {
-		params.Set("xl", strconv.FormatInt(m.ExactLength, 10))
-	}
-
-	for _, tr := range m.Trackers {
-		params.Add("tr", tr)
-	}
-
-	for _, pe := range m.PeerAddresses {
-		params.Add("x.pe", pe)
-	}
-
-	for _, ws := range m.WebSeeds {
-		params.Add("ws", ws)
-	}
-
-	if m.ExactSource != "" {
-		params.Set("xs", m.ExactSource)
-	}
-
-	return "magnet:?" + params.Encode()
-}
-
 // ToMetadata creates a minimal Metadata structure from a magnet link
 // Note: This will only have the info hash and trackers. The actual torrent
 // metadata needs to be downloaded from peers.
@@ -252,37 +220,4 @@ func (m *MagnetLink) ToMetadata() *Metadata {
 	}
 
 	return metadata
-}
-
-// CreateMagnetLink creates a magnet link from torrent metadata.
-func CreateMagnetLink(metadata *Metadata) *MagnetLink {
-	magnet := &MagnetLink{
-		InfoHash:    metadata.InfoHash,
-		InfoHashHex: metadata.InfoHashHex,
-		DisplayName: metadata.Info.Name,
-		ExactLength: metadata.TotalSize(),
-		Trackers:    make([]string, 0),
-	}
-
-	if metadata.Announce != "" {
-		magnet.Trackers = append(magnet.Trackers, metadata.Announce)
-	}
-
-	for _, tier := range metadata.AnnounceList {
-		for _, tracker := range tier {
-			// Avoid duplicates
-			found := false
-			for _, existing := range magnet.Trackers {
-				if existing == tracker {
-					found = true
-					break
-				}
-			}
-			if !found {
-				magnet.Trackers = append(magnet.Trackers, tracker)
-			}
-		}
-	}
-
-	return magnet
 }

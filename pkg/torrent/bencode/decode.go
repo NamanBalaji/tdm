@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"reflect"
-	"sort"
 	"strconv"
 	"strings"
 )
@@ -376,23 +375,4 @@ func (d *Decoder) unmarshalStruct(val map[string]interface{}, rv reflect.Value) 
 	}
 
 	return nil
-}
-
-// RawMessage is a raw encoded bencode value.
-type RawMessage []byte
-
-// UnmarshalBencode implements custom unmarshaling.
-func (m *RawMessage) UnmarshalBencode(data []byte) error {
-	*m = append((*m)[0:0], data...)
-	return nil
-}
-
-// OrderedKeys returns the keys of a bencode dictionary in sorted order.
-func OrderedKeys(m map[string]interface{}) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
 }
