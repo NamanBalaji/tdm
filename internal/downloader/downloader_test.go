@@ -1004,32 +1004,6 @@ func TestDownload_EdgeCases(t *testing.T) {
 				}
 			},
 		},
-		//{
-		//	name: "multiple start calls",
-		//	test: func(t *testing.T) {
-		//		download := createTestDownload(t)
-		//		pool := connection.NewPool(1, time.Minute)
-		//		defer pool.CloseAll()
-		//
-		//		ctx1, cancel1 := context.WithTimeout(context.Background(), 50*time.Millisecond)
-		//		defer cancel1()
-		//
-		//		ctx2, cancel2 := context.WithTimeout(context.Background(), 50*time.Millisecond)
-		//		defer cancel2()
-		//
-		//		// Start download twice - second should return early
-		//		download.Start(ctx1, pool)
-		//		originalStatus := download.GetStatus()
-		//
-		//		download.Start(ctx2, pool)
-		//		finalStatus := download.GetStatus()
-		//
-		//		// Status should remain the same or progress naturally
-		//		if finalStatus != originalStatus && originalStatus == common.StatusActive {
-		//			t.Logf("Status changed from %v to %v (this may be normal)", originalStatus, finalStatus)
-		//		}
-		//	},
-		//},
 		{
 			name: "stop already stopped download",
 			test: func(t *testing.T) {
