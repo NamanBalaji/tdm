@@ -7,7 +7,7 @@ import (
 
 var ErrInvalidBencode = errors.New("invalid bencoded string")
 
-func Decode(str string) (any, int, error) {
+func Decode(str []byte) (any, int, error) {
 	if len(str) == 0 {
 		return nil, 0, ErrInvalidBencode
 	}
@@ -26,7 +26,7 @@ func Decode(str string) (any, int, error) {
 			return nil, 0, ErrInvalidBencode
 		}
 
-		n, err := strconv.Atoi(str[:j])
+		n, err := strconv.Atoi(string(str[:j]))
 		if err != nil {
 			return nil, 0, ErrInvalidBencode
 		}
@@ -35,7 +35,10 @@ func Decode(str string) (any, int, error) {
 		if end > len(str) {
 			return nil, 0, ErrInvalidBencode
 		}
-		return str[start:end], end, nil
+
+		result := make([]byte, n)
+		copy(result, str[start:end])
+		return result, end, nil
 
 	case str[0] == 'i':
 		start := 1
@@ -44,7 +47,7 @@ func Decode(str string) (any, int, error) {
 		}
 
 		if (str[start] == '0' && start+1 < len(str) && str[start+1] != 'e') ||
-			(start+1 < len(str) && str[start:start+2] == "-0") {
+			(start+1 < len(str) && string(str[start:start+2]) == "-0") {
 			return nil, 0, ErrInvalidBencode
 		}
 		j := start
@@ -54,7 +57,7 @@ func Decode(str string) (any, int, error) {
 		if j == len(str) {
 			return nil, 0, ErrInvalidBencode
 		}
-		n, err := strconv.Atoi(str[start:j])
+		n, err := strconv.ParseInt(string(str[start:j]), 10, 64)
 		if err != nil {
 			return nil, 0, ErrInvalidBencode
 		}
@@ -88,23 +91,22 @@ func Decode(str string) (any, int, error) {
 				return decoded, pos + 1, nil
 			}
 
-			// Decode key
 			keyItem, n, err := Decode(str[pos:])
 			if err != nil {
 				return nil, 0, err
 			}
 			pos += n
 
-			key, ok := keyItem.(string)
+			keyBytes, ok := keyItem.([]byte)
 			if !ok {
 				return nil, 0, ErrInvalidBencode
 			}
+			key := string(keyBytes)
 
 			if pos >= len(str) {
 				return nil, 0, ErrInvalidBencode
 			}
 
-			// Decode value
 			valItem, n, err := Decode(str[pos:])
 			if err != nil {
 				return nil, 0, err

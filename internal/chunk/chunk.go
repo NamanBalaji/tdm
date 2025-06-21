@@ -2,6 +2,7 @@ package chunk
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os"
 	"sync"
@@ -254,7 +255,7 @@ func (c *Chunk) downloadLoop(ctx context.Context, file *os.File) error {
 			}
 
 			if err != nil {
-				if err == io.EOF {
+				if errors.Is(err, io.EOF) {
 					logger.Debugf("Chunk %s download completed (EOF received)", c.ID)
 					c.SetStatus(common.StatusCompleted)
 					return nil
