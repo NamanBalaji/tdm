@@ -2,12 +2,25 @@ package torrent
 
 import (
 	"context"
-	"crypto/rand"
 	"encoding/binary"
+	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"sync"
 	"time"
+
+	"github.com/NamanBalaji/tdm/pkg/torrent/bencode"
+)
+
+const (
+	snubTimeout = 60 * time.Second
+	// How many block requests to keep in flight to a single peer.
+	requestPipelineSize = 5
+	// How often to send PEX messages.
+	pexInterval = 60 * time.Second
+	// How often to run DHT announce/discovery.
+	dhtInterval = 5 * time.Minute
 )
 
 // TorrentState represents the state of a torrent.
@@ -45,6 +58,7 @@ type Torrent struct {
 	piecePicker  *PiecePicker
 	peers        map[string]*PeerConn
 	trackers     []TrackerClient
+	choker       *choker
 	dht          *DHT
 	state        TorrentState
 	stats        TorrentStats
@@ -53,6 +67,7 @@ type Torrent struct {
 	mu           sync.RWMutex
 	maxPeers     int
 	port         uint16
+	inEndgame    bool
 }
 
 // TorrentOptions contains options for creating a torrent.
@@ -61,22 +76,15 @@ type TorrentOptions struct {
 	SavePath       string
 	Port           uint16
 	MaxPeers       int
-	UseDHT         bool
 	PickerStrategy PiecePickerStrategy
+	UseDHT         bool
 }
 
 // NewTorrent creates a new torrent instance.
 func NewTorrent(opts TorrentOptions) (*Torrent, error) {
-	// Generate peer ID
-	peerID := generatePeerID()
-
-	// Create piece manager
+	peerID, _ := newID()
 	pieceManager := NewPieceManager(opts.Metainfo)
-
-	// Create piece picker
 	piecePicker := NewPiecePicker(pieceManager, opts.PickerStrategy)
-
-	// Setup context
 	ctx, cancel := context.WithCancel(context.Background())
 
 	t := &Torrent{
@@ -92,21 +100,20 @@ func NewTorrent(opts TorrentOptions) (*Torrent, error) {
 		maxPeers:     opts.MaxPeers,
 		port:         opts.Port,
 	}
+	t.choker = newChoker(t)
 
-	// Initialize trackers
 	for _, announceURL := range opts.Metainfo.GetAnnounceURLs() {
 		tracker, err := createTracker(announceURL)
-		if err != nil {
-			continue
+		if err == nil {
+			t.trackers = append(t.trackers, tracker)
 		}
-		t.trackers = append(t.trackers, tracker)
 	}
 
-	// Initialize DHT if requested
 	if opts.UseDHT {
-		dht, err := NewDHT(peerID, opts.Port)
+		dht, err := NewDHT(opts.Port)
 		if err == nil {
 			t.dht = dht
+			t.dht.AddTorrent(t)
 		}
 	}
 
@@ -123,13 +130,10 @@ func (t *Torrent) Start() error {
 	t.state = TorrentStateDownloading
 	t.mu.Unlock()
 
-	// Start tracker announcer
 	go t.announceLoop()
-
-	// Start peer manager
-	go t.peerLoop()
-
-	// Start DHT if enabled
+	go t.antiSnubLoop()
+	go t.choker.start()
+	go t.pexLoop()
 	if t.dht != nil {
 		go t.dhtLoop()
 	}
@@ -142,11 +146,13 @@ func (t *Torrent) Stop() error {
 	t.mu.Lock()
 	t.state = TorrentStateIdle
 	t.mu.Unlock()
-
-	// Cancel context
 	t.cancel()
+	t.choker.stopChoker()
 
-	// Close all peer connections
+	if t.dht != nil {
+		t.dht.Close()
+	}
+
 	t.mu.Lock()
 	for _, peer := range t.peers {
 		peer.Close()
@@ -154,86 +160,90 @@ func (t *Torrent) Stop() error {
 	t.peers = make(map[string]*PeerConn)
 	t.mu.Unlock()
 
-	// Close DHT
-	if t.dht != nil {
-		t.dht.Close()
-	}
-
 	return nil
-}
-
-// Pause pauses the torrent.
-func (t *Torrent) Pause() error {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	if t.state != TorrentStateDownloading && t.state != TorrentStateSeeding {
-		return fmt.Errorf("torrent not active")
-	}
-
-	t.state = TorrentStatePaused
-	return nil
-}
-
-// Resume resumes the torrent.
-func (t *Torrent) Resume() error {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	if t.state != TorrentStatePaused {
-		return fmt.Errorf("torrent not paused")
-	}
-
-	if t.pieceManager.verified.IsComplete() {
-		t.state = TorrentStateSeeding
-	} else {
-		t.state = TorrentStateDownloading
-	}
-
-	return nil
-}
-
-// GetStats returns current torrent statistics.
-func (t *Torrent) GetStats() TorrentStats {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-
-	stats := t.stats
-	stats.State = t.state
-	stats.Progress = t.pieceManager.Progress()
-	stats.PeersConnected = len(t.peers)
-
-	return stats
-}
-
-// GetPieceStates returns the state of all pieces.
-func (t *Torrent) GetPieceStates() []PieceState {
-	states := make([]PieceState, t.pieceManager.totalPieces)
-
-	for i := 0; i < t.pieceManager.totalPieces; i++ {
-		piece, _ := t.pieceManager.GetPiece(i)
-		states[i] = piece.State
-	}
-
-	return states
 }
 
 // announceLoop periodically announces to trackers.
 func (t *Torrent) announceLoop() {
 	ticker := time.NewTicker(30 * time.Minute)
 	defer ticker.Stop()
-
-	// Initial announce
 	t.announce("started")
 
 	for {
 		select {
 		case <-t.ctx.Done():
-			// Final announce
 			t.announce("stopped")
 			return
 		case <-ticker.C:
 			t.announce("")
+		}
+	}
+}
+
+// antiSnubLoop periodically checks for and handles snubbed peers.
+func (t *Torrent) antiSnubLoop() {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-t.ctx.Done():
+			return
+		case <-ticker.C:
+			t.handleSnubbedPeers()
+		}
+	}
+}
+
+// dhtLoop manages DHT operations.
+func (t *Torrent) dhtLoop() {
+	ticker := time.NewTicker(dhtInterval)
+	defer ticker.Stop()
+
+	// Initial announce
+	t.dht.Announce(t.metainfo.InfoHash(), t.port)
+
+	for {
+		select {
+		case <-t.ctx.Done():
+			return
+		case <-ticker.C:
+			t.dht.Announce(t.metainfo.InfoHash(), t.port)
+		}
+	}
+}
+
+// pexLoop periodically sends PEX messages to eligible peers.
+func (t *Torrent) pexLoop() {
+	ticker := time.NewTicker(pexInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-t.ctx.Done():
+			return
+		case <-ticker.C:
+			t.broadcastPEX()
+		}
+	}
+}
+
+// broadcastPEX sends a PEX message with our current peer list to all PEX-enabled peers.
+func (t *Torrent) broadcastPEX() {
+	var currentPeers []Peer
+	for _, p := range t.getPeers() {
+		if p.listeningPort > 0 {
+			currentPeers = append(currentPeers, Peer{IP: p.peer.IP, Port: p.listeningPort})
+		}
+	}
+
+	if len(currentPeers) == 0 {
+		return
+	}
+
+	for _, p := range t.getPeers() {
+		if p.utPexID != 0 {
+			p.SendPEX(currentPeers, nil) // Leaving dropped empty for simplicity
 		}
 	}
 }
@@ -248,8 +258,6 @@ func (t *Torrent) announce(event string) {
 		Downloaded: t.stats.Downloaded,
 		Left:       t.metainfo.TotalSize() - t.stats.Downloaded,
 		Event:      event,
-		NumWant:    50,
-		Compact:    true,
 	}
 
 	for _, tracker := range t.trackers {
@@ -261,8 +269,6 @@ func (t *Torrent) announce(event string) {
 			if err != nil {
 				return
 			}
-
-			// Add peers
 			t.addPeers(resp.Peers)
 		}(tracker)
 	}
@@ -271,6 +277,10 @@ func (t *Torrent) announce(event string) {
 // addPeers adds new peers to connect to.
 func (t *Torrent) addPeers(peers []Peer) {
 	for _, peer := range peers {
+		if peer.IP.IsLoopback() && peer.Port == t.port {
+			continue
+		}
+
 		peerKey := fmt.Sprintf("%s:%d", peer.IP, peer.Port)
 
 		t.mu.RLock()
@@ -278,12 +288,9 @@ func (t *Torrent) addPeers(peers []Peer) {
 		peerCount := len(t.peers)
 		t.mu.RUnlock()
 
-		if exists || peerCount >= t.maxPeers {
-			continue
+		if !exists && peerCount < t.maxPeers {
+			go t.connectToPeer(peer)
 		}
-
-		// Try to connect to peer
-		go t.connectToPeer(peer)
 	}
 }
 
@@ -293,20 +300,24 @@ func (t *Torrent) connectToPeer(peer Peer) {
 	if err != nil {
 		return
 	}
-
-	// Perform handshake
-	if err := pc.Handshake(); err != nil {
+	_, err = pc.Handshake()
+	if err != nil {
 		pc.Close()
 		return
 	}
 
-	// Add to peer list
+	if pc.supportsExtended {
+		if err := pc.SendExtendedHandshake(t.port); err != nil {
+			pc.Close()
+			return
+		}
+	}
+
 	peerKey := fmt.Sprintf("%s:%d", peer.IP, peer.Port)
 	t.mu.Lock()
 	t.peers[peerKey] = pc
 	t.mu.Unlock()
 
-	// Handle peer connection
 	go t.handlePeer(pc, peerKey)
 }
 
@@ -319,12 +330,10 @@ func (t *Torrent) handlePeer(pc *PeerConn, peerKey string) {
 		t.mu.Unlock()
 	}()
 
-	// Send bitfield
 	if err := pc.SendBitfield(t.pieceManager.verified); err != nil {
 		return
 	}
 
-	// Main peer loop
 	for {
 		select {
 		case <-t.ctx.Done():
@@ -332,18 +341,15 @@ func (t *Torrent) handlePeer(pc *PeerConn, peerKey string) {
 		default:
 		}
 
-		// Read message
 		msg, err := pc.ReadMessage(2 * time.Minute)
 		if err != nil {
 			return
 		}
 
-		if msg == nil {
-			// Keep-alive
+		if msg == nil { // Keep-alive
 			continue
 		}
 
-		// Handle message
 		if err := t.handlePeerMessage(pc, msg); err != nil {
 			return
 		}
@@ -352,96 +358,190 @@ func (t *Torrent) handlePeer(pc *PeerConn, peerKey string) {
 
 // handlePeerMessage processes a message from a peer.
 func (t *Torrent) handlePeerMessage(pc *PeerConn, msg *Message) error {
+	pc.HandleMessage(msg)
+
 	switch msg.Type {
 	case MsgBitfield:
-		// Initialize peer's bitfield
 		bf, err := NewBitfieldFromBytes(msg.Payload, t.pieceManager.totalPieces)
 		if err != nil {
 			return err
 		}
 		pc.bitfield = bf
 		t.piecePicker.UpdateAvailability(bf)
-
-		// Express interest if peer has pieces we need
 		if t.isPeerInteresting(bf) {
 			return pc.SendInterested()
 		}
 
 	case MsgHave:
-		// Update peer's bitfield
-		if len(msg.Payload) != 4 {
-			return fmt.Errorf("invalid have message")
-		}
-		pieceIndex := int(binary.BigEndian.Uint32(msg.Payload))
-
-		if pc.bitfield != nil {
-			pc.bitfield.SetPiece(pieceIndex)
-		}
-
-		// Check if we're now interested
-		if !pc.state.AmInterested && !t.pieceManager.verified.HasPiece(pieceIndex) {
+		if !pc.state.AmInterested && !t.pieceManager.verified.HasPiece(int(msg.Type)) {
 			return pc.SendInterested()
 		}
 
 	case MsgUnchoke:
-		// Peer unchoked us, start requesting pieces
-		pc.state.PeerChoking = false
 		go t.requestPieces(pc)
 
 	case MsgPiece:
-		// Handle received piece
-		piece, err := ParsePiece(msg.Payload)
+		pieceMsg, err := ParsePiece(msg.Payload)
 		if err != nil {
 			return err
 		}
+		pc.AddDownloaded(len(pieceMsg.Block))
+		t.mu.Lock()
+		t.stats.Downloaded += int64(len(pieceMsg.Block))
+		t.mu.Unlock()
+		pc.RemovePendingRequest(int(pieceMsg.Index), int(pieceMsg.Begin))
+		return t.handlePieceData(pieceMsg)
 
-		return t.handlePieceData(piece)
+	case MsgRequest:
+		req, err := ParseRequest(msg.Payload)
+		if err != nil {
+			return err
+		}
+		go t.handleRequest(pc, req)
+
+	case MsgExtended:
+		return t.handleExtendedMessage(pc, msg.Payload)
 	}
-
-	// Let PeerConn handle state changes
-	return pc.HandleMessage(msg)
+	return nil
 }
 
-// isPeerInteresting checks if peer has pieces we need.
-func (t *Torrent) isPeerInteresting(peerBitfield *Bitfield) bool {
-	for i := 0; i < t.pieceManager.totalPieces; i++ {
-		if peerBitfield.HasPiece(i) && !t.pieceManager.verified.HasPiece(i) {
-			return true
+// handleExtendedMessage processes an extended protocol message.
+func (t *Torrent) handleExtendedMessage(pc *PeerConn, payload []byte) error {
+	if len(payload) == 0 {
+		return fmt.Errorf("empty extended message")
+	}
+
+	extendedID := payload[0]
+	payload = payload[1:]
+
+	switch extendedID {
+	case ExtendedHandshakeID:
+		extHandshake, err := ParseExtendedHandshake(payload)
+		if err != nil {
+			return err
+		}
+		pc.mu.Lock()
+		if pexID, ok := extHandshake.M["ut_pex"]; ok {
+			pc.utPexID = uint8(pexID)
+		}
+		if extHandshake.P > 0 {
+			pc.listeningPort = extHandshake.P
+		}
+		pc.mu.Unlock()
+
+	default:
+		pc.mu.RLock()
+		utPexID := pc.utPexID
+		pc.mu.RUnlock()
+		if utPexID != 0 && extendedID == utPexID {
+			return t.handlePexMessage(payload)
 		}
 	}
-	return false
+	return nil
 }
 
-// requestPieces requests pieces from an unchoked peer.
+// handlePexMessage parses a PEX message and adds the new peers.
+func (t *Torrent) handlePexMessage(payload []byte) error {
+	decoded, _, err := bencode.Decode(payload)
+	if err != nil {
+		return fmt.Errorf("failed to decode PEX message: %w", err)
+	}
+	dict, ok := decoded.(map[string]any)
+	if !ok {
+		return errors.New("pex payload is not a dictionary")
+	}
+
+	var newPeers []Peer
+	if addedVal, ok := dict["added"]; ok {
+		if addedBytes, ok := addedVal.([]byte); ok {
+			if len(addedBytes)%6 != 0 {
+				return errors.New("invalid pex added length")
+			}
+			for i := 0; i < len(addedBytes); i += 6 {
+				ip := net.IP(addedBytes[i : i+4])
+				port := binary.BigEndian.Uint16(addedBytes[i+4 : i+6])
+				if port > 0 {
+					newPeers = append(newPeers, Peer{IP: ip, Port: port})
+				}
+			}
+		}
+	}
+
+	if len(newPeers) > 0 {
+		t.addPeers(newPeers)
+	}
+
+	return nil
+}
+
+// handleRequest serves a block to a peer if we are not choking them.
+func (t *Torrent) handleRequest(pc *PeerConn, req *RequestMessage) {
+	pc.mu.RLock()
+	isChoking := pc.state.AmChoking
+	pc.mu.RUnlock()
+
+	if isChoking {
+		return
+	}
+
+	pieceIndex := int(req.Index)
+	if !t.pieceManager.verified.HasPiece(pieceIndex) {
+		return
+	}
+
+	piece, err := t.pieceManager.GetPiece(pieceIndex)
+	if err != nil {
+		return
+	}
+	data, err := piece.ReadBlock(int(req.Begin), int(req.Length))
+	if err != nil {
+		return
+	}
+
+	if err := pc.SendPiece(pieceIndex, int(req.Begin), data); err == nil {
+		pc.AddUploaded(len(data))
+		t.mu.Lock()
+		t.stats.Uploaded += int64(len(data))
+		t.mu.Unlock()
+	}
+}
+
+// requestPieces requests pieces from an unchoked peer (normal mode only).
 func (t *Torrent) requestPieces(pc *PeerConn) {
+	if t.inEndgame {
+		return
+	}
+
 	for {
-		select {
-		case <-t.ctx.Done():
-			return
-		default:
-		}
+		pc.pendingMu.Lock()
+		pipelineSize := len(pc.pendingRequests)
+		pc.pendingMu.Unlock()
 
-		// Check if still unchoked
-		if pc.IsChoked() {
+		if pc.IsChoked() || pipelineSize >= requestPipelineSize {
 			return
 		}
 
-		// Pick a piece
 		pieceIndex, ok := t.piecePicker.PickPiece(pc.bitfield)
 		if !ok {
-			// No pieces to download from this peer
 			return
 		}
 
-		// Get piece
 		piece, err := t.pieceManager.GetPiece(pieceIndex)
 		if err != nil {
+			t.piecePicker.MarkFailed(pieceIndex)
 			continue
 		}
 
-		// Request missing blocks
 		for _, block := range piece.GetMissingBlocks() {
+			pc.AddPendingRequest(pieceIndex, block.Offset, block.Length)
 			if err := pc.SendRequest(pieceIndex, block.Offset, block.Length); err != nil {
+				pc.RemovePendingRequest(pieceIndex, block.Offset)
+				return
+			}
+			pc.pendingMu.Lock()
+			pipelineSize = len(pc.pendingRequests)
+			pc.pendingMu.Unlock()
+			if pipelineSize >= requestPipelineSize {
 				return
 			}
 		}
@@ -450,105 +550,113 @@ func (t *Torrent) requestPieces(pc *PeerConn) {
 
 // handlePieceData processes received piece data.
 func (t *Torrent) handlePieceData(pieceMsg *PieceMessage) error {
+	if t.inEndgame {
+		t.broadcastCancel(int(pieceMsg.Index), int(pieceMsg.Begin), len(pieceMsg.Block))
+	}
+
 	piece, err := t.pieceManager.GetPiece(int(pieceMsg.Index))
 	if err != nil {
 		return err
 	}
-
-	// Add block to piece
 	if err := piece.AddBlock(int(pieceMsg.Begin), pieceMsg.Block); err != nil {
 		return err
 	}
 
-	// Check if piece is complete
 	if piece.IsComplete() {
-		// Verify piece
 		if piece.Verify() {
-			// Mark as verified
 			t.pieceManager.MarkVerified(int(pieceMsg.Index))
 			t.piecePicker.MarkComplete(int(pieceMsg.Index))
-
-			// Announce to all peers
 			t.broadcastHave(int(pieceMsg.Index))
 
-			// Update stats
-			t.mu.Lock()
-			t.stats.Downloaded += piece.Length
-			t.mu.Unlock()
+			if !t.inEndgame && t.shouldEnterEndgame() {
+				t.mu.Lock()
+				t.inEndgame = true
+				t.mu.Unlock()
+				go t.broadcastEndgameRequests()
+			}
+
 		} else {
-			// Piece failed verification, reset
 			piece.Reset()
 			t.piecePicker.MarkFailed(int(pieceMsg.Index))
 		}
 	}
-
 	return nil
 }
 
-// broadcastHave sends have messages to all peers.
-func (t *Torrent) broadcastHave(pieceIndex int) {
-	t.mu.RLock()
-	peers := make([]*PeerConn, 0, len(t.peers))
-	for _, pc := range t.peers {
-		peers = append(peers, pc)
-	}
-	t.mu.RUnlock()
-
-	for _, pc := range peers {
-		pc.SendHave(pieceIndex)
-	}
+// shouldEnterEndgame checks if the conditions for endgame mode are met.
+func (t *Torrent) shouldEnterEndgame() bool {
+	return !t.pieceManager.IsComplete() &&
+		(t.pieceManager.verified.Count()+t.piecePicker.InProgressCount() == t.pieceManager.totalPieces)
 }
 
-// peerLoop manages peer connections.
-func (t *Torrent) peerLoop() {
-	// This would handle:
-	// - Maintaining peer connections
-	// - Handling timeouts
-	// - Optimistic unchoking
-	// - Connection limits
-}
+// broadcastEndgameRequests sends requests for all missing blocks to all available peers.
+func (t *Torrent) broadcastEndgameRequests() {
+	missing := t.pieceManager.GetAllMissingBlocks()
+	peers := t.getPeers()
 
-// dhtLoop manages DHT operations.
-func (t *Torrent) dhtLoop() {
-	if t.dht == nil {
-		return
-	}
-
-	ticker := time.NewTicker(5 * time.Minute)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-t.ctx.Done():
-			return
-		case <-ticker.C:
-			// Search for peers via DHT
-			peers, err := t.dht.FindPeers(t.ctx, t.metainfo.InfoHash())
-			if err == nil {
-				t.addPeers(peers)
+	for _, block := range missing {
+		for _, peer := range peers {
+			if peer.bitfield != nil && peer.bitfield.HasPiece(block.PieceIndex) && !peer.IsChoked() {
+				peer.SendRequest(block.PieceIndex, block.Offset, block.Length)
 			}
 		}
 	}
 }
 
-// Helper functions
-
-// generatePeerID creates a peer ID.
-func generatePeerID() [20]byte {
-	var id [20]byte
-	// Use Azureus-style peer ID: -TDM001-<12 random bytes>
-	copy(id[:], "-TDM001-")
-	rand.Read(id[8:])
-	return id
+// broadcastCancel sends a cancel message for a specific block to all peers.
+func (t *Torrent) broadcastCancel(pieceIndex, offset, length int) {
+	for _, peer := range t.getPeers() {
+		peer.SendCancel(pieceIndex, offset, length)
+	}
 }
 
-// createTracker creates a tracker client based on URL scheme.
+// handleSnubbedPeers finds snubbed peers and retries downloading their blocks.
+func (t *Torrent) handleSnubbedPeers() {
+	for _, pc := range t.getPeers() {
+		if pc.IsSnubbed(snubTimeout) {
+			pc.pendingMu.Lock()
+			for pieceIndex, blocks := range pc.pendingRequests {
+				for offset := range blocks {
+					t.piecePicker.MarkFailed(pieceIndex)
+					delete(pc.pendingRequests[pieceIndex], offset)
+				}
+				delete(pc.pendingRequests, pieceIndex)
+			}
+			pc.pendingMu.Unlock()
+		}
+	}
+}
+
+// broadcastHave sends have messages to all peers.
+func (t *Torrent) broadcastHave(pieceIndex int) {
+	for _, pc := range t.getPeers() {
+		pc.SendHave(pieceIndex)
+	}
+}
+
+// isPeerInteresting checks if a peer has pieces we need.
+func (t *Torrent) isPeerInteresting(peerBitfield *Bitfield) bool {
+	return !t.pieceManager.IsComplete() &&
+		peerBitfield != nil && peerBitfield.Count() > 0
+}
+
+func (t *Torrent) chokePeer(p *PeerConn)   { p.SendChoke() }
+func (t *Torrent) unchokePeer(p *PeerConn) { p.SendUnchoke() }
+func (t *Torrent) getPeers() []*PeerConn {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	peers := make([]*PeerConn, 0, len(t.peers))
+	for _, p := range t.peers {
+		peers = append(peers, p)
+	}
+	return peers
+}
+
 func createTracker(announceURL string) (TrackerClient, error) {
 	u, err := url.Parse(announceURL)
 	if err != nil {
 		return nil, err
 	}
-
 	switch u.Scheme {
 	case "http", "https":
 		return NewHTTPTrackerClient(announceURL), nil

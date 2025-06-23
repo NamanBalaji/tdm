@@ -23,6 +23,14 @@ type Peer struct {
 	ID   []byte
 }
 
+// Compact converts peer info into the 6-byte compact format.
+func (p *Peer) Compact() string {
+	buf := new(bytes.Buffer)
+	buf.Write(p.IP.To4())
+	binary.Write(buf, binary.BigEndian, p.Port)
+	return buf.String()
+}
+
 // TrackerResponse contains the tracker's response.
 type TrackerResponse struct {
 	Interval   int
@@ -116,41 +124,30 @@ func parseHTTPTrackerResponse(data []byte) (*TrackerResponse, error) {
 		return nil, fmt.Errorf("tracker response is not a dictionary")
 	}
 
-	// Check for failure
 	if failureReason, exists := dict["failure reason"]; exists {
-		reason, _ := bytesToString(failureReason)
-		return nil, fmt.Errorf("tracker returned failure: %s", reason)
+		if reason, ok := failureReason.([]byte); ok {
+			return nil, fmt.Errorf("tracker returned failure: %s", string(reason))
+		}
 	}
 
 	resp := &TrackerResponse{}
-
-	// Parse interval
-	if interval, exists := dict["interval"]; exists {
-		if i, ok := interval.(int64); ok {
-			resp.Interval = int(i)
-		}
+	if interval, ok := dict["interval"].(int64); ok {
+		resp.Interval = int(interval)
+	}
+	if complete, ok := dict["complete"].(int64); ok {
+		resp.Complete = int(complete)
+	}
+	if incomplete, ok := dict["incomplete"].(int64); ok {
+		resp.Incomplete = int(incomplete)
 	}
 
-	// Parse complete/incomplete counts
-	if complete, exists := dict["complete"]; exists {
-		if c, ok := complete.(int64); ok {
-			resp.Complete = int(c)
-		}
-	}
-	if incomplete, exists := dict["incomplete"]; exists {
-		if i, ok := incomplete.(int64); ok {
-			resp.Incomplete = int(i)
-		}
-	}
-
-	// Parse peers
 	if peersVal, exists := dict["peers"]; exists {
 		switch peers := peersVal.(type) {
-		case []byte:
-			// Compact format
+		case []byte: // Compact format
 			resp.Peers = parseCompactPeers(peers)
-		case []any:
-			// Dictionary format
+		case string: // Some trackers send it as a string
+			resp.Peers = parseCompactPeers([]byte(peers))
+		case []any: // Dictionary format
 			resp.Peers = parseDictPeers(peers)
 		}
 	}
@@ -192,26 +189,14 @@ func parseDictPeers(peerList []any) []Peer {
 		}
 
 		var peer Peer
-
-		// Parse IP
-		if ipVal, exists := peerDict["ip"]; exists {
-			if ipStr, err := bytesToString(ipVal); err == nil {
-				peer.IP = net.ParseIP(ipStr)
-			}
+		if ipVal, ok := peerDict["ip"].([]byte); ok {
+			peer.IP = net.ParseIP(string(ipVal))
 		}
-
-		// Parse port
-		if portVal, exists := peerDict["port"]; exists {
-			if port, ok := portVal.(int64); ok {
-				peer.Port = uint16(port)
-			}
+		if portVal, ok := peerDict["port"].(int64); ok {
+			peer.Port = uint16(portVal)
 		}
-
-		// Parse peer ID if available
-		if idVal, exists := peerDict["peer id"]; exists {
-			if idBytes, ok := idVal.([]byte); ok {
-				peer.ID = idBytes
-			}
+		if idVal, ok := peerDict["peer id"].([]byte); ok {
+			peer.ID = idVal
 		}
 
 		if peer.IP != nil && peer.Port > 0 {
@@ -256,19 +241,16 @@ func NewUDPTrackerClient(announceURL string) (*UDPTrackerClient, error) {
 
 // Announce sends an announce request to the UDP tracker.
 func (c *UDPTrackerClient) Announce(ctx context.Context, req *AnnounceRequest) (*TrackerResponse, error) {
-	// Connect to tracker
 	connID, err := c.connect(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to tracker: %w", err)
 	}
 
-	// Send announce
 	return c.announce(ctx, connID, req)
 }
 
 // connect performs the UDP tracker connection handshake.
 func (c *UDPTrackerClient) connect(ctx context.Context) (uint64, error) {
-	// Create connection request
 	transactionID := rand.Uint32()
 
 	buf := new(bytes.Buffer)
@@ -276,13 +258,11 @@ func (c *UDPTrackerClient) connect(ctx context.Context) (uint64, error) {
 	binary.Write(buf, binary.BigEndian, uint32(actionConnect))
 	binary.Write(buf, binary.BigEndian, transactionID)
 
-	// Send request
 	c.conn.SetWriteDeadline(time.Now().Add(15 * time.Second))
 	if _, err := c.conn.Write(buf.Bytes()); err != nil {
 		return 0, err
 	}
 
-	// Read response
 	c.conn.SetReadDeadline(time.Now().Add(15 * time.Second))
 	resp := make([]byte, 16)
 	n, err := c.conn.Read(resp)
@@ -293,7 +273,6 @@ func (c *UDPTrackerClient) connect(ctx context.Context) (uint64, error) {
 		return 0, fmt.Errorf("invalid connect response size: %d", n)
 	}
 
-	// Parse response
 	respBuf := bytes.NewReader(resp)
 	var action, respTransID uint32
 	var connectionID uint64
@@ -302,11 +281,8 @@ func (c *UDPTrackerClient) connect(ctx context.Context) (uint64, error) {
 	binary.Read(respBuf, binary.BigEndian, &respTransID)
 	binary.Read(respBuf, binary.BigEndian, &connectionID)
 
-	if action != actionConnect {
-		return 0, fmt.Errorf("unexpected action: %d", action)
-	}
-	if respTransID != transactionID {
-		return 0, fmt.Errorf("transaction ID mismatch")
+	if action != actionConnect || respTransID != transactionID {
+		return 0, fmt.Errorf("invalid connect response from tracker")
 	}
 
 	return connectionID, nil
@@ -315,8 +291,6 @@ func (c *UDPTrackerClient) connect(ctx context.Context) (uint64, error) {
 // announce sends the actual announce request.
 func (c *UDPTrackerClient) announce(ctx context.Context, connID uint64, req *AnnounceRequest) (*TrackerResponse, error) {
 	transactionID := rand.Uint32()
-
-	// Build announce request
 	buf := new(bytes.Buffer)
 	binary.Write(buf, binary.BigEndian, connID)
 	binary.Write(buf, binary.BigEndian, uint32(actionAnnounce))
@@ -327,7 +301,6 @@ func (c *UDPTrackerClient) announce(ctx context.Context, connID uint64, req *Ann
 	binary.Write(buf, binary.BigEndian, req.Left)
 	binary.Write(buf, binary.BigEndian, req.Uploaded)
 
-	// Event
 	var event uint32
 	switch req.Event {
 	case "completed":
@@ -336,33 +309,27 @@ func (c *UDPTrackerClient) announce(ctx context.Context, connID uint64, req *Ann
 		event = 2
 	case "stopped":
 		event = 3
-	default:
-		event = 0
 	}
 	binary.Write(buf, binary.BigEndian, event)
-
-	binary.Write(buf, binary.BigEndian, uint32(0))     // IP address (0 = default)
+	binary.Write(buf, binary.BigEndian, uint32(0))     // IP address
 	binary.Write(buf, binary.BigEndian, rand.Uint32()) // Key
-	binary.Write(buf, binary.BigEndian, int32(req.NumWant))
+	binary.Write(buf, binary.BigEndian, int32(-1))     // NumWant (-1 for default)
 	binary.Write(buf, binary.BigEndian, req.Port)
 
-	// Send request
 	c.conn.SetWriteDeadline(time.Now().Add(15 * time.Second))
 	if _, err := c.conn.Write(buf.Bytes()); err != nil {
 		return nil, err
 	}
 
-	// Read response
+	resp := make([]byte, 2048)
 	c.conn.SetReadDeadline(time.Now().Add(15 * time.Second))
-	resp := make([]byte, 1500) // Max UDP packet size
 	n, err := c.conn.Read(resp)
 	if err != nil {
 		return nil, err
 	}
 
-	// Parse response header
 	if n < 20 {
-		return nil, fmt.Errorf("response too small: %d bytes", n)
+		return nil, fmt.Errorf("announce response too small: %d bytes", n)
 	}
 
 	respBuf := bytes.NewReader(resp[:n])
@@ -371,26 +338,19 @@ func (c *UDPTrackerClient) announce(ctx context.Context, connID uint64, req *Ann
 	binary.Read(respBuf, binary.BigEndian, &respTransID)
 
 	if respTransID != transactionID {
-		return nil, fmt.Errorf("transaction ID mismatch")
+		return nil, fmt.Errorf("transaction ID mismatch in announce response")
 	}
 
 	if action == actionError {
-		// Error response
 		errorMsg, _ := io.ReadAll(respBuf)
 		return nil, fmt.Errorf("tracker error: %s", string(errorMsg))
 	}
 
-	if action != actionAnnounce {
-		return nil, fmt.Errorf("unexpected action: %d", action)
-	}
-
-	// Parse announce response
 	var interval, leechers, seeders uint32
 	binary.Read(respBuf, binary.BigEndian, &interval)
 	binary.Read(respBuf, binary.BigEndian, &leechers)
 	binary.Read(respBuf, binary.BigEndian, &seeders)
 
-	// Parse peers
 	peerData, _ := io.ReadAll(respBuf)
 	peers := parseCompactPeers(peerData)
 

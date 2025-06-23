@@ -2,8 +2,11 @@ package torrent
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
+
+	"github.com/NamanBalaji/tdm/pkg/torrent/bencode"
 )
 
 // Protocol constants
@@ -28,6 +31,11 @@ const (
 	MsgExtended      = 20
 )
 
+// Extended message IDs
+const (
+	ExtendedHandshakeID = 0
+)
+
 // Handshake represents the BitTorrent handshake.
 type Handshake struct {
 	Pstr     string
@@ -36,14 +44,21 @@ type Handshake struct {
 	Reserved [8]byte
 }
 
-// NewHandshake creates a new handshake message.
+// NewHandshake creates a new handshake message with extensions enabled.
 func NewHandshake(infoHash, peerID [20]byte) *Handshake {
-	return &Handshake{
+	h := &Handshake{
 		Pstr:     ProtocolIdentifier,
 		InfoHash: infoHash,
 		PeerID:   peerID,
-		Reserved: [8]byte{0, 0, 0, 0, 0, 0, 0, 0}, // Can set extension bits here
 	}
+	// Set the 20th bit of the reserved bytes to indicate support for extensions.
+	h.Reserved[5] |= 0x10
+	return h
+}
+
+// HasExtensionSupport checks if the peer supports the extension protocol.
+func (h *Handshake) HasExtensionSupport() bool {
+	return (h.Reserved[5] & 0x10) != 0
 }
 
 // Serialize writes the handshake to a writer.
@@ -129,23 +144,19 @@ func ReadMessage(r io.Reader) (*Message, error) {
 		return nil, nil
 	}
 
-	if length > 1<<20 { // 1MB max message size
+	if length > 2*BlockSize { // Safeguard against massive messages
 		return nil, fmt.Errorf("message too large: %d bytes", length)
 	}
 
-	msg := &Message{}
-	if err := binary.Read(r, binary.BigEndian, &msg.Type); err != nil {
+	payload := make([]byte, length)
+	if _, err := io.ReadFull(r, payload); err != nil {
 		return nil, err
 	}
 
-	if length > 1 {
-		msg.Payload = make([]byte, length-1)
-		if _, err := io.ReadFull(r, msg.Payload); err != nil {
-			return nil, err
-		}
-	}
-
-	return msg, nil
+	return &Message{
+		Type:    payload[0],
+		Payload: payload[1:],
+	}, nil
 }
 
 // RequestMessage represents a block request.
@@ -195,4 +206,52 @@ func ParsePiece(payload []byte) (*PieceMessage, error) {
 		Begin: binary.BigEndian.Uint32(payload[4:8]),
 		Block: payload[8:],
 	}, nil
+}
+
+// ExtendedHandshakePayload represents the payload of an extended handshake message.
+type ExtendedHandshakePayload struct {
+	M map[string]int
+	P uint16 // Listening port
+	V string // Client version
+}
+
+// ParseExtendedHandshake manually parses the bencoded data into the struct.
+func ParseExtendedHandshake(data []byte) (*ExtendedHandshakePayload, error) {
+	decoded, _, err := bencode.Decode(data)
+	if err != nil {
+		return nil, err
+	}
+
+	dict, ok := decoded.(map[string]any)
+	if !ok {
+		return nil, errors.New("extended handshake payload is not a dictionary")
+	}
+
+	payload := &ExtendedHandshakePayload{
+		M: make(map[string]int),
+	}
+
+	if mVal, ok := dict["m"]; ok {
+		if mDict, ok := mVal.(map[string]any); ok {
+			for k, v := range mDict {
+				if vInt, ok := v.(int64); ok {
+					payload.M[k] = int(vInt)
+				}
+			}
+		}
+	}
+
+	if pVal, ok := dict["p"]; ok {
+		if pInt, ok := pVal.(int64); ok {
+			payload.P = uint16(pInt)
+		}
+	}
+
+	if vVal, ok := dict["v"]; ok {
+		if vBytes, ok := vVal.([]byte); ok {
+			payload.V = string(vBytes)
+		}
+	}
+
+	return payload, nil
 }

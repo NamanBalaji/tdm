@@ -18,10 +18,11 @@ const (
 
 // Block represents a block within a piece.
 type Block struct {
-	Index  int
-	Offset int
-	Length int
-	Data   []byte
+	PieceIndex int
+	Index      int
+	Offset     int
+	Length     int
+	Data       []byte
 }
 
 // Piece represents a piece in the torrent.
@@ -49,9 +50,10 @@ func NewPiece(index int, length int64, hash [20]byte) *Piece {
 		}
 
 		blocks[i] = &Block{
-			Index:  i,
-			Offset: blockOffset,
-			Length: blockLength,
+			PieceIndex: index,
+			Index:      i,
+			Offset:     blockOffset,
+			Length:     blockLength,
 		}
 	}
 
@@ -130,24 +132,33 @@ func (p *Piece) Verify() bool {
 	return false
 }
 
-// GetData returns the complete piece data if available.
-func (p *Piece) GetData() ([]byte, error) {
+// ReadBlock reads a block of data from a verified piece.
+func (p *Piece) ReadBlock(offset, length int) ([]byte, error) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
 	if p.State != PieceStateVerified {
-		return nil, fmt.Errorf("piece %d not verified", p.Index)
+		return nil, fmt.Errorf("cannot read from unverified piece %d", p.Index)
 	}
 
-	data := make([]byte, 0, p.Length)
-	for _, block := range p.Blocks {
-		data = append(data, block.Data...)
+	if offset < 0 || offset+length > int(p.Length) {
+		return nil, fmt.Errorf("read request for piece %d exceeds bounds (offset: %d, len: %d, pieceLen: %d)", p.Index, offset, length, p.Length)
 	}
 
-	return data, nil
+	blockIndex := offset / BlockSize
+	if blockIndex >= len(p.Blocks) {
+		return nil, fmt.Errorf("invalid block for offset %d in piece %d", offset, p.Index)
+	}
+
+	block := p.Blocks[blockIndex]
+	if block.Offset != offset || block.Length != length {
+		return nil, fmt.Errorf("request for piece %d does not align with block structure", p.Index)
+	}
+
+	return block.Data, nil
 }
 
-// GetMissingBlocks returns blocks that haven't been downloaded yet.
+// GetMissingBlocks returns blocks that haven't been downloaded yet for this piece.
 func (p *Piece) GetMissingBlocks() []*Block {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
@@ -220,6 +231,21 @@ func (pm *PieceManager) GetPiece(index int) (*Piece, error) {
 	return pm.pieces[index], nil
 }
 
+// GetAllMissingBlocks returns all blocks that have not yet been downloaded from any piece.
+// This is primarily used to enter and operate in endgame mode.
+func (pm *PieceManager) GetAllMissingBlocks() []*Block {
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+
+	var missing []*Block
+	for _, piece := range pm.pieces {
+		if !pm.verified.HasPiece(piece.Index) {
+			missing = append(missing, piece.GetMissingBlocks()...)
+		}
+	}
+	return missing
+}
+
 // GetPieceLength returns the length of a specific piece.
 func (pm *PieceManager) GetPieceLength(index int) int64 {
 	if index == pm.totalPieces-1 {
@@ -228,9 +254,11 @@ func (pm *PieceManager) GetPieceLength(index int) int64 {
 	return pm.pieceLength
 }
 
-// MarkCompleted marks a piece as completed.
-func (pm *PieceManager) MarkCompleted(index int) error {
-	return pm.completed.SetPiece(index)
+// IsComplete checks if all pieces have been downloaded and verified.
+func (pm *PieceManager) IsComplete() bool {
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+	return pm.verified.IsComplete()
 }
 
 // MarkVerified marks a piece as verified.

@@ -69,7 +69,8 @@ func (pp *PiecePicker) PickPiece(peerBitfield *Bitfield) (int, bool) {
 	case PickerSequential:
 		selected = pp.pickSequential(candidates)
 	default:
-		selected = candidates[0]
+		// Fallback to random if strategy is not set or invalid
+		selected = candidates[pp.rand.Intn(len(candidates))]
 	}
 
 	pp.inProgress[selected] = true
@@ -112,6 +113,10 @@ func (pp *PiecePicker) pickRarest(candidates []int) int {
 	sort.Slice(candidates, func(i, j int) bool {
 		availI := pp.availability[candidates[i]]
 		availJ := pp.availability[candidates[j]]
+		if availI == availJ {
+			// If rarity is the same, prefer lower index
+			return candidates[i] < candidates[j]
+		}
 		return availI < availJ
 	})
 
@@ -140,4 +145,11 @@ func (pp *PiecePicker) MarkFailed(index int) {
 	pp.mu.Lock()
 	defer pp.mu.Unlock()
 	delete(pp.inProgress, index)
+}
+
+// InProgressCount returns the number of pieces currently being downloaded.
+func (pp *PiecePicker) InProgressCount() int {
+	pp.mu.RLock()
+	defer pp.mu.RUnlock()
+	return len(pp.inProgress)
 }
