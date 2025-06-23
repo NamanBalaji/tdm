@@ -41,7 +41,7 @@ func NewPiece(index int, length int64, hash [20]byte) *Piece {
 	numBlocks := int((length + BlockSize - 1) / BlockSize)
 	blocks := make([]*Block, numBlocks)
 
-	for i := 0; i < numBlocks; i++ {
+	for i := range numBlocks {
 		blockOffset := i * BlockSize
 		blockLength := BlockSize
 		if i == numBlocks-1 {
@@ -205,7 +205,7 @@ func NewPieceManager(metainfo *Metainfo) *PieceManager {
 	pieceLength := metainfo.Info.PieceLength
 	lastPieceLen := totalSize - (int64(totalPieces-1) * pieceLength)
 
-	for i := 0; i < totalPieces; i++ {
+	for i := range totalPieces {
 		length := pieceLength
 		if i == totalPieces-1 {
 			length = lastPieceLen

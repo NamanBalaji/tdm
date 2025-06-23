@@ -52,7 +52,7 @@ func newRoutingTable(id [20]byte, dht *DHT) *routingTable {
 		nodeID: id,
 		dht:    dht,
 	}
-	for i := 0; i < nodeIDBits; i++ {
+	for i := range nodeIDBits {
 		rt.buckets[i] = make([]*Node, 0, k)
 	}
 	return rt
@@ -117,9 +117,7 @@ func (rt *routingTable) findClosest(targetID [20]byte, count int) []*Node {
 	candidates.target = targetID
 
 	for _, bucket := range rt.buckets {
-		for _, node := range bucket {
-			candidates.nodes = append(candidates.nodes, node)
-		}
+		candidates.nodes = append(candidates.nodes, bucket...)
 	}
 
 	sort.Sort(candidates)

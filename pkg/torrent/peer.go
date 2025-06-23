@@ -3,6 +3,7 @@ package torrent
 import (
 	"bufio"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"net"
 	"sync"
@@ -91,7 +92,7 @@ func (pc *PeerConn) Handshake() (*Handshake, error) {
 	pc.conn.SetReadDeadline(time.Time{})
 
 	if peerHandshake.InfoHash != pc.infoHash {
-		return nil, fmt.Errorf("info hash mismatch")
+		return nil, errors.New("info hash mismatch")
 	}
 
 	pc.extensions = peerHandshake.Reserved
@@ -148,7 +149,7 @@ func (pc *PeerConn) SendPEX(added, dropped []Peer) error {
 	pc.mu.RUnlock()
 
 	if pexID == 0 {
-		return fmt.Errorf("peer does not support ut_pex")
+		return errors.New("peer does not support ut_pex")
 	}
 
 	var addedBytes, droppedBytes []byte

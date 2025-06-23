@@ -2,6 +2,7 @@ package torrent
 
 import (
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/url"
 	"strconv"
@@ -20,7 +21,7 @@ type MagnetLink struct {
 // ParseMagnetLink parses a magnet URI.
 func ParseMagnetLink(magnetURI string) (*MagnetLink, error) {
 	if !strings.HasPrefix(magnetURI, "magnet:?") {
-		return nil, fmt.Errorf("invalid magnet link format")
+		return nil, errors.New("invalid magnet link format")
 	}
 
 	u, err := url.Parse(magnetURI)
@@ -34,7 +35,7 @@ func ParseMagnetLink(magnetURI string) (*MagnetLink, error) {
 	// Parse exact topic (xt) - info hash
 	xt := params.Get("xt")
 	if xt == "" {
-		return nil, fmt.Errorf("missing xt (exact topic) parameter")
+		return nil, errors.New("missing xt (exact topic) parameter")
 	}
 
 	if !strings.HasPrefix(xt, "urn:btih:") {

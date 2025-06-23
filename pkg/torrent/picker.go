@@ -43,7 +43,7 @@ func (pp *PiecePicker) UpdateAvailability(peerBitfield *Bitfield) {
 	pp.mu.Lock()
 	defer pp.mu.Unlock()
 
-	for i := 0; i < pp.pieceManager.totalPieces; i++ {
+	for i := range pp.pieceManager.totalPieces {
 		if peerBitfield.HasPiece(i) {
 			pp.availability[i]++
 		}
@@ -81,7 +81,7 @@ func (pp *PiecePicker) PickPiece(peerBitfield *Bitfield) (int, bool) {
 func (pp *PiecePicker) getCandidates(peerBitfield *Bitfield) []int {
 	var candidates []int
 
-	for i := 0; i < pp.pieceManager.totalPieces; i++ {
+	for i := range pp.pieceManager.totalPieces {
 		// Skip if we already have it
 		if pp.pieceManager.verified.HasPiece(i) {
 			continue

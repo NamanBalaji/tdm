@@ -9,14 +9,14 @@ import (
 	"github.com/NamanBalaji/tdm/pkg/torrent/bencode"
 )
 
-// Protocol constants
+// Protocol constants.
 const (
 	ProtocolIdentifier = "BitTorrent protocol"
 	HandshakeLength    = 68
 	BlockSize          = 16384 // 16KB standard block size
 )
 
-// Message types
+// Message types.
 const (
 	MsgChoke         = 0
 	MsgUnchoke       = 1
@@ -31,7 +31,7 @@ const (
 	MsgExtended      = 20
 )
 
-// Extended message IDs
+// Extended message IDs.
 const (
 	ExtendedHandshakeID = 0
 )

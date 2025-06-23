@@ -80,7 +80,8 @@ func (d *DHT) serve() {
 			d.conn.SetReadDeadline(time.Now().Add(time.Second))
 			n, addr, err := d.conn.ReadFromUDP(buf)
 			if err != nil {
-				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				var netErr net.Error
+				if errors.As(err, &netErr) {
 					continue
 				}
 				return // Connection closed
@@ -316,7 +317,7 @@ func (d *DHT) send(addr *net.UDPAddr, msg map[string]any) {
 	d.conn.WriteToUDP(data, addr)
 }
 
-// --- Transaction Manager ---
+// --- Transaction Manager ---.
 type transactionManager struct {
 	m   sync.Mutex
 	id  uint16
@@ -380,7 +381,7 @@ func (tm *transactionManager) handleResponse(msg map[string]any) {
 	}
 }
 
-// --- Token Management ---
+// --- Token Management ---.
 func (d *DHT) generateTokenSecret() (string, error) {
 	b := make([]byte, 20)
 	_, err := rand.Read(b)

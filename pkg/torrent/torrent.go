@@ -125,7 +125,7 @@ func (t *Torrent) Start() error {
 	t.mu.Lock()
 	if t.state != TorrentStateIdle && t.state != TorrentStatePaused {
 		t.mu.Unlock()
-		return fmt.Errorf("torrent already active")
+		return errors.New("torrent already active")
 	}
 	t.state = TorrentStateDownloading
 	t.mu.Unlock()
@@ -408,7 +408,7 @@ func (t *Torrent) handlePeerMessage(pc *PeerConn, msg *Message) error {
 // handleExtendedMessage processes an extended protocol message.
 func (t *Torrent) handleExtendedMessage(pc *PeerConn, payload []byte) error {
 	if len(payload) == 0 {
-		return fmt.Errorf("empty extended message")
+		return errors.New("empty extended message")
 	}
 
 	extendedID := payload[0]
@@ -574,7 +574,6 @@ func (t *Torrent) handlePieceData(pieceMsg *PieceMessage) error {
 				t.mu.Unlock()
 				go t.broadcastEndgameRequests()
 			}
-
 		} else {
 			piece.Reset()
 			t.piecePicker.MarkFailed(int(pieceMsg.Index))

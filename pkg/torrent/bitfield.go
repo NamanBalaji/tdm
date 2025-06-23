@@ -81,7 +81,7 @@ func (bf *Bitfield) Count() int {
 	defer bf.mu.RUnlock()
 
 	count := 0
-	for i := 0; i < bf.len; i++ {
+	for i := range bf.len {
 		if bf.HasPiece(i) {
 			count++
 		}

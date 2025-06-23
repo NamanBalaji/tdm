@@ -84,7 +84,7 @@ func (m *Metainfo) GetPieceHashes() [][20]byte {
 			return
 		}
 		hashes := make([][20]byte, pieceCount)
-		for i := 0; i < pieceCount; i++ {
+		for i := range pieceCount {
 			start := i * 20
 			copy(hashes[i][:], m.Info.Pieces[start:start+20])
 		}

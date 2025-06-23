@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"math/rand"
@@ -96,7 +97,7 @@ func (c *HTTPTrackerClient) Announce(ctx context.Context, req *AnnounceRequest) 
 		}
 
 		fullURL := c.announceURL + "?" + params.Encode()
-		httpReq, reqErr := http.NewRequestWithContext(ctx, "GET", fullURL, nil)
+		httpReq, reqErr := http.NewRequestWithContext(ctx, http.MethodGet, fullURL, nil)
 		if reqErr != nil {
 			return reqErr // Don't retry on bad request creation
 		}
@@ -132,7 +133,7 @@ func parseHTTPTrackerResponse(data []byte) (*TrackerResponse, error) {
 
 	dict, ok := val.(map[string]any)
 	if !ok {
-		return nil, fmt.Errorf("tracker response is not a dictionary")
+		return nil, errors.New("tracker response is not a dictionary")
 	}
 
 	if failureReason, exists := dict["failure reason"]; exists {
@@ -175,7 +176,7 @@ func parseCompactPeers(data []byte) []Peer {
 	numPeers := len(data) / 6
 	peers := make([]Peer, 0, numPeers)
 
-	for i := 0; i < numPeers; i++ {
+	for i := range numPeers {
 		offset := i * 6
 		ip := net.IP(data[offset : offset+4])
 		port := binary.BigEndian.Uint16(data[offset+4 : offset+6])
@@ -224,7 +225,7 @@ type UDPTrackerClient struct {
 	conn        net.Conn
 }
 
-// UDP tracker protocol constants
+// UDP tracker protocol constants.
 const (
 	actionConnect  = 0
 	actionAnnounce = 1
@@ -253,9 +254,7 @@ func NewUDPTrackerClient(announceURL string) (*UDPTrackerClient, error) {
 // Announce sends an announce request to the UDP tracker.
 func (c *UDPTrackerClient) Announce(ctx context.Context, req *AnnounceRequest) (*TrackerResponse, error) {
 	var resp *TrackerResponse
-	var err error
-
-	err = retry(3, 15*time.Second, func() error {
+	var err error = retry(3, 15*time.Second, func() error {
 		connID, innerErr := c.connect(ctx)
 		if innerErr != nil {
 			return innerErr
@@ -300,7 +299,7 @@ func (c *UDPTrackerClient) connect(ctx context.Context) (uint64, error) {
 	binary.Read(respBuf, binary.BigEndian, &connectionID)
 
 	if action != actionConnect || respTransID != transactionID {
-		return 0, fmt.Errorf("invalid connect response from tracker")
+		return 0, errors.New("invalid connect response from tracker")
 	}
 
 	return connectionID, nil
@@ -357,7 +356,7 @@ func (c *UDPTrackerClient) announce(ctx context.Context, connID uint64, req *Ann
 	binary.Read(respBuf, binary.BigEndian, &respTransID)
 
 	if respTransID != transactionID {
-		return nil, fmt.Errorf("transaction ID mismatch in announce response")
+		return nil, errors.New("transaction ID mismatch in announce response")
 	}
 	if action == actionError {
 		errorMsg, _ := io.ReadAll(respBuf)

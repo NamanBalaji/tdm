@@ -200,11 +200,9 @@ func generateRequest(ctx context.Context, urlStr, method string, headers map[str
 	req.Header.Set("User-Agent", DefaultUserAgent)
 	logger.Debugf("Set User-Agent: %s", DefaultUserAgent)
 
-	if headers != nil {
-		for key, value := range headers {
-			req.Header.Set(key, value)
-			logger.Debugf("Set custom header: %s", key)
-		}
+	for key, value := range headers {
+		req.Header.Set(key, value)
+		logger.Debugf("Set custom header: %s", key)
 	}
 
 	return req, nil
