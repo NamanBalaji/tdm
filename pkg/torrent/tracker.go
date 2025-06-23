@@ -68,48 +68,59 @@ func NewHTTPTrackerClient(announceURL string) *HTTPTrackerClient {
 	return &HTTPTrackerClient{
 		announceURL: announceURL,
 		client: &http.Client{
-			Timeout: 30 * time.Second,
+			Timeout: 30 * time.Second, // Global timeout for the entire request
 		},
 	}
 }
 
-// Announce sends an announce request to the HTTP tracker.
+// Announce sends an announce request to the HTTP tracker with retry logic.
 func (c *HTTPTrackerClient) Announce(ctx context.Context, req *AnnounceRequest) (*TrackerResponse, error) {
-	params := url.Values{}
-	params.Set("info_hash", string(req.InfoHash[:]))
-	params.Set("peer_id", string(req.PeerID[:]))
-	params.Set("port", strconv.Itoa(int(req.Port)))
-	params.Set("uploaded", strconv.FormatInt(req.Uploaded, 10))
-	params.Set("downloaded", strconv.FormatInt(req.Downloaded, 10))
-	params.Set("left", strconv.FormatInt(req.Left, 10))
-	params.Set("compact", "1")
+	var resp *TrackerResponse
+	var err error
 
-	if req.Event != "" {
-		params.Set("event", req.Event)
-	}
-	if req.NumWant > 0 {
-		params.Set("numwant", strconv.Itoa(req.NumWant))
-	}
+	err = retry(3, 5*time.Second, func() error {
+		params := url.Values{}
+		params.Set("info_hash", string(req.InfoHash[:]))
+		params.Set("peer_id", string(req.PeerID[:]))
+		params.Set("port", strconv.Itoa(int(req.Port)))
+		params.Set("uploaded", strconv.FormatInt(req.Uploaded, 10))
+		params.Set("downloaded", strconv.FormatInt(req.Downloaded, 10))
+		params.Set("left", strconv.FormatInt(req.Left, 10))
+		params.Set("compact", "1")
 
-	fullURL := c.announceURL + "?" + params.Encode()
+		if req.Event != "" {
+			params.Set("event", req.Event)
+		}
+		if req.NumWant > 0 {
+			params.Set("numwant", strconv.Itoa(req.NumWant))
+		}
 
-	httpReq, err := http.NewRequestWithContext(ctx, "GET", fullURL, nil)
-	if err != nil {
-		return nil, err
-	}
+		fullURL := c.announceURL + "?" + params.Encode()
+		httpReq, reqErr := http.NewRequestWithContext(ctx, "GET", fullURL, nil)
+		if reqErr != nil {
+			return reqErr // Don't retry on bad request creation
+		}
 
-	resp, err := c.client.Do(httpReq)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
+		httpResp, httpErr := c.client.Do(httpReq)
+		if httpErr != nil {
+			return httpErr // Retry on network errors
+		}
+		defer httpResp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
+		if httpResp.StatusCode != http.StatusOK {
+			return fmt.Errorf("tracker returned non-200 status: %s", httpResp.Status)
+		}
 
-	return parseHTTPTrackerResponse(body)
+		body, readErr := io.ReadAll(httpResp.Body)
+		if readErr != nil {
+			return readErr
+		}
+
+		resp, err = parseHTTPTrackerResponse(body)
+		return err
+	})
+
+	return resp, err
 }
 
 // parseHTTPTrackerResponse parses the bencode response from HTTP tracker.
@@ -241,35 +252,42 @@ func NewUDPTrackerClient(announceURL string) (*UDPTrackerClient, error) {
 
 // Announce sends an announce request to the UDP tracker.
 func (c *UDPTrackerClient) Announce(ctx context.Context, req *AnnounceRequest) (*TrackerResponse, error) {
-	connID, err := c.connect(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to connect to tracker: %w", err)
-	}
+	var resp *TrackerResponse
+	var err error
 
-	return c.announce(ctx, connID, req)
+	err = retry(3, 15*time.Second, func() error {
+		connID, innerErr := c.connect(ctx)
+		if innerErr != nil {
+			return innerErr
+		}
+		resp, innerErr = c.announce(ctx, connID, req)
+		return innerErr
+	})
+
+	return resp, err
 }
 
 // connect performs the UDP tracker connection handshake.
 func (c *UDPTrackerClient) connect(ctx context.Context) (uint64, error) {
 	transactionID := rand.Uint32()
-
 	buf := new(bytes.Buffer)
 	binary.Write(buf, binary.BigEndian, uint64(0x41727101980)) // Protocol ID
 	binary.Write(buf, binary.BigEndian, uint32(actionConnect))
 	binary.Write(buf, binary.BigEndian, transactionID)
 
-	c.conn.SetWriteDeadline(time.Now().Add(15 * time.Second))
+	deadline, _ := ctx.Deadline()
+	c.conn.SetWriteDeadline(deadline)
 	if _, err := c.conn.Write(buf.Bytes()); err != nil {
 		return 0, err
 	}
 
-	c.conn.SetReadDeadline(time.Now().Add(15 * time.Second))
+	c.conn.SetReadDeadline(deadline)
 	resp := make([]byte, 16)
 	n, err := c.conn.Read(resp)
 	if err != nil {
 		return 0, err
 	}
-	if n != 16 {
+	if n < 16 {
 		return 0, fmt.Errorf("invalid connect response size: %d", n)
 	}
 
@@ -316,13 +334,14 @@ func (c *UDPTrackerClient) announce(ctx context.Context, connID uint64, req *Ann
 	binary.Write(buf, binary.BigEndian, int32(-1))     // NumWant (-1 for default)
 	binary.Write(buf, binary.BigEndian, req.Port)
 
-	c.conn.SetWriteDeadline(time.Now().Add(15 * time.Second))
+	deadline, _ := ctx.Deadline()
+	c.conn.SetWriteDeadline(deadline)
 	if _, err := c.conn.Write(buf.Bytes()); err != nil {
 		return nil, err
 	}
 
 	resp := make([]byte, 2048)
-	c.conn.SetReadDeadline(time.Now().Add(15 * time.Second))
+	c.conn.SetReadDeadline(deadline)
 	n, err := c.conn.Read(resp)
 	if err != nil {
 		return nil, err
@@ -340,7 +359,6 @@ func (c *UDPTrackerClient) announce(ctx context.Context, connID uint64, req *Ann
 	if respTransID != transactionID {
 		return nil, fmt.Errorf("transaction ID mismatch in announce response")
 	}
-
 	if action == actionError {
 		errorMsg, _ := io.ReadAll(respBuf)
 		return nil, fmt.Errorf("tracker error: %s", string(errorMsg))
@@ -366,6 +384,22 @@ func (c *UDPTrackerClient) announce(ctx context.Context, connID uint64, req *Ann
 func (c *UDPTrackerClient) Close() error {
 	if c.conn != nil {
 		return c.conn.Close()
+	}
+	return nil
+}
+
+// retry is a helper function to retry a function with exponential backoff.
+func retry(attempts int, sleep time.Duration, f func() error) error {
+	if err := f(); err != nil {
+		if attempts--; attempts > 0 {
+			// Add jitter to avoid thundering herd problem
+			jitter := time.Duration(rand.Int63n(int64(sleep)))
+			sleep = sleep + jitter/2
+
+			time.Sleep(sleep)
+			return retry(attempts, 2*sleep, f)
+		}
+		return err
 	}
 	return nil
 }

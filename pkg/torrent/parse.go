@@ -1,12 +1,16 @@
 package torrent
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"strconv"
 
 	"github.com/NamanBalaji/tdm/pkg/torrent/bencode"
 )
 
+// ParseTorrent decodes the given bencoded data into a Metainfo struct.
+// It also performs validation to ensure the torrent file is well-formed.
 func ParseTorrent(data []byte) (*Metainfo, error) {
 	if len(data) == 0 {
 		return nil, newValidationError(ErrInvalidTorrentStructure, "data", "empty torrent data")
@@ -33,44 +37,34 @@ func parseMetainfo(value any, originalData []byte) (*Metainfo, error) {
 
 	// Parse announce URL (required)
 	if announceVal, exists := dict["announce"]; exists {
-		announceStr, err := bytesToString(announceVal)
-		if err != nil {
-			return nil, newValidationError(ErrInvalidAnnounceURL, "announce",
-				fmt.Sprintf("announce field must be a string, got %T", announceVal))
+		if announceStr, err := bytesToString(announceVal); err == nil {
+			metainfo.Announce = announceStr
 		}
-		metainfo.Announce = announceStr
 	} else {
 		return nil, newValidationError(ErrInvalidAnnounceURL, "announce", "missing required announce field")
 	}
 
-	// Parse announce-list (optional)
+	// Parse optional fields
 	if announceListVal, exists := dict["announce-list"]; exists {
-		announceList, err := parseAnnounceList(announceListVal)
-		if err != nil {
-			return nil, err // Error already wrapped in parseAnnounceList
+		if announceList, err := parseAnnounceList(announceListVal); err == nil {
+			metainfo.AnnounceList = announceList
 		}
-		metainfo.AnnounceList = announceList
 	}
-
-	// Parse optional string fields
 	if commentVal, exists := dict["comment"]; exists {
 		if commentStr, err := bytesToString(commentVal); err == nil {
 			metainfo.Comment = commentStr
 		}
 	}
-
 	if createdByVal, exists := dict["created by"]; exists {
 		if createdByStr, err := bytesToString(createdByVal); err == nil {
 			metainfo.CreatedBy = createdByStr
 		}
 	}
-
 	if encodingVal, exists := dict["encoding"]; exists {
 		if encodingStr, err := bytesToString(encodingVal); err == nil {
 			metainfo.Encoding = encodingStr
 		}
 	}
-
 	if creationDateVal, exists := dict["creation date"]; exists {
 		if creationDateInt, ok := creationDateVal.(int64); ok {
 			metainfo.CreationDate = creationDateInt
@@ -82,12 +76,19 @@ func parseMetainfo(value any, originalData []byte) (*Metainfo, error) {
 		return nil, newValidationError(ErrInvalidInfoDict, "info", "missing required info field")
 	}
 
-	info, infoBytes, err := parseInfo(infoVal, originalData)
+	info, err := parseInfo(infoVal)
 	if err != nil {
 		return nil, err
 	}
 	metainfo.Info = info
-	metainfo.setInfoBytes(infoBytes)
+
+	// Efficiently extract the raw info dictionary bytes
+	infoBytes, err := extractInfoBytes(originalData)
+	if err != nil {
+		return nil, newValidationError(ErrInvalidInfoDict, "info_bytes",
+			fmt.Sprintf("failed to extract info bytes: %v", err))
+	}
+	metainfo.infoBytes = infoBytes
 
 	if err := metainfo.validate(); err != nil {
 		return nil, err
@@ -112,210 +113,189 @@ func bytesToString(value any) (string, error) {
 func parseAnnounceList(value any) ([][]string, error) {
 	list, ok := value.([]any)
 	if !ok {
-		return nil, newValidationError(ErrInvalidAnnounceList, "announce-list",
-			fmt.Sprintf("announce-list must be a list, got %T", value))
+		return nil, newValidationError(ErrInvalidAnnounceList, "announce-list", "must be a list")
 	}
 
 	announceList := make([][]string, 0, len(list))
-
-	for i, tierVal := range list {
+	for _, tierVal := range list {
 		tierList, ok := tierVal.([]any)
 		if !ok {
-			return nil, newValidationError(ErrInvalidAnnounceList, "announce-list",
-				fmt.Sprintf("announce-list[%d] must be a list, got %T", i, tierVal))
+			continue // Skip malformed tier
 		}
-
 		tier := make([]string, 0, len(tierList))
-		for j, urlVal := range tierList {
-			urlStr, err := bytesToString(urlVal)
-			if err != nil {
-				return nil, newValidationError(ErrInvalidAnnounceList, "announce-list",
-					fmt.Sprintf("announce-list[%d][%d] must be a string, got %T", i, j, urlVal))
+		for _, urlVal := range tierList {
+			if urlStr, err := bytesToString(urlVal); err == nil {
+				tier = append(tier, urlStr)
 			}
-			tier = append(tier, urlStr)
 		}
-
 		if len(tier) > 0 {
 			announceList = append(announceList, tier)
 		}
 	}
-
 	return announceList, nil
 }
 
-// parseInfo parses the info dictionary and extracts its raw bytes for hash calculation.
-func parseInfo(value any, originalData []byte) (Info, []byte, error) {
+// parseInfo parses the info dictionary.
+func parseInfo(value any) (Info, error) {
 	infoDict, ok := value.(map[string]any)
 	if !ok {
-		return Info{}, nil, newValidationError(ErrInvalidInfoDict, "info",
-			fmt.Sprintf("info must be a dictionary, got %T", value))
+		return Info{}, newValidationError(ErrInvalidInfoDict, "info", "info must be a dictionary")
 	}
 
 	var info Info
 
-	nameVal, exists := infoDict["name"]
-	if !exists {
-		return Info{}, nil, newValidationError(ErrInvalidName, "name", "missing required name field")
+	if nameVal, ok := infoDict["name"]; ok {
+		info.Name, _ = bytesToString(nameVal)
 	}
-	nameStr, err := bytesToString(nameVal)
-	if err != nil {
-		return Info{}, nil, newValidationError(ErrInvalidName, "name",
-			fmt.Sprintf("name must be a string, got %T", nameVal))
+	if plVal, ok := infoDict["piece length"]; ok {
+		info.PieceLength, _ = plVal.(int64)
 	}
-	info.Name = nameStr
-
-	pieceLengthVal, exists := infoDict["piece length"]
-	if !exists {
-		return Info{}, nil, newValidationError(ErrInvalidPieceLength, "piece length",
-			"missing required piece length field")
-	}
-	pieceLengthInt, ok := pieceLengthVal.(int64)
-	if !ok {
-		return Info{}, nil, newValidationError(ErrInvalidPieceLength, "piece length",
-			fmt.Sprintf("piece length must be an integer, got %T", pieceLengthVal))
-	}
-	info.PieceLength = pieceLengthInt
-
-	piecesVal, exists := infoDict["pieces"]
-	if !exists {
-		return Info{}, nil, newValidationError(ErrInvalidPieces, "pieces", "missing required pieces field")
+	if pVal, ok := infoDict["pieces"]; ok {
+		info.Pieces, _ = bytesToString(pVal)
 	}
 
-	var piecesBytes []byte
-	switch v := piecesVal.(type) {
-	case []byte:
-		piecesBytes = v
-	case string:
-		piecesBytes = []byte(v)
-	default:
-		return Info{}, nil, newValidationError(ErrInvalidPieces, "pieces",
-			fmt.Sprintf("pieces must be binary data, got %T", piecesVal))
-	}
-	info.Pieces = string(piecesBytes)
-
-	if len(info.Pieces)%20 != 0 {
-		return Info{}, nil, newValidationError(ErrInvalidPieces, "pieces",
-			fmt.Sprintf("pieces length must be multiple of 20, got %d", len(info.Pieces)))
-	}
-
+	// **FIX**: Correctly parse both length and files if they both exist,
+	// allowing the validation logic to catch the error.
 	if lengthVal, exists := infoDict["length"]; exists {
-		lengthInt, ok := lengthVal.(int64)
-		if !ok {
-			return Info{}, nil, newValidationError(ErrInvalidSingleFile, "length",
-				fmt.Sprintf("length must be an integer, got %T", lengthVal))
-		}
-		info.Length = lengthInt
-
+		info.Length, _ = lengthVal.(int64)
 		if md5Val, exists := infoDict["md5sum"]; exists {
-			if md5Str, err := bytesToString(md5Val); err == nil {
-				info.MD5Sum = md5Str
-			}
+			info.MD5Sum, _ = bytesToString(md5Val)
 		}
 	}
-
 	if filesVal, exists := infoDict["files"]; exists {
-		files, err := parseFiles(filesVal)
-		if err != nil {
-			return Info{}, nil, err
+		if files, err := parseFiles(filesVal); err == nil {
+			info.Files = files
 		}
-		info.Files = files
 	}
 
-	infoBytes, err := extractInfoBytes(originalData)
-	if err != nil {
-		return Info{}, nil, newValidationError(ErrInvalidInfoDict, "info_bytes",
-			fmt.Sprintf("failed to extract info bytes: %v", err))
-	}
-
-	return info, infoBytes, nil
+	return info, nil
 }
 
 // parseFiles parses the files array for multi-file torrents.
 func parseFiles(value any) ([]File, error) {
 	filesList, ok := value.([]any)
 	if !ok {
-		return nil, newValidationError(ErrInvalidMultiFile, "files",
-			fmt.Sprintf("files must be a list, got %T", value))
+		return nil, newValidationError(ErrInvalidMultiFile, "files", "files must be a list")
 	}
 
 	files := make([]File, 0, len(filesList))
-
-	for i, fileVal := range filesList {
+	for _, fileVal := range filesList {
 		fileDict, ok := fileVal.(map[string]any)
 		if !ok {
-			return nil, newValidationError(ErrInvalidMultiFile, "files",
-				fmt.Sprintf("files[%d] must be a dictionary, got %T", i, fileVal))
+			continue
 		}
-
 		var file File
-
-		lengthVal, exists := fileDict["length"]
-		if !exists {
-			return nil, newValidationError(ErrInvalidMultiFile, "files",
-				fmt.Sprintf("files[%d] missing required length field", i))
+		if lengthVal, ok := fileDict["length"].(int64); ok {
+			file.Length = lengthVal
 		}
-		lengthInt, ok := lengthVal.(int64)
-		if !ok {
-			return nil, newValidationError(ErrInvalidMultiFile, "files",
-				fmt.Sprintf("files[%d] length must be an integer, got %T", i, lengthVal))
-		}
-		file.Length = lengthInt
-
-		pathVal, exists := fileDict["path"]
-		if !exists {
-			return nil, newValidationError(ErrInvalidFilePath, "files",
-				fmt.Sprintf("files[%d] missing required path field", i))
-		}
-		pathList, ok := pathVal.([]any)
-		if !ok {
-			return nil, newValidationError(ErrInvalidFilePath, "files",
-				fmt.Sprintf("files[%d] path must be a list, got %T", i, pathVal))
-		}
-
-		path := make([]string, 0, len(pathList))
-		for j, pathComponentVal := range pathList {
-			pathComponentStr, err := bytesToString(pathComponentVal)
-			if err != nil {
-				return nil, newValidationError(ErrInvalidFilePath, "files",
-					fmt.Sprintf("files[%d] path[%d] must be a string, got %T", i, j, pathComponentVal))
+		if pathVal, ok := fileDict["path"].([]any); ok {
+			path := make([]string, 0, len(pathVal))
+			for _, comp := range pathVal {
+				if compStr, err := bytesToString(comp); err == nil {
+					path = append(path, compStr)
+				}
 			}
-			path = append(path, pathComponentStr)
+			file.Path = path
 		}
-		file.Path = path
-
 		if md5Val, exists := fileDict["md5sum"]; exists {
-			if md5Str, err := bytesToString(md5Val); err == nil {
-				file.MD5Sum = md5Str
-			}
+			file.MD5Sum, _ = bytesToString(md5Val)
 		}
-
 		files = append(files, file)
 	}
-
 	return files, nil
 }
 
-// extractInfoBytes extracts the raw bencode bytes of the info dictionary.
+// extractInfoBytes finds the 'info' dictionary within the raw torrent data
+// and returns its bencoded bytes without re-encoding.
 func extractInfoBytes(data []byte) ([]byte, error) {
-	value, _, err := bencode.Decode(data)
+	// The info dictionary is prefixed by d...4:info
+	infoKey := []byte("4:info")
+	index := bytes.Index(data, infoKey)
+	if index == -1 {
+		return nil, errors.New("'info' dictionary not found")
+	}
+
+	// The 'd' for the main dictionary is before the index of '4:info'.
+	// We need to find the start of the 'info' dictionary's value.
+	startIndex := index + len(infoKey)
+	if startIndex >= len(data) {
+		return nil, errors.New("malformed torrent data after 'info' key")
+	}
+
+	// We need to parse the bencoded value that follows the key to find its end.
+	_, endIndex, err := parseBencodedValue(data[startIndex:])
 	if err != nil {
-		return nil, fmt.Errorf("failed to decode data: %w", err)
+		return nil, fmt.Errorf("could not parse info dictionary value: %w", err)
 	}
 
-	dict, ok := value.(map[string]any)
-	if !ok {
-		return nil, errors.New("expected dictionary at root level")
+	return data[startIndex : startIndex+endIndex], nil
+}
+
+// parseBencodedValue is a helper to find the end of a bencoded element.
+func parseBencodedValue(data []byte) (any, int, error) {
+	if len(data) == 0 {
+		return nil, 0, errors.New("cannot parse empty data")
 	}
 
-	infoVal, exists := dict["info"]
-	if !exists {
-		return nil, errors.New("no info dictionary found")
-	}
+	switch {
+	case data[0] >= '0' && data[0] <= '9': // String
+		colon := bytes.IndexByte(data, ':')
+		if colon == -1 {
+			return nil, 0, errors.New("string length delimiter not found")
+		}
+		length, err := strconv.Atoi(string(data[:colon]))
+		if err != nil {
+			return nil, 0, err
+		}
+		end := colon + 1 + length
+		if end > len(data) {
+			return nil, 0, errors.New("string length exceeds data bounds")
+		}
+		return nil, end, nil
 
-	encodedBytes, err := bencode.Encode(infoVal)
-	if err != nil {
-		return nil, fmt.Errorf("failed to re-encode info dictionary: %w", err)
-	}
+	case data[0] == 'i': // Integer
+		end := bytes.IndexByte(data, 'e')
+		if end == -1 {
+			return nil, 0, errors.New("integer not terminated")
+		}
+		return nil, end + 1, nil
 
-	return encodedBytes, nil
+	case data[0] == 'l': // List
+		pos := 1
+		for pos < len(data) {
+			if data[pos] == 'e' {
+				return nil, pos + 1, nil
+			}
+			_, n, err := parseBencodedValue(data[pos:])
+			if err != nil {
+				return nil, 0, err
+			}
+			pos += n
+		}
+		return nil, 0, errors.New("list not terminated")
+
+	case data[0] == 'd': // Dictionary
+		pos := 1
+		for pos < len(data) {
+			if data[pos] == 'e' {
+				return nil, pos + 1, nil
+			}
+			// Parse key
+			_, n, err := parseBencodedValue(data[pos:])
+			if err != nil {
+				return nil, 0, err
+			}
+			pos += n
+			// Parse value
+			_, n, err = parseBencodedValue(data[pos:])
+			if err != nil {
+				return nil, 0, err
+			}
+			pos += n
+		}
+		return nil, 0, errors.New("dictionary not terminated")
+
+	default:
+		return nil, 0, fmt.Errorf("invalid bencode type prefix: %c", data[0])
+	}
 }

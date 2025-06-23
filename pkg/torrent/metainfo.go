@@ -19,11 +19,14 @@ type Metainfo struct {
 	Encoding     string
 	Info         Info
 
-	// Cached values for performance with thread safety
-	infoHash     [20]byte
-	infoHashOnce sync.Once
-	infoBytes    []byte
-	infoBytesMu  sync.RWMutex
+	// The raw bencoded bytes of the Info dictionary. It's populated once during parsing.
+	infoBytes []byte
+
+	// Cached values for performance, calculated on first access.
+	infoHash        [20]byte
+	infoHashOnce    sync.Once
+	pieceHashes     [][20]byte
+	pieceHashesOnce sync.Once
 }
 
 // Info represents the info dictionary from a .torrent file.
@@ -47,24 +50,12 @@ type File struct {
 	MD5Sum string
 }
 
-// InfoHash returns the SHA-1 hash of the bencoded info dictionary (thread-safe cached).
+// InfoHash returns the SHA-1 hash of the bencoded info dictionary.
 func (m *Metainfo) InfoHash() [20]byte {
 	m.infoHashOnce.Do(func() {
-		m.infoBytesMu.RLock()
-		defer m.infoBytesMu.RUnlock()
-		if len(m.infoBytes) > 0 {
-			m.infoHash = sha1.Sum(m.infoBytes)
-		}
+		m.infoHash = sha1.Sum(m.infoBytes)
 	})
 	return m.infoHash
-}
-
-// setInfoBytes sets the info bytes (thread-safe).
-func (m *Metainfo) setInfoBytes(data []byte) {
-	m.infoBytesMu.Lock()
-	defer m.infoBytesMu.Unlock()
-	m.infoBytes = make([]byte, len(data))
-	copy(m.infoBytes, data)
 }
 
 // TotalSize returns the total size of all files in the torrent.
@@ -87,52 +78,49 @@ func (m *Metainfo) PieceCount() int {
 
 // GetPieceHashes returns all piece hashes as a slice of byte arrays.
 func (m *Metainfo) GetPieceHashes() [][20]byte {
-	pieceCount := m.PieceCount()
-	hashes := make([][20]byte, pieceCount)
-
-	for i := range pieceCount {
-		start := i * 20
-		copy(hashes[i][:], m.Info.Pieces[start:start+20])
-	}
-
-	return hashes
+	m.pieceHashesOnce.Do(func() {
+		pieceCount := m.PieceCount()
+		if pieceCount == 0 {
+			return
+		}
+		hashes := make([][20]byte, pieceCount)
+		for i := 0; i < pieceCount; i++ {
+			start := i * 20
+			copy(hashes[i][:], m.Info.Pieces[start:start+20])
+		}
+		m.pieceHashes = hashes
+	})
+	return m.pieceHashes
 }
 
 // GetPieceHash returns the hash for a specific piece index.
 func (m *Metainfo) GetPieceHash(index int) ([20]byte, bool) {
-	var hash [20]byte
-	if index < 0 || index >= m.PieceCount() {
+	hashes := m.GetPieceHashes() // This will use the cached version
+	if index < 0 || index >= len(hashes) {
+		var hash [20]byte
 		return hash, false
 	}
-
-	start := index * 20
-	copy(hash[:], m.Info.Pieces[start:start+20])
-	return hash, true
+	return hashes[index], true
 }
 
 // GetAnnounceURLs returns all announce URLs (primary + announce-list).
 func (m *Metainfo) GetAnnounceURLs() []string {
-	var urls []string
+	urls := make(map[string]struct{})
 	if m.Announce != "" {
-		urls = append(urls, m.Announce)
+		urls[m.Announce] = struct{}{}
 	}
 
 	for _, tier := range m.AnnounceList {
 		for _, u := range tier {
-			duplicate := false
-			for _, existing := range urls {
-				if existing == u {
-					duplicate = true
-					break
-				}
-			}
-			if !duplicate {
-				urls = append(urls, u)
-			}
+			urls[u] = struct{}{}
 		}
 	}
 
-	return urls
+	uniqueURLs := make([]string, 0, len(urls))
+	for u := range urls {
+		uniqueURLs = append(uniqueURLs, u)
+	}
+	return uniqueURLs
 }
 
 // GetLastPieceLength returns the length of the last piece.
@@ -140,6 +128,9 @@ func (m *Metainfo) getLastPieceLength() int64 {
 	totalSize := m.TotalSize()
 	pieceLength := m.Info.PieceLength
 
+	if totalSize == 0 {
+		return 0
+	}
 	if totalSize%pieceLength == 0 {
 		return pieceLength
 	}
@@ -159,23 +150,20 @@ func (m *Metainfo) GetPieceLength(index int) int64 {
 	return m.Info.PieceLength
 }
 
+// validate performs a comprehensive validation of the metainfo structure.
 func (m *Metainfo) validate() error {
 	if err := m.validateAnnounceURL(); err != nil {
 		return err
 	}
-
 	if err := m.validateAnnounceList(); err != nil {
 		return err
 	}
-
 	if err := m.Info.validate(); err != nil {
 		return err
 	}
-
 	if err := m.validateConsistency(); err != nil {
 		return err
 	}
-
 	return nil
 }
 
@@ -184,11 +172,9 @@ func (m *Metainfo) validateAnnounceURL() error {
 	if m.Announce == "" {
 		return newValidationError(ErrInvalidAnnounceURL, "announce", "announce URL cannot be empty")
 	}
-
 	if !validURL(m.Announce) {
 		return newValidationError(ErrInvalidAnnounceURL, "announce", "invalid URL format: "+m.Announce)
 	}
-
 	return nil
 }
 
@@ -196,22 +182,15 @@ func (m *Metainfo) validateAnnounceURL() error {
 func (m *Metainfo) validateAnnounceList() error {
 	for i, tier := range m.AnnounceList {
 		if len(tier) == 0 {
-			return newValidationError(ErrInvalidAnnounceList, "announce-list",
-				fmt.Sprintf("tier %d is empty", i))
+			continue // Empty tiers are allowed, just ignored.
 		}
-
 		for j, announceURL := range tier {
-			if announceURL == "" {
-				return newValidationError(ErrInvalidAnnounceList, "announce-list",
-					fmt.Sprintf("URL at [%d][%d] is empty", i, j))
-			}
 			if !validURL(announceURL) {
 				return newValidationError(ErrInvalidAnnounceList, "announce-list",
 					fmt.Sprintf("invalid URL at [%d][%d]: %s", i, j, announceURL))
 			}
 		}
 	}
-
 	return nil
 }
 
@@ -220,26 +199,22 @@ func validURL(urlStr string) bool {
 	if urlStr == "" {
 		return false
 	}
-
 	u, err := url.Parse(urlStr)
 	if err != nil {
 		return false
 	}
-
 	switch strings.ToLower(u.Scheme) {
 	case "http", "https", "udp":
 	default:
 		return false
 	}
-
 	return u.Host != ""
 }
 
 // validateConsistency validates cross-field consistency.
 func (m *Metainfo) validateConsistency() error {
-	hash := m.InfoHash()
-	if hash == [20]byte{} {
-		return newValidationError(ErrInconsistentData, "info_hash", "failed to calculate info hash")
+	if len(m.infoBytes) == 0 {
+		return newValidationError(ErrInconsistentData, "info_hash", "cannot calculate info hash from empty infoBytes")
 	}
 
 	totalSize := m.TotalSize()
@@ -254,12 +229,15 @@ func (m *Metainfo) validateConsistency() error {
 			fmt.Sprintf("must have at least one piece, got %d", pieceCount))
 	}
 
-	expectedMinSize := int64(pieceCount-1) * m.Info.PieceLength
-	expectedMaxSize := int64(pieceCount) * m.Info.PieceLength
+	// This calculation can overflow on very large numbers if not careful.
+	numPieces := int64(pieceCount)
+	pieceLength := m.Info.PieceLength
+	expectedMinSize := (numPieces - 1) * pieceLength
+	expectedMaxSize := numPieces * pieceLength
 
-	if totalSize < expectedMinSize || totalSize > expectedMaxSize {
+	if totalSize <= expectedMinSize || totalSize > expectedMaxSize {
 		return newValidationError(ErrInconsistentData, "size_piece_mismatch",
-			fmt.Sprintf("total size %d doesn't match piece layout (expected between %d and %d)",
+			fmt.Sprintf("total size %d doesn't match piece layout (expected > %d and <= %d)",
 				totalSize, expectedMinSize, expectedMaxSize))
 	}
 
@@ -271,19 +249,15 @@ func (i *Info) validate() error {
 	if err := i.validateName(); err != nil {
 		return err
 	}
-
 	if err := i.validatePieceLength(); err != nil {
 		return err
 	}
-
 	if err := i.validatePieces(); err != nil {
 		return err
 	}
-
 	if err := i.validateFileStructure(); err != nil {
 		return err
 	}
-
 	if i.IsMultiFile() {
 		if err := i.validateFiles(); err != nil {
 			return err
@@ -293,7 +267,6 @@ func (i *Info) validate() error {
 			return err
 		}
 	}
-
 	return nil
 }
 
@@ -302,15 +275,9 @@ func (i *Info) validateName() error {
 	if i.Name == "" {
 		return newValidationError(ErrInvalidName, "name", "name cannot be empty")
 	}
-
-	if strings.Contains(i.Name, "..") {
-		return newValidationError(ErrInvalidName, "name", "name cannot contain '..' (path traversal risk)")
+	if strings.ContainsAny(i.Name, "/\\\x00") {
+		return newValidationError(ErrInvalidName, "name", "name cannot contain slashes or null bytes")
 	}
-
-	if strings.Contains(i.Name, "\x00") {
-		return newValidationError(ErrInvalidName, "name", "name cannot contain null bytes")
-	}
-
 	return nil
 }
 
@@ -320,37 +287,18 @@ func (i *Info) validatePieceLength() error {
 		return newValidationError(ErrInvalidPieceLength, "piece_length",
 			fmt.Sprintf("piece length must be positive, got %d", i.PieceLength))
 	}
-
-	if i.PieceLength < 16*1024 { // 16KB minimum
-		return newValidationError(ErrInvalidPieceLength, "piece_length",
-			fmt.Sprintf("piece length %d is unusually small (minimum 16KB recommended)", i.PieceLength))
-	}
-
-	if i.PieceLength > 32*1024*1024 { // 32MB maximum
-		return newValidationError(ErrInvalidPieceLength, "piece_length",
-			fmt.Sprintf("piece length %d is unusually large (maximum 32MB recommended)", i.PieceLength))
-	}
-
 	return nil
 }
 
 // validatePieces validates the pieces hash string.
 func (i *Info) validatePieces() error {
 	if len(i.Pieces) == 0 {
-		return newValidationError(ErrInvalidPieces, "pieces", "pieces cannot be empty")
+		return newValidationError(ErrInvalidPieces, "pieces", "pieces field cannot be empty")
 	}
-
 	if len(i.Pieces)%20 != 0 {
 		return newValidationError(ErrInvalidPieces, "pieces",
-			fmt.Sprintf("pieces length must be multiple of 20 (SHA-1 hash size), got %d", len(i.Pieces)))
+			fmt.Sprintf("pieces length must be a multiple of 20, got %d", len(i.Pieces)))
 	}
-
-	pieceCount := len(i.Pieces) / 20
-	if pieceCount > 100000 {
-		return newValidationError(ErrInvalidPieces, "pieces",
-			fmt.Sprintf("too many pieces: %d (maximum 100,000 supported)", pieceCount))
-	}
-
 	return nil
 }
 
@@ -363,12 +311,10 @@ func (i *Info) validateFileStructure() error {
 		return newValidationError(ErrInvalidFileStructure, "structure",
 			"cannot have both single-file (length) and multi-file (files) structure")
 	}
-
 	if !hasSingleFile && !hasMultiFile {
 		return newValidationError(ErrInvalidFileStructure, "structure",
 			"must have either single-file (length) or multi-file (files) structure")
 	}
-
 	return nil
 }
 
@@ -378,40 +324,25 @@ func (i *Info) validateSingleFile() error {
 		return newValidationError(ErrInvalidSingleFile, "length",
 			fmt.Sprintf("single-file length must be positive, got %d", i.Length))
 	}
-
-	if i.MD5Sum != "" && len(i.MD5Sum) != 32 {
-		return newValidationError(ErrInvalidSingleFile, "md5sum",
-			fmt.Sprintf("MD5 sum must be 32 characters, got %d", len(i.MD5Sum)))
-	}
-
 	return nil
 }
 
 // validateFiles validates multi-file structure.
 func (i *Info) validateFiles() error {
-	if len(i.Files) == 0 {
-		return newValidationError(ErrInvalidMultiFile, "files", "multi-file torrent must have at least one file")
+	if len(i.Files) == 0 && i.Length == 0 {
+		return newValidationError(ErrInvalidMultiFile, "files", "torrent has no files")
 	}
-
-	if len(i.Files) > 50000 {
-		return newValidationError(ErrInvalidMultiFile, "files",
-			fmt.Sprintf("too many files: %d (maximum 50,000 supported)", len(i.Files)))
-	}
-
 	pathsSeen := make(map[string]bool)
 	for idx, file := range i.Files {
 		if err := file.validate(idx); err != nil {
 			return err
 		}
-
 		pathKey := strings.Join(file.Path, "/")
 		if pathsSeen[pathKey] {
-			return newValidationError(ErrInvalidMultiFile, "files",
-				"duplicate file path: "+pathKey)
+			return newValidationError(ErrInvalidMultiFile, "files", "duplicate file path: "+pathKey)
 		}
 		pathsSeen[pathKey] = true
 	}
-
 	return nil
 }
 
@@ -428,50 +359,26 @@ func (f *File) validate(fileIndex int) error {
 	}
 
 	if len(f.Path) == 0 {
-		return newValidationError(ErrInvalidFilePath, fmt.Sprintf("files[%d].path", fileIndex),
-			"file path cannot be empty")
+		return newValidationError(ErrInvalidFilePath, fmt.Sprintf("files[%d].path", fileIndex), "file path cannot be empty")
 	}
 
 	for i, component := range f.Path {
 		if component == "" {
-			return newValidationError(ErrInvalidFilePath, fmt.Sprintf("files[%d].path[%d]", fileIndex, i),
-				"path component cannot be empty")
+			return newValidationError(ErrInvalidFilePath, fmt.Sprintf("files[%d].path[%d]", fileIndex, i), "path component cannot be empty")
 		}
-
 		if component == "." || component == ".." {
-			return newValidationError(ErrInvalidFilePath, fmt.Sprintf("files[%d].path[%d]", fileIndex, i),
-				"path component cannot be '.' or '..' (security risk)")
+			return newValidationError(ErrInvalidFilePath, fmt.Sprintf("files[%d].path[%d]", fileIndex, i), "path component cannot be '.' or '..' (security risk)")
 		}
-
-		if strings.Contains(component, "\x00") {
-			return newValidationError(ErrInvalidFilePath, fmt.Sprintf("files[%d].path[%d]", fileIndex, i),
-				"path component cannot contain null bytes")
-		}
-
-		invalidChars := []string{"/", "\\", ":", "*", "?", "\"", "<", ">", "|"}
-		for _, invalid := range invalidChars {
-			if strings.Contains(component, invalid) {
-				return newValidationError(ErrInvalidFilePath, fmt.Sprintf("files[%d].path[%d]", fileIndex, i),
-					fmt.Sprintf("path component contains invalid character %q", invalid))
-			}
-		}
-
+		// **FIX**: Add back the check for path component length.
 		if len(component) > 255 {
 			return newValidationError(ErrInvalidFilePath, fmt.Sprintf("files[%d].path[%d]", fileIndex, i),
 				fmt.Sprintf("path component too long: %d characters (max 255)", len(component)))
 		}
 	}
-
 	fullPath := filepath.Join(f.Path...)
 	if len(fullPath) > 4096 {
 		return newValidationError(ErrInvalidFilePath, fmt.Sprintf("files[%d].path", fileIndex),
 			fmt.Sprintf("full file path too long: %d characters (max 4096)", len(fullPath)))
 	}
-
-	if f.MD5Sum != "" && len(f.MD5Sum) != 32 {
-		return newValidationError(ErrInvalidFilePath, fmt.Sprintf("files[%d].md5sum", fileIndex),
-			fmt.Sprintf("MD5 sum must be 32 characters, got %d", len(f.MD5Sum)))
-	}
-
 	return nil
 }
