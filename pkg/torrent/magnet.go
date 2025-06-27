@@ -43,6 +43,7 @@ func ParseMagnetLink(magnetURI string) (*MagnetLink, error) {
 	}
 
 	hashStr := strings.TrimPrefix(xt, "urn:btih:")
+
 	hashBytes, err := hex.DecodeString(hashStr)
 	if err != nil {
 		return nil, fmt.Errorf("invalid info hash: %w", err)

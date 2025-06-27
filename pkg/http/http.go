@@ -67,6 +67,7 @@ func IsDownloadable(urlStr string) bool {
 	defer resp.Body.Close()
 
 	finalURL := resp.Request.URL
+
 	return (finalURL.Scheme == "http" || finalURL.Scheme == "https") && isDownloadableContent(resp)
 }
 
@@ -86,6 +87,7 @@ func isDownloadableContent(resp *http.Response) bool {
 		if strings.HasPrefix(contentType, "text/html") {
 			return false
 		}
+
 		return true
 	}
 
@@ -106,6 +108,7 @@ func (c *Client) Head(ctx context.Context, urlStr string, headers map[string]str
 	}
 
 	logger.Debugf("Sending HEAD request to %s", urlStr)
+
 	resp, err := c.Do(req)
 	if err != nil {
 		logger.Errorf("HEAD request failed for %s: %v", urlStr, err)
@@ -113,6 +116,7 @@ func (c *Client) Head(ctx context.Context, urlStr string, headers map[string]str
 	}
 
 	logger.Debugf("HEAD response for %s: status=%d", urlStr, resp.StatusCode)
+
 	if resp.StatusCode >= 400 {
 		logger.Errorf("HEAD request returned error status %d for %s", resp.StatusCode, urlStr)
 		return nil, ClassifyHTTPError(resp.StatusCode)
@@ -139,6 +143,7 @@ func (c *Client) Range(ctx context.Context, urlStr string, start, end int64, hea
 	logger.Debugf("Set Range header: bytes=0-0 for %s", urlStr)
 
 	logger.Debugf("Sending Range GET request to %s", urlStr)
+
 	resp, err := c.Do(req)
 	if err != nil {
 		logger.Errorf("Range GET request failed for %s: %v", urlStr, err)
@@ -146,6 +151,7 @@ func (c *Client) Range(ctx context.Context, urlStr string, start, end int64, hea
 	}
 
 	logger.Debugf("Range GET response for %s: status=%d", urlStr, resp.StatusCode)
+
 	if resp.StatusCode >= 400 {
 		logger.Errorf("Range GET request returned error status %d for %s", resp.StatusCode, urlStr)
 		return nil, ClassifyHTTPError(resp.StatusCode)
@@ -171,14 +177,17 @@ func (c *Client) Get(ctx context.Context, urlStr string) (*http.Response, error)
 	}
 
 	logger.Debugf("Sending fallback GET request to %s", urlStr)
+
 	resp, err := c.Do(req)
 	if err != nil {
 		logger.Errorf("Fallback GET request failed: %v", err)
 		return nil, ClassifyError(err)
 	}
+
 	logger.Debugf("Closing body immediately for fallback GET request")
 
 	logger.Debugf("GET response for %s: status=%d", urlStr, resp.StatusCode)
+
 	if resp.StatusCode >= 400 {
 		logger.Errorf("GET request returned error status %d for %s", resp.StatusCode, urlStr)
 		return nil, ClassifyHTTPError(resp.StatusCode)
@@ -198,7 +207,6 @@ func generateRequest(ctx context.Context, urlStr, method string, headers map[str
 	}
 
 	req.Header.Set("User-Agent", DefaultUserAgent)
-	logger.Debugf("Set User-Agent: %s", DefaultUserAgent)
 
 	for key, value := range headers {
 		req.Header.Set(key, value)
@@ -216,6 +224,7 @@ func GetFilename(resp *http.Response) string {
 			if fName, ok := params["filename"]; ok {
 				return fName
 			}
+
 			if fName, ok := params["filename*"]; ok {
 				return fName
 			}
@@ -249,5 +258,6 @@ func ParseLastModified(header string) time.Time {
 	}
 
 	logger.Debugf("Parsed Last-Modified: %v", t)
+
 	return t
 }

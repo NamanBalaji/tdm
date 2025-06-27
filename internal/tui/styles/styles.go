@@ -6,14 +6,14 @@ import (
 
 // Catppuccin Mocha color palette.
 var (
-		// Base colors.
+	// Base colors.
 	Base     = lipgloss.Color("#1e1e2e")
 	Crust    = lipgloss.Color("#11111b")
 	Text     = lipgloss.Color("#cdd6f4")
 	Subtext0 = lipgloss.Color("#a6adc8")
 	Surface0 = lipgloss.Color("#313244")
 
-		// Accents.
+	// Accents.
 	Pink     = lipgloss.Color("#f5c2e7")
 	Mauve    = lipgloss.Color("#cba6f7")
 	Red      = lipgloss.Color("#f38ba8")
@@ -28,7 +28,7 @@ var (
 
 // Styles.
 var (
-		// Header with pink background.
+	// Header with pink background.
 	HeaderStyle = lipgloss.NewStyle().
 			Bold(true).
 			Foreground(Crust).

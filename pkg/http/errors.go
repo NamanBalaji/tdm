@@ -77,6 +77,7 @@ func ClassifyError(err error) error {
 	if errors.Is(err, io.EOF) {
 		return ErrUnexpectedEOF
 	}
+
 	if errors.Is(err, io.ErrUnexpectedEOF) {
 		return ErrUnexpectedEOF
 	}

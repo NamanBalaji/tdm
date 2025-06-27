@@ -3,113 +3,221 @@ package engine
 import (
 	"container/heap"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
-
-	"github.com/NamanBalaji/tdm/internal/logger"
 )
 
-// DownloadItem wraps a download ID with its priority for the heap.
-type DownloadItem struct {
+// QueueItem represents an item in the priority queue.
+type QueueItem struct {
 	ID       uuid.UUID
 	Priority int
-	index    int // heap index
+	AddedAt  time.Time
+	index    int
 }
 
-// downloadHeap implements heap.Interface as a max-heap by Priority.
-type downloadHeap []*DownloadItem
+// PriorityQueue implements a thread-safe priority queue.
+type PriorityQueue struct {
+	mu     sync.RWMutex
+	items  []*QueueItem
+	lookup map[uuid.UUID]*QueueItem
+}
 
-func (h downloadHeap) Len() int           { return len(h) }
-func (h downloadHeap) Less(i, j int) bool { return h[i].Priority > h[j].Priority }
-func (h downloadHeap) Swap(i, j int) {
-	h[i], h[j] = h[j], h[i]
-	h[i].index, h[j].index = i, j
+// NewPriorityQueue creates a new priority queue.
+func NewPriorityQueue() *PriorityQueue {
+	pq := &PriorityQueue{
+		items:  make([]*QueueItem, 0),
+		lookup: make(map[uuid.UUID]*QueueItem),
+	}
+	heap.Init(pq)
+
+	return pq
 }
-func (h *downloadHeap) Push(x any) {
-	item := x.(*DownloadItem)
-	item.index = len(*h)
-	*h = append(*h, item)
+
+func (pq *PriorityQueue) Len() int { return len(pq.items) }
+
+func (pq *PriorityQueue) Less(i, j int) bool {
+	if pq.items[i].Priority != pq.items[j].Priority {
+		return pq.items[i].Priority > pq.items[j].Priority
+	}
+
+	return pq.items[i].AddedAt.Before(pq.items[j].AddedAt)
 }
-func (h *downloadHeap) Pop() any {
-	old := *h
+
+func (pq *PriorityQueue) Swap(i, j int) {
+	pq.items[i], pq.items[j] = pq.items[j], pq.items[i]
+	pq.items[i].index = i
+	pq.items[j].index = j
+}
+
+func (pq *PriorityQueue) Push(x interface{}) {
+	n := len(pq.items)
+	item := x.(*QueueItem)
+	item.index = n
+	pq.items = append(pq.items, item)
+	pq.lookup[item.ID] = item
+}
+
+func (pq *PriorityQueue) Pop() interface{} {
+	old := pq.items
 	n := len(old)
 	item := old[n-1]
+	old[n-1] = nil
 	item.index = -1
-	*h = old[:n-1]
+	pq.items = old[0 : n-1]
+	delete(pq.lookup, item.ID)
+
 	return item
 }
 
-// QueueProcessor manages prioritized downloads up to maxConcurrent.
-type QueueProcessor struct {
-	mu            sync.Mutex
-	cond          *sync.Cond
-	heap          downloadHeap
-	startFn       func(uuid.UUID) error
-	maxConcurrent int
-	activeCount   int
-	active        map[uuid.UUID]struct{}
-}
+// Add adds a new item to the queue.
+func (pq *PriorityQueue) Add(id uuid.UUID, priority int) {
+	pq.mu.Lock()
+	defer pq.mu.Unlock()
 
-// NewQueueProcessor creates and starts the processor loop.
-func NewQueueProcessor(maxConcurrent int, startFn func(uuid.UUID) error) *QueueProcessor {
-	qp := &QueueProcessor{
-		heap:          make(downloadHeap, 0),
-		startFn:       startFn,
-		maxConcurrent: maxConcurrent,
-		active:        make(map[uuid.UUID]struct{}),
-	}
-	qp.cond = sync.NewCond(&qp.mu)
-
-	heap.Init(&qp.heap)
-
-	go qp.dispatchLoop()
-	return qp
-}
-
-// Enqueue adds a download ID with its priority into the queue.
-func (q *QueueProcessor) Enqueue(id uuid.UUID, priority int) {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-
-	if _, exists := q.active[id]; exists {
-		logger.Infof("Download %s already active, not enqueuing", id)
+	if _, exists := pq.lookup[id]; exists {
 		return
 	}
 
-	item := &DownloadItem{ID: id, Priority: priority}
-	heap.Push(&q.heap, item)
-	logger.Infof("Enqueued download %s (priority %d)", id, priority)
-	q.cond.Signal()
+	item := &QueueItem{
+		ID:       id,
+		Priority: priority,
+		AddedAt:  time.Now(),
+	}
+	heap.Push(pq, item)
 }
 
-// dispatchLoop pops items when slots free up and starts the workers.
-func (q *QueueProcessor) dispatchLoop() {
-	for {
-		q.mu.Lock()
-		for q.activeCount >= q.maxConcurrent || len(q.heap) == 0 {
-			q.cond.Wait()
+// Remove removes an item from the queue.
+func (pq *PriorityQueue) Remove(id uuid.UUID) {
+	pq.mu.Lock()
+	defer pq.mu.Unlock()
+
+	item, exists := pq.lookup[id]
+	if !exists {
+		return
+	}
+
+	heap.Remove(pq, item.index)
+}
+
+// Peek returns the highest priority item without removing it.
+func (pq *PriorityQueue) Peek() *QueueItem {
+	pq.mu.RLock()
+	defer pq.mu.RUnlock()
+
+	if len(pq.items) == 0 {
+		return nil
+	}
+
+	item := pq.items[0]
+
+	return &QueueItem{
+		ID:       item.ID,
+		Priority: item.Priority,
+		AddedAt:  item.AddedAt,
+	}
+}
+
+// PopHighest removes and returns the highest priority item.
+func (pq *PriorityQueue) PopHighest() *QueueItem {
+	pq.mu.Lock()
+	defer pq.mu.Unlock()
+
+	if len(pq.items) == 0 {
+		return nil
+	}
+
+	return heap.Pop(pq).(*QueueItem)
+}
+
+// GetLowestPriority returns the item with lowest priority.
+func (pq *PriorityQueue) GetLowestPriority(excludeIDs ...uuid.UUID) *QueueItem {
+	pq.mu.RLock()
+	defer pq.mu.RUnlock()
+
+	if len(pq.items) == 0 {
+		return nil
+	}
+
+	exclude := make(map[uuid.UUID]bool)
+	for _, id := range excludeIDs {
+		exclude[id] = true
+	}
+
+	var lowest *QueueItem
+
+	for _, item := range pq.items {
+		if exclude[item.ID] {
+			continue
 		}
 
-		item := heap.Pop(&q.heap).(*DownloadItem)
-
-		q.activeCount++
-		q.active[item.ID] = struct{}{}
-
-		id := item.ID
-		q.mu.Unlock()
-
-		go func(downloadID uuid.UUID) {
-			logger.Infof("Starting download %s", downloadID)
-			err := q.startFn(downloadID)
-			if err != nil {
-				logger.Errorf("Failed to start download %s: %v", downloadID, err)
-			}
-
-			q.mu.Lock()
-			q.activeCount--
-			delete(q.active, downloadID)
-			q.cond.Signal()
-			q.mu.Unlock()
-		}(id)
+		if lowest == nil || item.Priority < lowest.Priority ||
+			(item.Priority == lowest.Priority && item.AddedAt.After(lowest.AddedAt)) {
+			lowest = item
+		}
 	}
+
+	if lowest == nil {
+		return nil
+	}
+
+	return &QueueItem{
+		ID:       lowest.ID,
+		Priority: lowest.Priority,
+		AddedAt:  lowest.AddedAt,
+	}
+}
+
+// Size returns the number of items in the queue.
+func (pq *PriorityQueue) Size() int {
+	pq.mu.RLock()
+	defer pq.mu.RUnlock()
+
+	return len(pq.items)
+}
+
+// Clear removes all items from the queue.
+func (pq *PriorityQueue) Clear() {
+	pq.mu.Lock()
+	defer pq.mu.Unlock()
+
+	pq.items = make([]*QueueItem, 0)
+	pq.lookup = make(map[uuid.UUID]*QueueItem)
+	heap.Init(pq)
+}
+
+// Contains checks if an item exists in the queue.
+func (pq *PriorityQueue) Contains(id uuid.UUID) bool {
+	pq.mu.RLock()
+	defer pq.mu.RUnlock()
+
+	_, exists := pq.lookup[id]
+
+	return exists
+}
+
+// GetAll returns all items in priority order.
+func (pq *PriorityQueue) GetAll() []*QueueItem {
+	pq.mu.RLock()
+	defer pq.mu.RUnlock()
+
+	result := make([]*QueueItem, len(pq.items))
+	for i, item := range pq.items {
+		result[i] = &QueueItem{
+			ID:       item.ID,
+			Priority: item.Priority,
+			AddedAt:  item.AddedAt,
+		}
+	}
+
+	sorted := make([]*QueueItem, len(result))
+	copy(sorted, result)
+	tempPQ := &PriorityQueue{items: sorted}
+	heap.Init(tempPQ)
+
+	for i := 0; i < len(result); i++ {
+		result[i] = heap.Pop(tempPQ).(*QueueItem)
+	}
+
+	return result
 }

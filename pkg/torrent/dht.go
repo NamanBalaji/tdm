@@ -40,6 +40,7 @@ func NewDHT(port uint16) (*DHT, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	conn, err := net.ListenUDP("udp", addr)
 	if err != nil {
 		return nil, err
@@ -47,7 +48,7 @@ func NewDHT(port uint16) (*DHT, error) {
 
 	id, err := newID()
 	if err != nil {
-		return nil, fmt.Errorf("failed to generate node ID: %w", err)
+		return nil, fmt.Errorf("failed to generate node Id: %w", err)
 	}
 
 	dht := &DHT{
@@ -72,20 +73,24 @@ func NewDHT(port uint16) (*DHT, error) {
 // serve is the main loop that listens for and handles incoming UDP packets.
 func (d *DHT) serve() {
 	buf := make([]byte, 2048)
+
 	for {
 		select {
 		case <-d.stop:
 			return
 		default:
 			d.conn.SetReadDeadline(time.Now().Add(time.Second))
+
 			n, addr, err := d.conn.ReadFromUDP(buf)
 			if err != nil {
 				var netErr net.Error
 				if errors.As(err, &netErr) {
 					continue
 				}
+
 				return // Connection closed
 			}
+
 			go d.handleMessage(addr, buf[:n])
 		}
 	}
@@ -102,10 +107,12 @@ func (d *DHT) bootstrap() {
 	for _, addrStr := range bootstrapNodes {
 		go func(addr string) {
 			host, portStr, _ := net.SplitHostPort(addr)
+
 			ips, err := net.LookupIP(host)
 			if err != nil || len(ips) == 0 {
 				return
 			}
+
 			port, _ := strconv.Atoi(portStr)
 			udpAddr := &net.UDPAddr{IP: ips[0], Port: port}
 			d.findNode(udpAddr, d.nodeID, nil) // No callback needed for initial bootstrap
@@ -117,6 +124,7 @@ func (d *DHT) bootstrap() {
 func (d *DHT) AddTorrent(t *Torrent) {
 	d.torrentsMu.Lock()
 	defer d.torrentsMu.Unlock()
+
 	d.torrents[t.metainfo.InfoHash()] = t
 }
 
@@ -138,6 +146,7 @@ func (d *DHT) handleMessage(addr *net.UDPAddr, data []byte) {
 	if err != nil {
 		return
 	}
+
 	msg, ok := decoded.(map[string]any)
 	if !ok {
 		return
@@ -157,6 +166,7 @@ func (d *DHT) handleQuery(addr *net.UDPAddr, msg map[string]any) {
 	q := string(qBytes)
 	a, _ := msg["a"].(map[string]any)
 	idBytes, _ := a["id"].([]byte)
+
 	var id [20]byte
 	copy(id[:], idBytes)
 
@@ -165,7 +175,7 @@ func (d *DHT) handleQuery(addr *net.UDPAddr, msg map[string]any) {
 
 	tid, ok := msg["t"].([]byte)
 	if !ok {
-		return // No transaction ID, cannot reply.
+		return // No transaction Id, cannot reply.
 	}
 
 	switch q {
@@ -173,11 +183,13 @@ func (d *DHT) handleQuery(addr *net.UDPAddr, msg map[string]any) {
 		d.sendPong(addr, tid)
 	case "find_node":
 		targetBytes, _ := a["target"].([]byte)
+
 		var target [20]byte
 		copy(target[:], targetBytes)
 		d.sendFindNodeResponse(addr, tid, target)
 	case "get_peers":
 		infoHashBytes, _ := a["info_hash"].([]byte)
+
 		var infoHash [20]byte
 		copy(infoHash[:], infoHashBytes)
 		d.sendGetPeersResponse(addr, tid, infoHash)
@@ -185,12 +197,14 @@ func (d *DHT) handleQuery(addr *net.UDPAddr, msg map[string]any) {
 		infoHashBytes, _ := a["info_hash"].([]byte)
 		portVal, _ := a["port"].(int64)
 		tokenBytes, _ := a["token"].([]byte)
+
 		var infoHash [20]byte
 		copy(infoHash[:], infoHashBytes)
 
 		if d.validateToken(string(tokenBytes), addr.IP) {
 			d.storePeer(infoHash, Peer{IP: addr.IP, Port: uint16(portVal)})
 		}
+
 		d.sendAnnouncePeerResponse(addr, tid)
 	}
 }
@@ -277,6 +291,7 @@ func (d *DHT) sendGetPeersResponse(addr *net.UDPAddr, tid []byte, infoHash [20]b
 		for _, p := range peers {
 			values = append(values, p.Compact())
 		}
+
 		resp["values"] = values
 	} else {
 		nodes := d.routingTable.findClosest(infoHash, k)
@@ -297,12 +312,14 @@ func (d *DHT) storePeer(infoHash [20]byte, peer Peer) {
 	if len(d.peerStore[infoHash]) < 50 {
 		d.peerStore[infoHash] = append(d.peerStore[infoHash], peer)
 	}
+
 	d.storeMu.Unlock()
 
 	// Also notify the torrent if it exists
 	d.torrentsMu.RLock()
 	t, ok := d.torrents[infoHash]
 	d.torrentsMu.RUnlock()
+
 	if ok {
 		go t.addPeers([]Peer{peer})
 	}
@@ -314,6 +331,7 @@ func (d *DHT) send(addr *net.UDPAddr, msg map[string]any) {
 	if err != nil {
 		return
 	}
+
 	d.conn.WriteToUDP(data, addr)
 }
 
@@ -331,13 +349,17 @@ func newTransactionManager() *transactionManager {
 func (tm *transactionManager) new(cb func(map[string]any, error)) []byte {
 	tm.m.Lock()
 	defer tm.m.Unlock()
+
 	tm.id++
 	tid := make([]byte, 2)
 	binary.BigEndian.PutUint16(tid, tm.id)
+
 	if cb != nil {
 		tm.cbs[string(tid)] = cb
+
 		time.AfterFunc(15*time.Second, func() {
 			tm.m.Lock()
+
 			if cb, ok := tm.cbs[string(tid)]; ok {
 				delete(tm.cbs, string(tid))
 				tm.m.Unlock()
@@ -347,6 +369,7 @@ func (tm *transactionManager) new(cb func(map[string]any, error)) []byte {
 			}
 		})
 	}
+
 	return tid
 }
 
@@ -355,12 +378,16 @@ func (tm *transactionManager) handleResponse(msg map[string]any) {
 	if !ok {
 		return
 	}
+
 	tid := string(tidBytes)
+
 	tm.m.Lock()
+
 	cb, ok := tm.cbs[tid]
 	if ok {
 		delete(tm.cbs, tid)
 	}
+
 	tm.m.Unlock()
 
 	if !ok {
@@ -370,11 +397,13 @@ func (tm *transactionManager) handleResponse(msg map[string]any) {
 	if y, _ := msg["y"].([]byte); string(y) == "e" {
 		errList, _ := msg["e"].([]any)
 		errStr := "dht error"
+
 		if len(errList) > 1 {
 			if s, ok := errList[1].([]byte); ok {
 				errStr = string(s)
 			}
 		}
+
 		cb(nil, errors.New(errStr))
 	} else {
 		cb(msg, nil)
@@ -385,12 +414,14 @@ func (tm *transactionManager) handleResponse(msg map[string]any) {
 func (d *DHT) generateTokenSecret() (string, error) {
 	b := make([]byte, 20)
 	_, err := rand.Read(b)
+
 	return string(b), err
 }
 
 func (d *DHT) rotateTokenSecrets() {
 	ticker := time.NewTicker(10 * time.Minute)
 	defer ticker.Stop()
+
 	for {
 		select {
 		case <-d.stop:
@@ -408,9 +439,11 @@ func (d *DHT) generateToken(ip net.IP) string {
 	d.tokenMu.RLock()
 	secret := d.tokenSecrets[0]
 	d.tokenMu.RUnlock()
+
 	h := sha1.New()
 	h.Write(ip)
 	h.Write([]byte(secret))
+
 	return string(h.Sum(nil))
 }
 
@@ -423,6 +456,7 @@ func (d *DHT) validateToken(token string, ip net.IP) bool {
 	h1 := sha1.New()
 	h1.Write(ip)
 	h1.Write([]byte(secret1))
+
 	if token == string(h1.Sum(nil)) {
 		return true
 	}
@@ -430,6 +464,7 @@ func (d *DHT) validateToken(token string, ip net.IP) bool {
 	h2 := sha1.New()
 	h2.Write(ip)
 	h2.Write([]byte(secret2))
+
 	return token == string(h2.Sum(nil))
 }
 
@@ -472,10 +507,12 @@ func (l *lookup) run() {
 
 func (l *lookup) query(node *Node) {
 	l.mu.Lock()
+
 	if l.queried[node.Addr.String()] {
 		l.mu.Unlock()
 		return
 	}
+
 	l.queried[node.Addr.String()] = true
 	l.inflight++
 	l.mu.Unlock()
@@ -499,11 +536,13 @@ func (l *lookup) query(node *Node) {
 			for _, n := range newNodes {
 				l.dht.routingTable.Add(n)
 			}
+
 			l.nodes = append(l.nodes, newNodes...)
 		}
 
 		if peers, ok := r["values"].([]any); ok {
 			var foundPeers []Peer
+
 			for _, pAny := range peers {
 				if pStr, ok := pAny.(string); ok && len(pStr) == 6 {
 					foundPeers = append(foundPeers, Peer{
@@ -512,9 +551,11 @@ func (l *lookup) query(node *Node) {
 					})
 				}
 			}
+
 			l.dht.torrentsMu.RLock()
 			t, tFound := l.dht.torrents[l.target]
 			l.dht.torrentsMu.RUnlock()
+
 			if tFound {
 				t.addPeers(foundPeers)
 			}
@@ -525,7 +566,9 @@ func (l *lookup) query(node *Node) {
 		}
 
 		l.mu.Lock()
+
 		var sorted byDistance
+
 		sorted.target = l.target
 		sorted.nodes = l.nodes
 		sort.Sort(sorted)

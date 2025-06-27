@@ -18,6 +18,7 @@ func Decode(str []byte) (any, int, error) {
 		for j < len(str) && str[j] >= '0' && str[j] <= '9' {
 			j++
 		}
+
 		if j == len(str) || str[j] != ':' {
 			return nil, 0, ErrInvalidBencode
 		}
@@ -30,7 +31,9 @@ func Decode(str []byte) (any, int, error) {
 		if err != nil {
 			return nil, 0, ErrInvalidBencode
 		}
+
 		start := j + 1
+
 		end := start + n
 		if end > len(str) {
 			return nil, 0, ErrInvalidBencode
@@ -38,6 +41,7 @@ func Decode(str []byte) (any, int, error) {
 
 		result := make([]byte, n)
 		copy(result, str[start:end])
+
 		return result, end, nil
 
 	case str[0] == 'i':
@@ -50,43 +54,54 @@ func Decode(str []byte) (any, int, error) {
 			(start+1 < len(str) && string(str[start:start+2]) == "-0") {
 			return nil, 0, ErrInvalidBencode
 		}
+
 		j := start
 		for j < len(str) && str[j] != 'e' {
 			j++
 		}
+
 		if j == len(str) {
 			return nil, 0, ErrInvalidBencode
 		}
+
 		n, err := strconv.ParseInt(string(str[start:j]), 10, 64)
 		if err != nil {
 			return nil, 0, ErrInvalidBencode
 		}
+
 		return n, j + 1, nil
 
 	case str[0] == 'l':
 		pos := 1
+
 		var list []any
+
 		for {
 			if pos >= len(str) {
 				return nil, 0, ErrInvalidBencode
 			}
+
 			if str[pos] == 'e' {
 				return list, pos + 1, nil
 			}
+
 			item, n, err := Decode(str[pos:])
 			if err != nil {
 				return nil, 0, err
 			}
+
 			list = append(list, item)
 			pos += n
 		}
 	case str[0] == 'd':
 		decoded := make(map[string]any)
+
 		pos := 1
 		for {
 			if pos >= len(str) {
 				return nil, 0, ErrInvalidBencode
 			}
+
 			if str[pos] == 'e' {
 				return decoded, pos + 1, nil
 			}
@@ -95,12 +110,14 @@ func Decode(str []byte) (any, int, error) {
 			if err != nil {
 				return nil, 0, err
 			}
+
 			pos += n
 
 			keyBytes, ok := keyItem.([]byte)
 			if !ok {
 				return nil, 0, ErrInvalidBencode
 			}
+
 			key := string(keyBytes)
 
 			if pos >= len(str) {
@@ -111,6 +128,7 @@ func Decode(str []byte) (any, int, error) {
 			if err != nil {
 				return nil, 0, err
 			}
+
 			pos += n
 
 			if _, exists := decoded[key]; exists {

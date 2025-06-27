@@ -55,6 +55,7 @@ func (m *Metainfo) InfoHash() [20]byte {
 	m.infoHashOnce.Do(func() {
 		m.infoHash = sha1.Sum(m.infoBytes)
 	})
+
 	return m.infoHash
 }
 
@@ -68,6 +69,7 @@ func (m *Metainfo) TotalSize() int64 {
 	for _, file := range m.Info.Files {
 		total += file.Length
 	}
+
 	return total
 }
 
@@ -83,13 +85,16 @@ func (m *Metainfo) GetPieceHashes() [][20]byte {
 		if pieceCount == 0 {
 			return
 		}
+
 		hashes := make([][20]byte, pieceCount)
 		for i := range pieceCount {
 			start := i * 20
 			copy(hashes[i][:], m.Info.Pieces[start:start+20])
 		}
+
 		m.pieceHashes = hashes
 	})
+
 	return m.pieceHashes
 }
 
@@ -100,6 +105,7 @@ func (m *Metainfo) GetPieceHash(index int) ([20]byte, bool) {
 		var hash [20]byte
 		return hash, false
 	}
+
 	return hashes[index], true
 }
 
@@ -120,6 +126,7 @@ func (m *Metainfo) GetAnnounceURLs() []string {
 	for u := range urls {
 		uniqueURLs = append(uniqueURLs, u)
 	}
+
 	return uniqueURLs
 }
 
@@ -131,9 +138,11 @@ func (m *Metainfo) getLastPieceLength() int64 {
 	if totalSize == 0 {
 		return 0
 	}
+
 	if totalSize%pieceLength == 0 {
 		return pieceLength
 	}
+
 	return totalSize % pieceLength
 }
 
@@ -152,18 +161,26 @@ func (m *Metainfo) GetPieceLength(index int) int64 {
 
 // validate performs a comprehensive validation of the metainfo structure.
 func (m *Metainfo) validate() error {
-	if err := m.validateAnnounceURL(); err != nil {
+	err := m.validateAnnounceURL()
+	if err != nil {
 		return err
 	}
-	if err := m.validateAnnounceList(); err != nil {
+	err = m.validateAnnounceList()
+
+	if err != nil {
 		return err
 	}
-	if err := m.Info.validate(); err != nil {
+	err = m.Info.validate()
+
+	if err != nil {
 		return err
 	}
-	if err := m.validateConsistency(); err != nil {
+	err = m.validateConsistency()
+
+	if err != nil {
 		return err
 	}
+
 	return nil
 }
 
@@ -172,9 +189,11 @@ func (m *Metainfo) validateAnnounceURL() error {
 	if m.Announce == "" {
 		return newValidationError(ErrInvalidAnnounceURL, "announce", "announce URL cannot be empty")
 	}
+
 	if !validURL(m.Announce) {
 		return newValidationError(ErrInvalidAnnounceURL, "announce", "invalid URL format: "+m.Announce)
 	}
+
 	return nil
 }
 
@@ -184,6 +203,7 @@ func (m *Metainfo) validateAnnounceList() error {
 		if len(tier) == 0 {
 			continue // Empty tiers are allowed, just ignored.
 		}
+
 		for j, announceURL := range tier {
 			if !validURL(announceURL) {
 				return newValidationError(ErrInvalidAnnounceList, "announce-list",
@@ -191,6 +211,7 @@ func (m *Metainfo) validateAnnounceList() error {
 			}
 		}
 	}
+
 	return nil
 }
 
@@ -199,15 +220,18 @@ func validURL(urlStr string) bool {
 	if urlStr == "" {
 		return false
 	}
+
 	u, err := url.Parse(urlStr)
 	if err != nil {
 		return false
 	}
+
 	switch strings.ToLower(u.Scheme) {
 	case "http", "https", "udp":
 	default:
 		return false
 	}
+
 	return u.Host != ""
 }
 
@@ -246,27 +270,38 @@ func (m *Metainfo) validateConsistency() error {
 
 // Validate performs validation of the Info struct.
 func (i *Info) validate() error {
-	if err := i.validateName(); err != nil {
+	err := i.validateName()
+	if err != nil {
 		return err
 	}
-	if err := i.validatePieceLength(); err != nil {
+	err = i.validatePieceLength()
+
+	if err != nil {
 		return err
 	}
-	if err := i.validatePieces(); err != nil {
+	err = i.validatePieces()
+
+	if err != nil {
 		return err
 	}
-	if err := i.validateFileStructure(); err != nil {
+	err = i.validateFileStructure()
+
+	if err != nil {
 		return err
 	}
+
 	if i.IsMultiFile() {
-		if err := i.validateFiles(); err != nil {
+		err := i.validateFiles()
+		if err != nil {
 			return err
 		}
 	} else {
-		if err := i.validateSingleFile(); err != nil {
+		err := i.validateSingleFile()
+		if err != nil {
 			return err
 		}
 	}
+
 	return nil
 }
 
@@ -275,9 +310,11 @@ func (i *Info) validateName() error {
 	if i.Name == "" {
 		return newValidationError(ErrInvalidName, "name", "name cannot be empty")
 	}
+
 	if strings.ContainsAny(i.Name, "/\\\x00") {
 		return newValidationError(ErrInvalidName, "name", "name cannot contain slashes or null bytes")
 	}
+
 	return nil
 }
 
@@ -287,6 +324,7 @@ func (i *Info) validatePieceLength() error {
 		return newValidationError(ErrInvalidPieceLength, "piece_length",
 			fmt.Sprintf("piece length must be positive, got %d", i.PieceLength))
 	}
+
 	return nil
 }
 
@@ -295,10 +333,12 @@ func (i *Info) validatePieces() error {
 	if len(i.Pieces) == 0 {
 		return newValidationError(ErrInvalidPieces, "pieces", "pieces field cannot be empty")
 	}
+
 	if len(i.Pieces)%20 != 0 {
 		return newValidationError(ErrInvalidPieces, "pieces",
 			fmt.Sprintf("pieces length must be a multiple of 20, got %d", len(i.Pieces)))
 	}
+
 	return nil
 }
 
@@ -311,10 +351,12 @@ func (i *Info) validateFileStructure() error {
 		return newValidationError(ErrInvalidFileStructure, "structure",
 			"cannot have both single-file (length) and multi-file (files) structure")
 	}
+
 	if !hasSingleFile && !hasMultiFile {
 		return newValidationError(ErrInvalidFileStructure, "structure",
 			"must have either single-file (length) or multi-file (files) structure")
 	}
+
 	return nil
 }
 
@@ -324,6 +366,7 @@ func (i *Info) validateSingleFile() error {
 		return newValidationError(ErrInvalidSingleFile, "length",
 			fmt.Sprintf("single-file length must be positive, got %d", i.Length))
 	}
+
 	return nil
 }
 
@@ -332,17 +375,23 @@ func (i *Info) validateFiles() error {
 	if len(i.Files) == 0 && i.Length == 0 {
 		return newValidationError(ErrInvalidMultiFile, "files", "torrent has no files")
 	}
+
 	pathsSeen := make(map[string]bool)
+
 	for idx, file := range i.Files {
-		if err := file.validate(idx); err != nil {
+		err := file.validate(idx)
+		if err != nil {
 			return err
 		}
+
 		pathKey := strings.Join(file.Path, "/")
 		if pathsSeen[pathKey] {
 			return newValidationError(ErrInvalidMultiFile, "files", "duplicate file path: "+pathKey)
 		}
+
 		pathsSeen[pathKey] = true
 	}
+
 	return nil
 }
 
@@ -366,6 +415,7 @@ func (f *File) validate(fileIndex int) error {
 		if component == "" {
 			return newValidationError(ErrInvalidFilePath, fmt.Sprintf("files[%d].path[%d]", fileIndex, i), "path component cannot be empty")
 		}
+
 		if component == "." || component == ".." {
 			return newValidationError(ErrInvalidFilePath, fmt.Sprintf("files[%d].path[%d]", fileIndex, i), "path component cannot be '.' or '..' (security risk)")
 		}
@@ -375,10 +425,12 @@ func (f *File) validate(fileIndex int) error {
 				fmt.Sprintf("path component too long: %d characters (max 255)", len(component)))
 		}
 	}
+
 	fullPath := filepath.Join(f.Path...)
 	if len(fullPath) > 4096 {
 		return newValidationError(ErrInvalidFilePath, fmt.Sprintf("files[%d].path", fileIndex),
 			fmt.Sprintf("full file path too long: %d characters (max 4096)", len(fullPath)))
 	}
+
 	return nil
 }

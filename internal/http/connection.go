@@ -4,36 +4,30 @@ import (
 	"context"
 	"io"
 	"net/http"
-	"time"
 
 	httpPkg "github.com/NamanBalaji/tdm/pkg/http"
 )
 
-// Connection implements the Connection interface for HTTP.
-type Connection struct {
-	url         string
-	headers     map[string]string
-	client      *httpPkg.Client
-	resp        *http.Response
-	startByte   int64
-	endByte     int64
-	timeout     time.Duration
-	initialized bool
+type connection struct {
+	url       string
+	headers   map[string]string
+	client    *httpPkg.Client
+	response  *http.Response
+	startByte int64
+	endByte   int64
 }
 
-func NewConnection(url string, headers map[string]string, client *httpPkg.Client,
-	startByte, endByte int64) *Connection {
-	return &Connection{
+func newConnection(url string, headers map[string]string, client *httpPkg.Client, startByte, endByte int64) *connection {
+	return &connection{
 		url:       url,
-		headers:   copyHeaders(headers),
+		headers:   headers,
 		client:    client,
 		startByte: startByte,
 		endByte:   endByte,
-		timeout:   30 * time.Second,
 	}
 }
 
-func (c *Connection) Connect(ctx context.Context) error {
+func (c *connection) connect(ctx context.Context) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.url, http.NoBody)
 	if err != nil {
 		return httpPkg.ErrRequestCreation
@@ -68,77 +62,28 @@ func (c *Connection) Connect(ctx context.Context) error {
 		}
 	}
 
-	c.resp = resp
-	c.initialized = true
+	c.response = resp
 
 	return nil
 }
 
-func (c *Connection) Read(ctx context.Context, p []byte) (n int, err error) {
-	if !c.initialized || c.resp == nil {
-		if err := c.Connect(ctx); err != nil {
+func (c *connection) Read(ctx context.Context, p []byte) (n int, err error) {
+	if c.response == nil {
+		err := c.connect(ctx)
+		if err != nil {
 			return 0, err
 		}
 	}
 
 	// Read from the response body
-	return c.resp.Body.Read(p)
+	return c.response.Body.Read(p)
 }
 
-func (c *Connection) Close() error {
-	if c.resp != nil && c.resp.Body != nil {
-		err := c.resp.Body.Close()
-		c.resp = nil
-		c.initialized = false
-
+func (c *connection) close() error {
+	if c.response != nil && c.response.Body != nil {
+		err := c.response.Body.Close()
 		return err
 	}
+
 	return nil
-}
-
-func (c *Connection) IsAlive() bool {
-	return c.initialized && c.resp != nil
-}
-
-func (c *Connection) Reset(ctx context.Context) error {
-	if c.resp != nil {
-		c.resp.Body.Close()
-		c.resp = nil
-	}
-	c.initialized = false
-
-	// Reconnect
-	return c.Connect(ctx)
-}
-
-func (c *Connection) SetTimeout(timeout time.Duration) {
-	c.timeout = timeout
-}
-
-func (c *Connection) GetURL() string {
-	return c.url
-}
-
-func (c *Connection) GetHeaders() map[string]string {
-	return c.headers
-}
-
-// SetHeader sets a specific header value.
-func (c *Connection) SetHeader(key, value string) {
-	if c.headers == nil {
-		c.headers = make(map[string]string)
-	}
-	c.headers[key] = value
-}
-
-func copyHeaders(headers map[string]string) map[string]string {
-	if headers == nil {
-		return nil
-	}
-
-	headerCopy := make(map[string]string, len(headers))
-	for k, v := range headers {
-		headerCopy[k] = v
-	}
-	return headerCopy
 }

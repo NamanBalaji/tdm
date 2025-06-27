@@ -4,25 +4,31 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strconv"
 	"time"
 
 	"github.com/google/uuid"
 	"go.etcd.io/bbolt"
-
-	"github.com/NamanBalaji/tdm/internal/downloader"
 )
 
 const (
 	downloadsBucket = "downloads"
-	metadataBucket  = "metadata"
-	schemaVersion   = 1
 )
+
+type Object struct {
+	Type string          `json:"type"`
+	Data json.RawMessage `json:"data"`
+}
 
 var (
 	// ErrDownloadNotFound is returned when a download cannot be found.
 	ErrDownloadNotFound = errors.New("download not found")
 )
+
+type Download interface {
+	GetID() uuid.UUID
+	Type() string
+	MarshalJSON() ([]byte, error)
+}
 
 // BboltRepository implements the downloader.DownloadRepository interface.
 type BboltRepository struct {
@@ -44,7 +50,8 @@ func NewBboltRepository(dbPath string) (*BboltRepository, error) {
 		db: db,
 	}
 
-	if err := repo.initialize(); err != nil {
+	err = repo.initialize()
+	if err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -53,104 +60,78 @@ func NewBboltRepository(dbPath string) (*BboltRepository, error) {
 }
 
 // initialize sets up buckets and schema.
-func (r *BboltRepository) initialize() error {
-	return r.db.Update(func(tx *bbolt.Tx) error {
+func (b *BboltRepository) initialize() error {
+	return b.db.Update(func(tx *bbolt.Tx) error {
 		_, err := tx.CreateBucketIfNotExists([]byte(downloadsBucket))
 		if err != nil {
 			return fmt.Errorf("failed to create downloads bucket: %w", err)
 		}
 
-		metadataBucket, err := tx.CreateBucketIfNotExists([]byte(metadataBucket))
-		if err != nil {
-			return fmt.Errorf("failed to create metadata bucket: %w", err)
-		}
-
-		versionBytes := []byte(strconv.Itoa(schemaVersion))
-		err = metadataBucket.Put([]byte("schema_version"), versionBytes)
-		if err != nil {
-			return fmt.Errorf("failed to store schema version: %w", err)
-		}
-
 		return nil
 	})
 }
 
-// Save persists a download to storage.
-func (r *BboltRepository) Save(download *downloader.Download) error {
-	if download == nil {
-		return errors.New("cannot save nil download")
+// Save stores a download in the repository.
+func (b *BboltRepository) Save(d Download) error {
+	raw, err := d.MarshalJSON()
+	if err != nil {
+		return err
 	}
 
-	return r.db.Update(func(tx *bbolt.Tx) error {
-		bucket := tx.Bucket([]byte(downloadsBucket))
-		if bucket == nil {
-			return fmt.Errorf("bucket not found: %s", downloadsBucket)
-		}
+	buf, err := json.Marshal(&Object{
+		Type: d.Type(),
+		Data: raw,
+	})
+	if err != nil {
+		return err
+	}
 
-		data, err := json.Marshal(download)
-		if err != nil {
-			return fmt.Errorf("failed to marshal download: %w", err)
-		}
-
-		err = bucket.Put([]byte(download.ID.String()), data)
-		if err != nil {
-			return fmt.Errorf("failed to save download: %w", err)
-		}
-
-		return nil
+	return b.db.Update(func(tx *bbolt.Tx) error {
+		b := tx.Bucket([]byte(downloadsBucket))
+		return b.Put([]byte(d.GetID().String()), buf)
 	})
 }
 
-// FindAll retrieves all downloads.
-func (r *BboltRepository) FindAll() ([]*downloader.Download, error) {
-	var downloads []*downloader.Download
+// GetAll retrieves all downloads.
+func (b *BboltRepository) GetAll() (map[string]Object, error) {
+	downloads := make(map[string]Object)
 
-	err := r.db.View(func(tx *bbolt.Tx) error {
-		bucket := tx.Bucket([]byte(downloadsBucket))
-		if bucket == nil {
-			return fmt.Errorf("bucket not found: %s", downloadsBucket)
-		}
+	err := b.db.View(func(tx *bbolt.Tx) error {
+		b := tx.Bucket([]byte(downloadsBucket))
 
-		return bucket.ForEach(func(k, v []byte) error {
-			download := &downloader.Download{}
-
-			if err := json.Unmarshal(v, download); err != nil {
-				return fmt.Errorf("failed to unmarshal download: %w", err)
+		return b.ForEach(func(k, v []byte) error {
+			var obj Object
+			err := json.Unmarshal(v, &obj)
+			if err != nil {
+				return err
 			}
 
-			downloads = append(downloads, download)
+			downloads[string(k)] = obj
+
 			return nil
 		})
 	})
 
-	if err != nil {
-		return nil, err
-	}
-
-	return downloads, nil
+	return downloads, err
 }
 
 // Delete removes a download.
-func (r *BboltRepository) Delete(id uuid.UUID) error {
-	if id == uuid.Nil {
-		return errors.New("download ID cannot be empty")
-	}
-
-	return r.db.Update(func(tx *bbolt.Tx) error {
+func (b *BboltRepository) Delete(id string) error {
+	return b.db.Update(func(tx *bbolt.Tx) error {
 		bucket := tx.Bucket([]byte(downloadsBucket))
 		if bucket == nil {
 			return fmt.Errorf("bucket not found: %s", downloadsBucket)
 		}
 
-		if bucket.Get([]byte(id.String())) == nil {
-			return errors.New("download not found")
+		if bucket.Get([]byte(id)) == nil {
+			return ErrDownloadNotFound
 		}
 
-		return bucket.Delete([]byte(id.String()))
+		return bucket.Delete([]byte(id))
 	})
 }
 
 // Close closes the database.
-func (r *BboltRepository) Close() error {
-	return r.db.Close()
+func (b *BboltRepository) Close() error {
+	return b.db.Close()
 }

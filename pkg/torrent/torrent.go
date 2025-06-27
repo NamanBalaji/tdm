@@ -123,10 +123,12 @@ func NewTorrent(opts TorrentOptions) (*Torrent, error) {
 // Start begins downloading the torrent.
 func (t *Torrent) Start() error {
 	t.mu.Lock()
+
 	if t.state != TorrentStateIdle && t.state != TorrentStatePaused {
 		t.mu.Unlock()
 		return errors.New("torrent already active")
 	}
+
 	t.state = TorrentStateDownloading
 	t.mu.Unlock()
 
@@ -134,6 +136,7 @@ func (t *Torrent) Start() error {
 	go t.antiSnubLoop()
 	go t.choker.start()
 	go t.pexLoop()
+
 	if t.dht != nil {
 		go t.dhtLoop()
 	}
@@ -154,9 +157,11 @@ func (t *Torrent) Stop() error {
 	}
 
 	t.mu.Lock()
+
 	for _, peer := range t.peers {
 		peer.Close()
 	}
+
 	t.peers = make(map[string]*PeerConn)
 	t.mu.Unlock()
 
@@ -167,6 +172,7 @@ func (t *Torrent) Stop() error {
 func (t *Torrent) announceLoop() {
 	ticker := time.NewTicker(30 * time.Minute)
 	defer ticker.Stop()
+
 	t.announce("started")
 
 	for {
@@ -231,6 +237,7 @@ func (t *Torrent) pexLoop() {
 // broadcastPEX sends a PEX message with our current peer list to all PEX-enabled peers.
 func (t *Torrent) broadcastPEX() {
 	var currentPeers []Peer
+
 	for _, p := range t.getPeers() {
 		if p.listeningPort > 0 {
 			currentPeers = append(currentPeers, Peer{IP: p.peer.IP, Port: p.listeningPort})
@@ -269,6 +276,7 @@ func (t *Torrent) announce(event string) {
 			if err != nil {
 				return
 			}
+
 			t.addPeers(resp.Peers)
 		}(tracker)
 	}
@@ -300,6 +308,7 @@ func (t *Torrent) connectToPeer(peer Peer) {
 	if err != nil {
 		return
 	}
+
 	_, err = pc.Handshake()
 	if err != nil {
 		pc.Close()
@@ -307,13 +316,15 @@ func (t *Torrent) connectToPeer(peer Peer) {
 	}
 
 	if pc.supportsExtended {
-		if err := pc.SendExtendedHandshake(t.port); err != nil {
+		err := pc.SendExtendedHandshake(t.port)
+		if err != nil {
 			pc.Close()
 			return
 		}
 	}
 
 	peerKey := fmt.Sprintf("%s:%d", peer.IP, peer.Port)
+
 	t.mu.Lock()
 	t.peers[peerKey] = pc
 	t.mu.Unlock()
@@ -330,7 +341,8 @@ func (t *Torrent) handlePeer(pc *PeerConn, peerKey string) {
 		t.mu.Unlock()
 	}()
 
-	if err := pc.SendBitfield(t.pieceManager.verified); err != nil {
+	err := pc.SendBitfield(t.pieceManager.verified)
+	if err != nil {
 		return
 	}
 
@@ -350,7 +362,8 @@ func (t *Torrent) handlePeer(pc *PeerConn, peerKey string) {
 			continue
 		}
 
-		if err := t.handlePeerMessage(pc, msg); err != nil {
+		err = t.handlePeerMessage(pc, msg)
+		if err != nil {
 			return
 		}
 	}
@@ -366,8 +379,10 @@ func (t *Torrent) handlePeerMessage(pc *PeerConn, msg *Message) error {
 		if err != nil {
 			return err
 		}
+
 		pc.bitfield = bf
 		t.piecePicker.UpdateAvailability(bf)
+
 		if t.isPeerInteresting(bf) {
 			return pc.SendInterested()
 		}
@@ -385,11 +400,13 @@ func (t *Torrent) handlePeerMessage(pc *PeerConn, msg *Message) error {
 		if err != nil {
 			return err
 		}
+
 		pc.AddDownloaded(len(pieceMsg.Block))
 		t.mu.Lock()
 		t.stats.Downloaded += int64(len(pieceMsg.Block))
 		t.mu.Unlock()
 		pc.RemovePendingRequest(int(pieceMsg.Index), int(pieceMsg.Begin))
+
 		return t.handlePieceData(pieceMsg)
 
 	case MsgRequest:
@@ -397,11 +414,13 @@ func (t *Torrent) handlePeerMessage(pc *PeerConn, msg *Message) error {
 		if err != nil {
 			return err
 		}
+
 		go t.handleRequest(pc, req)
 
 	case MsgExtended:
 		return t.handleExtendedMessage(pc, msg.Payload)
 	}
+
 	return nil
 }
 
@@ -420,23 +439,29 @@ func (t *Torrent) handleExtendedMessage(pc *PeerConn, payload []byte) error {
 		if err != nil {
 			return err
 		}
+
 		pc.mu.Lock()
+
 		if pexID, ok := extHandshake.M["ut_pex"]; ok {
 			pc.utPexID = uint8(pexID)
 		}
+
 		if extHandshake.P > 0 {
 			pc.listeningPort = extHandshake.P
 		}
+
 		pc.mu.Unlock()
 
 	default:
 		pc.mu.RLock()
 		utPexID := pc.utPexID
 		pc.mu.RUnlock()
+
 		if utPexID != 0 && extendedID == utPexID {
 			return t.handlePexMessage(payload)
 		}
 	}
+
 	return nil
 }
 
@@ -446,19 +471,23 @@ func (t *Torrent) handlePexMessage(payload []byte) error {
 	if err != nil {
 		return fmt.Errorf("failed to decode PEX message: %w", err)
 	}
+
 	dict, ok := decoded.(map[string]any)
 	if !ok {
 		return errors.New("pex payload is not a dictionary")
 	}
 
 	var newPeers []Peer
+
 	if addedVal, ok := dict["added"]; ok {
 		if addedBytes, ok := addedVal.([]byte); ok {
 			if len(addedBytes)%6 != 0 {
 				return errors.New("invalid pex added length")
 			}
+
 			for i := 0; i < len(addedBytes); i += 6 {
 				ip := net.IP(addedBytes[i : i+4])
+
 				port := binary.BigEndian.Uint16(addedBytes[i+4 : i+6])
 				if port > 0 {
 					newPeers = append(newPeers, Peer{IP: ip, Port: port})
@@ -493,12 +522,14 @@ func (t *Torrent) handleRequest(pc *PeerConn, req *RequestMessage) {
 	if err != nil {
 		return
 	}
+
 	data, err := piece.ReadBlock(int(req.Begin), int(req.Length))
 	if err != nil {
 		return
 	}
 
-	if err := pc.SendPiece(pieceIndex, int(req.Begin), data); err == nil {
+	err = pc.SendPiece(pieceIndex, int(req.Begin), data)
+	if err == nil {
 		pc.AddUploaded(len(data))
 		t.mu.Lock()
 		t.stats.Uploaded += int64(len(data))
@@ -534,13 +565,17 @@ func (t *Torrent) requestPieces(pc *PeerConn) {
 
 		for _, block := range piece.GetMissingBlocks() {
 			pc.AddPendingRequest(pieceIndex, block.Offset, block.Length)
-			if err := pc.SendRequest(pieceIndex, block.Offset, block.Length); err != nil {
+
+			err := pc.SendRequest(pieceIndex, block.Offset, block.Length)
+			if err != nil {
 				pc.RemovePendingRequest(pieceIndex, block.Offset)
 				return
 			}
+
 			pc.pendingMu.Lock()
 			pipelineSize = len(pc.pendingRequests)
 			pc.pendingMu.Unlock()
+
 			if pipelineSize >= requestPipelineSize {
 				return
 			}
@@ -558,7 +593,9 @@ func (t *Torrent) handlePieceData(pieceMsg *PieceMessage) error {
 	if err != nil {
 		return err
 	}
-	if err := piece.AddBlock(int(pieceMsg.Begin), pieceMsg.Block); err != nil {
+
+	err = piece.AddBlock(int(pieceMsg.Begin), pieceMsg.Block)
+	if err != nil {
 		return err
 	}
 
@@ -572,6 +609,7 @@ func (t *Torrent) handlePieceData(pieceMsg *PieceMessage) error {
 				t.mu.Lock()
 				t.inEndgame = true
 				t.mu.Unlock()
+
 				go t.broadcastEndgameRequests()
 			}
 		} else {
@@ -579,6 +617,7 @@ func (t *Torrent) handlePieceData(pieceMsg *PieceMessage) error {
 			t.piecePicker.MarkFailed(int(pieceMsg.Index))
 		}
 	}
+
 	return nil
 }
 
@@ -614,13 +653,16 @@ func (t *Torrent) handleSnubbedPeers() {
 	for _, pc := range t.getPeers() {
 		if pc.IsSnubbed(snubTimeout) {
 			pc.pendingMu.Lock()
+
 			for pieceIndex, blocks := range pc.pendingRequests {
 				for offset := range blocks {
 					t.piecePicker.MarkFailed(pieceIndex)
 					delete(pc.pendingRequests[pieceIndex], offset)
 				}
+
 				delete(pc.pendingRequests, pieceIndex)
 			}
+
 			pc.pendingMu.Unlock()
 		}
 	}
@@ -644,10 +686,12 @@ func (t *Torrent) unchokePeer(p *PeerConn) { p.SendUnchoke() }
 func (t *Torrent) getPeers() []*PeerConn {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
+
 	peers := make([]*PeerConn, 0, len(t.peers))
 	for _, p := range t.peers {
 		peers = append(peers, p)
 	}
+
 	return peers
 }
 
@@ -656,6 +700,7 @@ func createTracker(announceURL string) (TrackerClient, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	switch u.Scheme {
 	case "http", "https":
 		return NewHTTPTrackerClient(announceURL), nil

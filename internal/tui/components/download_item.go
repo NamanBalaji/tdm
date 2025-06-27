@@ -2,58 +2,52 @@ package components
 
 import (
 	"fmt"
-	"strings"
-	"time"
-
 	"github.com/charmbracelet/lipgloss"
+	"strings"
 
-	"github.com/NamanBalaji/tdm/internal/common"
-	"github.com/NamanBalaji/tdm/internal/downloader"
+	"github.com/NamanBalaji/tdm/internal/engine"
+	"github.com/NamanBalaji/tdm/internal/status"
 	"github.com/NamanBalaji/tdm/internal/tui/styles"
 )
 
-// DownloadItem renders a single download entry given its stats, the available width, and selection state.
-func DownloadItem(stats downloader.Stats, width int, selected bool) string {
-	name := stats.Filename
-	maxNameLen := 30
+// DownloadItem renders a single download entry given its info, width, and selection state.
+func DownloadItem(info engine.DownloadInfo, width int, selected bool) string {
+	// --- Filename ---
+	// CORRECT: Get the filename from the DownloadInfo struct.
+	name := info.Filename
+
+	maxNameLen := 40
 	if len(name) > maxNameLen {
 		name = name[:maxNameLen-3] + "..."
 	}
 
-	var progressPercent float64
-	if stats.TotalSize > 0 {
-		progressPercent = float64(stats.Downloaded) / float64(stats.TotalSize)
-	}
-
-	if stats.Status == common.StatusCompleted {
-		progressPercent = 1.0
-	}
-
-	percent := fmt.Sprintf("%.1f%%", progressPercent*100)
-
+	// --- Status Label ---
 	var statusLabel string
-	switch stats.Status {
-	case common.StatusActive:
+
+	switch info.Status {
+	case status.Active:
 		statusLabel = styles.StatusActive.Render("● active")
-	case common.StatusQueued:
-		statusLabel = styles.StatusQueued.Render("○ queued")
-	case common.StatusPaused:
+	case status.Paused:
 		statusLabel = styles.StatusPaused.Render("❚❚ paused")
-	case common.StatusCompleted:
+	case status.Completed:
 		statusLabel = styles.StatusCompleted.Render("✔ completed")
-	case common.StatusCancelled:
+	case status.Cancelled:
 		statusLabel = styles.StatusCancelled.Render("⊘ cancelled")
-	case common.StatusFailed:
+	case status.Failed:
 		statusLabel = styles.StatusFailed.Render("✖ failed")
-	default:
-		statusLabel = styles.StatusFailed.Render("unknown")
+	default: // Queued
+		statusLabel = styles.StatusQueued.Render("○ queued")
 	}
 
+	// --- Progress Percentage ---
+	percentVal := info.Progress.GetPercentage()
+	percent := fmt.Sprintf("%.1f%%", percentVal)
+	percentStyle := lipgloss.NewStyle().Width(8).Align(lipgloss.Right)
+	formattedPercent := percentStyle.Render(percent)
+
+	// --- Line 1: Name, Status, Percentage ---
 	nameWidth := maxNameLen
 	statusWidth := lipgloss.Width(statusLabel)
-
-	percentStyle := lipgloss.NewStyle().Width(10).Align(lipgloss.Right)
-	formattedPercent := percentStyle.Render(percent)
 
 	remainingSpace := width - nameWidth - statusWidth - lipgloss.Width(formattedPercent) - 3
 	if remainingSpace < 2 {
@@ -61,92 +55,57 @@ func DownloadItem(stats downloader.Stats, width int, selected bool) string {
 	}
 
 	padding := strings.Repeat(" ", remainingSpace)
+	line1 := fmt.Sprintf("%-*s %s%s%s", nameWidth, name, statusLabel, padding, formattedPercent)
 
-	line1 := fmt.Sprintf("%-*s %s%s%s",
-		nameWidth,
-		name,
-		statusLabel,
-		padding,
-		formattedPercent)
-
+	// --- Line 2: Progress Bar ---
 	barWidth := width - 2
 	if barWidth < 10 {
 		barWidth = 10
 	}
 
-	bar := ProgressBar(barWidth, progressPercent, stats.Status)
+	bar := ProgressBar(barWidth, percentVal/100.0, info.Status)
 	line2 := styles.ListItemStyle.Render(bar)
 
-	var totalSize = stats.TotalSize
-	var downloaded = stats.Downloaded
-
-	if stats.Status == common.StatusCompleted && totalSize > 0 {
-		downloaded = totalSize
-	}
-
-	sizeInfo := fmt.Sprintf("%s / %s", formatSize(downloaded), formatSize(totalSize))
+	// --- Line 3: Size, Speed, ETA ---
+	sizeInfo := fmt.Sprintf("%s / %s", formatSize(info.Progress.GetDownloaded()), formatSize(info.Progress.GetTotalSize()))
 
 	speedInfo := "--/s"
-	if stats.Status == common.StatusActive {
-		speedInfo = formatSize(stats.Speed) + "/s"
+	if info.Status == status.Active {
+		// CORRECT: GetSpeedBPS now returns int64, so no conversion is needed.
+		speedInfo = formatSize(info.Progress.GetSpeedBPS()) + "/s"
 	}
 
 	eta := "--"
-	if stats.Status == common.StatusActive && stats.TimeRemaining > 0 {
-		eta = formatDuration(stats.TimeRemaining)
-	} else if stats.Status == common.StatusCompleted {
-		eta = "Completed"
+	if info.Status == status.Active && info.Progress.GetETA() != "unknown" {
+		eta = info.Progress.GetETA()
+	} else if info.Status == status.Completed {
+		eta = "Done"
 	}
 
-	info := fmt.Sprintf("%s  %s  ETA %s", sizeInfo, speedInfo, eta)
-	line3 := styles.ListItemStyle.Faint(true).Render(info)
+	infoLine := fmt.Sprintf("%s  %s  ETA: %s", sizeInfo, speedInfo, eta)
+	line3 := styles.ListItemStyle.Faint(true).Render(infoLine)
 
+	// --- Combine and Style ---
 	item := lipgloss.JoinVertical(lipgloss.Left, line1, line2, line3)
 	if selected {
 		return styles.SelectedItemStyle.Width(width).Render(item)
 	}
+
 	return styles.ListItemStyle.Width(width).Render(item)
 }
 
 // formatSize converts bytes into a human-readable string.
 func formatSize(bytes int64) string {
-	const unit = 1000
-	if bytes < 0 {
-		return "Unknown"
-	}
+	const unit = 1024
 	if bytes < unit {
 		return fmt.Sprintf("%d B", bytes)
 	}
-	d := float64(bytes)
-	exp := 0
-	for d >= unit {
-		d /= unit
+
+	div, exp := int64(unit), 0
+	for n := bytes / unit; n >= unit; n /= unit {
+		div *= unit
 		exp++
 	}
-	prefixes := "kMGTPE"
-	idx := exp - 1
-	if idx < 0 {
-		idx = 0
-	} else if idx >= len(prefixes) {
-		idx = len(prefixes) - 1
-	}
 
-	return fmt.Sprintf("%.1f %cB", d, prefixes[idx])
-}
-
-// formatDuration returns a more user-friendly duration string.
-func formatDuration(d time.Duration) string {
-	d = d.Round(time.Second)
-
-	if d < time.Minute {
-		return fmt.Sprintf("%ds", int(d.Seconds()))
-	} else if d < time.Hour {
-		m := d / time.Minute
-		s := (d % time.Minute) / time.Second
-		return fmt.Sprintf("%dm %ds", m, s)
-	} else {
-		h := d / time.Hour
-		m := (d % time.Hour) / time.Minute
-		return fmt.Sprintf("%dh %dm", h, m)
-	}
+	return fmt.Sprintf("%.1f %ciB", float64(bytes)/float64(div), "KMGTPE"[exp])
 }

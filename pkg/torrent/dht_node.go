@@ -24,10 +24,12 @@ type Node struct {
 	lastSeen time.Time
 }
 
-// newID generates a new random 20-byte ID using a cryptographically secure source.
+// newID generates a new random 20-byte Id using a cryptographically secure source.
 func newID() ([20]byte, error) {
 	var id [20]byte
+
 	_, err := rand.Read(id[:])
+
 	return id, err
 }
 
@@ -35,6 +37,7 @@ func newID() ([20]byte, error) {
 func distance(id1, id2 [20]byte) *big.Int {
 	n1 := new(big.Int).SetBytes(id1[:])
 	n2 := new(big.Int).SetBytes(id2[:])
+
 	return n1.Xor(n1, n2)
 }
 
@@ -55,6 +58,7 @@ func newRoutingTable(id [20]byte, dht *DHT) *routingTable {
 	for i := range nodeIDBits {
 		rt.buckets[i] = make([]*Node, 0, k)
 	}
+
 	return rt
 }
 
@@ -77,6 +81,7 @@ func (rt *routingTable) Add(node *Node) {
 			bucket = append(bucket[:i], bucket[i+1:]...)
 			rt.buckets[bucketIndex] = append([]*Node{node}, bucket...)
 			node.lastSeen = time.Now()
+
 			return
 		}
 	}
@@ -85,6 +90,7 @@ func (rt *routingTable) Add(node *Node) {
 	if len(bucket) < k {
 		rt.buckets[bucketIndex] = append([]*Node{node}, bucket...)
 		node.lastSeen = time.Now()
+
 		return
 	}
 
@@ -102,18 +108,20 @@ func (rt *routingTable) Add(node *Node) {
 					// Replace the oldest node with the new one
 					b[len(b)-1] = node
 				}
+
 				rt.mu.Unlock()
 			}
 		})
 	}
 }
 
-// findClosest returns a list of k nodes closest to the given target ID.
+// findClosest returns a list of k nodes closest to the given target Id.
 func (rt *routingTable) findClosest(targetID [20]byte, count int) []*Node {
 	rt.mu.RLock()
 	defer rt.mu.RUnlock()
 
 	var candidates byDistance
+
 	candidates.target = targetID
 
 	for _, bucket := range rt.buckets {
@@ -129,9 +137,10 @@ func (rt *routingTable) findClosest(targetID [20]byte, count int) []*Node {
 	return candidates.nodes[:count]
 }
 
-// getBucketIndex calculates the appropriate k-bucket index for a node ID.
+// getBucketIndex calculates the appropriate k-bucket index for a node Id.
 func (rt *routingTable) getBucketIndex(id [20]byte) int {
 	dist := distance(rt.nodeID, id)
+
 	l := dist.BitLen()
 	if l == 0 {
 		return 0
@@ -152,6 +161,7 @@ func (b byDistance) Swap(i, j int) { b.nodes[i], b.nodes[j] = b.nodes[j], b.node
 func (b byDistance) Less(i, j int) bool {
 	dist1 := distance(b.target, b.nodes[i].ID)
 	dist2 := distance(b.target, b.nodes[j].ID)
+
 	return dist1.Cmp(dist2) == -1
 }
 
@@ -162,10 +172,12 @@ func compactNodes(nodes []*Node) []byte {
 		if n.Addr.IP.To4() == nil {
 			continue // Skip IPv6 for now
 		}
+
 		buf = append(buf, n.ID[:]...)
 		buf = append(buf, n.Addr.IP.To4()...)
 		buf = binary.BigEndian.AppendUint16(buf, uint16(n.Addr.Port))
 	}
+
 	return buf
 }
 
@@ -174,7 +186,9 @@ func decodeCompactNodes(s []byte) ([]*Node, error) {
 	if len(s)%26 != 0 {
 		return nil, fmt.Errorf("compact node info has invalid length %d", len(s))
 	}
+
 	var nodes []*Node
+
 	for i := 0; i < len(s); i += 26 {
 		var id [20]byte
 		copy(id[:], s[i:i+20])
@@ -185,5 +199,6 @@ func decodeCompactNodes(s []byte) ([]*Node, error) {
 			Addr: &net.UDPAddr{IP: ip, Port: int(port)},
 		})
 	}
+
 	return nodes, nil
 }

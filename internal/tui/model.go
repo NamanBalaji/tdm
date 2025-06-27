@@ -1,7 +1,10 @@
 package tui
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -14,465 +17,472 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/NamanBalaji/tdm/internal/common"
-	"github.com/NamanBalaji/tdm/internal/downloader"
 	"github.com/NamanBalaji/tdm/internal/engine"
+	"github.com/NamanBalaji/tdm/internal/tui/components"
 	"github.com/NamanBalaji/tdm/internal/tui/styles"
+)
+
+type currentView int
+
+const (
+	viewList currentView = iota
+	viewAddURL
+	viewAddPriority
+	viewConfirmRemove
+	viewConfirmCancel
 )
 
 // Model is the main TUI application model.
 type Model struct {
-	engine        *engine.Engine
-	stats         []downloader.Stats
-	statsMap      map[string]int // Maps ID to index in stats slice to maintain order
-	selected      int
-	adding        bool
-	input         textinput.Model
-	confirmCancel bool
-	confirmRemove bool
+	engine *engine.Engine
+	view   currentView
+
+	list          listModel
+	urlInput      textinput.Model
+	priorityInput textinput.Model
 	spinner       spinner.Model
 	help          help.Model
 	keys          keyMap
+
 	width, height int
 	errMsg        string
+	successMsg    string
+	lastRefresh   time.Time
 	loaded        bool
-	lastRefresh   time.Time // Track when we last refreshed
+}
+
+type listModel struct {
+	downloads []engine.DownloadInfo
+	selected  int
 }
 
 type (
-	clearMsg       time.Time          // sent after delay to clear errMsg
-	tickMsg        time.Time          // sent periodically to refresh stats
-	statsUpdateMsg []downloader.Stats // stats update msg
+	clearMsg       struct{}
+	tickMsg        struct{}
+	downloadsMsg   []engine.DownloadInfo
+	downloadErrMsg struct{ error }
 )
 
-func clearErrMsgAfter() tea.Cmd {
-	return tea.Tick(3*time.Second, func(t time.Time) tea.Msg { return clearMsg(t) })
+func clearNotifications() tea.Cmd {
+	return tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
+		return clearMsg{}
+	})
 }
 
-// NewModel creates a new TUI model with the given engine.
+// NewModel creates a new TUI model.
 func NewModel(e *engine.Engine) Model {
-	// Text input for Add
-	ti := textinput.New()
-	ti.Placeholder = "Enter download URL"
-	ti.Focus()
+	urlInput := textinput.New()
+	urlInput.Placeholder = "Enter download URL"
+	urlInput.Focus()
+	urlInput.CharLimit = 1024
+	urlInput.Width = 60
+
+	priorityInput := textinput.New()
+	priorityInput.Placeholder = "Priority (1-10, default 5)"
+	priorityInput.CharLimit = 2
+	priorityInput.Width = 30
+	priorityInput.Validate = func(s string) error {
+		if s == "" {
+			return nil
+		}
+
+		p, err := strconv.Atoi(s)
+		if err != nil {
+			return errors.New("must be a number")
+		}
+
+		if p < 1 || p > 10 {
+			return errors.New("must be between 1 and 10")
+		}
+
+		return nil
+	}
 
 	sp := spinner.New()
 	sp.Spinner = spinner.Line
+	sp.Style = lipgloss.NewStyle().Foreground(styles.Pink)
 
 	return Model{
-		engine:      e,
-		input:       ti,
-		spinner:     sp,
-		help:        help.New(),
-		keys:        newKeyMap(),
-		statsMap:    make(map[string]int),
-		lastRefresh: time.Now().Add(-10 * time.Second), // Set to past time to ensure first refresh happens
+		engine:        e,
+		view:          viewList,
+		urlInput:      urlInput,
+		priorityInput: priorityInput,
+		spinner:       sp,
+		help:          help.New(),
+		keys:          newKeyMap(),
+		lastRefresh:   time.Now().Add(-10 * time.Second),
 	}
 }
 
-// Init initializes the model and starts periodic polling.
+// Init initializes the model.
 func (m Model) Init() tea.Cmd {
 	return tea.Batch(
-		m.refreshCmd(),
+		m.refreshDownloads(),
 		spinner.Tick,
 		tea.Every(500*time.Millisecond, func(t time.Time) tea.Msg {
-			return tickMsg(t)
+			return tickMsg{}
 		}),
 	)
 }
 
-// refreshCmd fetches current download stats while preserving order.
-func (m Model) refreshCmd() tea.Cmd {
+func (m Model) refreshDownloads() tea.Cmd {
 	return func() tea.Msg {
-		dls := m.engine.ListDownloads()
-
-		statsMap := make(map[string]int)
-		for id, pos := range m.statsMap {
-			statsMap[id] = pos
-		}
-
-		updatedStats := make([]downloader.Stats, len(m.stats))
-		newEntries := []downloader.Stats{}
-
-		for _, d := range dls {
-			stats := d.GetStats()
-			idStr := stats.ID.String()
-
-			if idx, exists := statsMap[idStr]; exists && idx < len(updatedStats) {
-				updatedStats[idx] = stats
-			} else {
-				newEntries = append(newEntries, stats)
-			}
-		}
-
-		var filteredStats []downloader.Stats
-		for _, s := range updatedStats {
-			if s.ID != uuid.Nil {
-				filteredStats = append(filteredStats, s)
-			}
-		}
-
-		filteredStats = append(filteredStats, newEntries...)
-
-		newStatsMap := make(map[string]int)
-		for i, s := range filteredStats {
-			newStatsMap[s.ID.String()] = i
-		}
-
-		return statsUpdateMsg(filteredStats)
+		return downloadsMsg(m.engine.GetAllDownloads())
 	}
 }
 
 // Update handles incoming messages.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var (
+		cmd  tea.Cmd
+		cmds []tea.Cmd
+	)
+
 	switch msg := msg.(type) {
-	case tea.KeyMsg:
-		if m.adding {
-			var cmd tea.Cmd
-			m.input, cmd = m.input.Update(msg)
-			switch msg.String() {
-			case "enter":
-				url := m.input.Value()
-				m.adding = false
-				m.input.SetValue("")
-				if url != "" {
-					id, err := m.engine.AddDownload(url, nil)
-					if err != nil {
-						m.errMsg = err.Error()
-					} else {
-						dl, _ := m.engine.GetDownload(id)
-						m.errMsg = fmt.Sprintf("Download %s added", dl.Filename)
-					}
-					return m, tea.Batch(m.refreshCmd(), clearErrMsgAfter())
-				}
-				return m, nil
-			case "esc":
-				m.adding = false
-				m.input.SetValue("")
-				return m, nil
-			}
-			return m, cmd
-		}
-
-		if m.confirmCancel {
-			switch msg.String() {
-			case "y", "enter":
-				if len(m.stats) > 0 && m.selected < len(m.stats) {
-					sel := m.stats[m.selected]
-					m.engine.CancelDownload(sel.ID, false)
-				}
-				m.confirmCancel = false
-				return m, m.refreshCmd()
-			case "n", "esc":
-				m.confirmCancel = false
-				return m, nil
-			}
-			return m, nil
-		}
-
-		if m.confirmRemove {
-			switch msg.String() {
-			case "y", "enter":
-				if len(m.stats) > 0 && m.selected < len(m.stats) {
-					sel := m.stats[m.selected]
-					m.engine.RemoveDownload(sel.ID, true)
-				}
-				m.confirmRemove = false
-				return m, m.refreshCmd()
-			case "n", "esc":
-				m.confirmRemove = false
-				return m, nil
-			}
-			return m, nil
-		}
-
-		switch {
-		case key.Matches(msg, m.keys.Quit):
-			return m, tea.Quit
-		case key.Matches(msg, m.keys.Add):
-			m.adding = true
-			return m, nil
-		case key.Matches(msg, m.keys.Pause):
-			if len(m.stats) == 0 || m.selected >= len(m.stats) {
-				return m, nil
-			}
-			sel := m.stats[m.selected]
-			m.engine.PauseDownload(sel.ID)
-			return m, m.refreshCmd()
-		case key.Matches(msg, m.keys.Resume):
-			if len(m.stats) == 0 || m.selected >= len(m.stats) {
-				return m, nil
-			}
-			sel := m.stats[m.selected]
-			err := m.engine.ResumeDownload(sel.ID)
-			if err != nil {
-				m.errMsg = fmt.Sprintf("Failed to resume download: %v", err)
-				return m, clearErrMsgAfter()
-			}
-			return m, m.refreshCmd()
-		case key.Matches(msg, m.keys.Cancel):
-			if len(m.stats) == 0 || m.selected >= len(m.stats) {
-				return m, nil
-			}
-			m.confirmCancel = true
-			return m, nil
-		case key.Matches(msg, m.keys.Remove):
-			if len(m.stats) == 0 || m.selected >= len(m.stats) {
-				return m, nil
-			}
-			m.confirmRemove = true
-			return m, nil
-		case key.Matches(msg, m.keys.Up):
-			if m.selected > 0 {
-				m.selected--
-			}
-			return m, nil
-		case key.Matches(msg, m.keys.Down):
-			if m.selected < len(m.stats)-1 {
-				m.selected++
-			}
-			return m, nil
-		}
-
 	case tea.WindowSizeMsg:
-		m.width = msg.Width
-		m.height = msg.Height
-		m.input.Width = m.width/2 - 4
-		return m, m.refreshCmd()
+		m.width, m.height = msg.Width, msg.Height
+		m.help.Width = msg.Width
+
 	case tickMsg:
-		now := time.Now()
-		if now.Sub(m.lastRefresh) < 500*time.Millisecond {
-			return m, tea.Tick(100*time.Millisecond, func(t time.Time) tea.Msg {
-				return tickMsg(t)
-			})
+		cmds = append(cmds, m.refreshDownloads())
+
+		return m, tea.Batch(
+			tea.Tick(500*time.Millisecond, func(t time.Time) tea.Msg { return tickMsg{} }),
+			tea.Batch(cmds...),
+		)
+
+	case downloadsMsg:
+		m.list.downloads = msg
+		if !m.loaded {
+			m.loaded = true
 		}
 
-		newModel := m
-		newModel.lastRefresh = now
-		return newModel, m.refreshCmd()
+		if m.list.selected >= len(m.list.downloads) {
+			m.list.selected = len(m.list.downloads) - 1
+		}
+
+		if m.list.selected < 0 {
+			m.list.selected = 0
+		}
+
+		return m, nil
+
+	case downloadErrMsg:
+		m.errMsg = msg.Error()
+		return m, clearNotifications()
 
 	case clearMsg:
-		newModel := m
-		newModel.errMsg = ""
-		return newModel, nil
+		m.errMsg = ""
+		m.successMsg = ""
+
+		return m, nil
 
 	case spinner.TickMsg:
-		var cmd tea.Cmd
-		newModel := m
-		newModel.spinner, cmd = m.spinner.Update(msg)
-		return newModel, cmd
+		m.spinner, cmd = m.spinner.Update(msg)
+		return m, cmd
 
-	case statsUpdateMsg:
-		newModel := m
-		newModel.stats = msg
-
-		newModel.statsMap = make(map[string]int)
-		for i, s := range newModel.stats {
-			newModel.statsMap[s.ID.String()] = i
+	case tea.KeyMsg:
+		// Global keybindings
+		if key.Matches(msg, m.keys.Quit) {
+			return m, tea.Quit
 		}
-
-		newModel.loaded = true
-		if newModel.selected >= len(newModel.stats) {
-			newModel.selected = len(newModel.stats) - 1
-			if newModel.selected < 0 {
-				newModel.selected = 0
-			}
-		}
-
-		hasActiveDownloads := false
-		for _, stat := range newModel.stats {
-			if stat.Status == common.StatusActive {
-				hasActiveDownloads = true
-				break
-			}
-		}
-
-		nextUpdateDelay := 1000 * time.Millisecond
-		if hasActiveDownloads {
-			nextUpdateDelay = 500 * time.Millisecond
-		}
-
-		return newModel, tea.Tick(nextUpdateDelay, func(t time.Time) tea.Msg {
-			return tickMsg(t)
-		})
 	}
-	return m, nil
+
+	switch m.view {
+	case viewList:
+		cmd = m.updateListView(msg)
+	case viewAddURL:
+		cmd = m.updateAddURLView(msg)
+	case viewAddPriority:
+		cmd = m.updateAddPriorityView(msg)
+	case viewConfirmRemove:
+		cmd = m.updateConfirmRemoveView(msg)
+	case viewConfirmCancel:
+		cmd = m.updateConfirmCancelView(msg)
+	}
+
+	cmds = append(cmds, cmd)
+
+	return m, tea.Batch(cmds...)
 }
 
-// View renders the complete UI with the updated layout.
+func (m *Model) getSelectedDownloadID() (uuid.UUID, bool) {
+	if len(m.list.downloads) > 0 && m.list.selected < len(m.list.downloads) {
+		return m.list.downloads[m.list.selected].ID, true
+	}
+
+	return uuid.Nil, false
+}
+
+func (m *Model) updateListView(msg tea.Msg) tea.Cmd {
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		switch {
+		case key.Matches(msg, m.keys.Up):
+			if m.list.selected > 0 {
+				m.list.selected--
+			}
+		case key.Matches(msg, m.keys.Down):
+			if m.list.selected < len(m.list.downloads)-1 {
+				m.list.selected++
+			}
+		case key.Matches(msg, m.keys.Add):
+			m.view = viewAddURL
+			m.urlInput.Focus()
+
+			return textinput.Blink
+		case key.Matches(msg, m.keys.Pause):
+			if id, ok := m.getSelectedDownloadID(); ok {
+				go m.engine.PauseDownload(id)
+			}
+		case key.Matches(msg, m.keys.Resume):
+			if id, ok := m.getSelectedDownloadID(); ok {
+				go m.engine.ResumeDownload(context.Background(), id)
+			}
+		case key.Matches(msg, m.keys.Cancel):
+			if _, ok := m.getSelectedDownloadID(); ok {
+				m.view = viewConfirmCancel
+			}
+		case key.Matches(msg, m.keys.Remove):
+			if _, ok := m.getSelectedDownloadID(); ok {
+				m.view = viewConfirmRemove
+			}
+		}
+	}
+
+	return nil
+}
+
+func (m *Model) updateAddURLView(msg tea.Msg) tea.Cmd {
+	var cmd tea.Cmd
+
+	m.urlInput, cmd = m.urlInput.Update(msg)
+
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		switch {
+		case key.Matches(msg, m.keys.Confirm):
+			if m.urlInput.Value() != "" {
+				m.view = viewAddPriority
+				m.priorityInput.Focus()
+
+				return textinput.Blink
+			}
+		case key.Matches(msg, m.keys.Back):
+			m.view = viewList
+			m.urlInput.SetValue("")
+		}
+	}
+
+	return cmd
+}
+
+func (m *Model) updateAddPriorityView(msg tea.Msg) tea.Cmd {
+	var cmd tea.Cmd
+
+	m.priorityInput, cmd = m.priorityInput.Update(msg)
+
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		switch {
+		case key.Matches(msg, m.keys.Confirm):
+			if m.priorityInput.Validate(m.priorityInput.Value()) == nil {
+				priority := 5 // Default priority
+
+				if m.priorityInput.Value() != "" {
+					p, _ := strconv.Atoi(m.priorityInput.Value())
+					priority = p
+				}
+
+				url := m.urlInput.Value()
+
+				go func() {
+					_, err := m.engine.AddDownload(context.Background(), url, priority)
+					if err != nil {
+						// This should be handled by a message from the engine
+					}
+				}()
+
+				m.successMsg = "Added download for: " + url
+				m.view = viewList
+				m.urlInput.SetValue("")
+				m.priorityInput.SetValue("")
+
+				return clearNotifications()
+			}
+		case key.Matches(msg, m.keys.Back):
+			m.view = viewAddURL
+			m.priorityInput.SetValue("")
+			m.urlInput.Focus()
+
+			return textinput.Blink
+		}
+	}
+
+	return cmd
+}
+
+func (m *Model) updateConfirmRemoveView(msg tea.Msg) tea.Cmd {
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		switch msg.String() {
+		case "y", "Y", "enter":
+			if id, ok := m.getSelectedDownloadID(); ok {
+				go m.engine.RemoveDownload(id)
+			}
+
+			m.view = viewList
+
+			return m.refreshDownloads()
+		case "n", "N", "esc":
+			m.view = viewList
+			return nil
+		}
+	}
+
+	return nil
+}
+
+func (m *Model) updateConfirmCancelView(msg tea.Msg) tea.Cmd {
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		switch msg.String() {
+		case "y", "Y", "enter":
+			if id, ok := m.getSelectedDownloadID(); ok {
+				go m.engine.CancelDownload(id)
+			}
+
+			m.view = viewList
+
+			return m.refreshDownloads()
+		case "n", "N", "esc":
+			m.view = viewList
+			return nil
+		}
+	}
+
+	return nil
+}
+
+// View renders the TUI.
 func (m Model) View() string {
-	if m.adding {
-		m.input.Width = 40
-
-		title := lipgloss.NewStyle().
-			Bold(true).
-			Foreground(styles.Pink).
-			Render("Add Download")
-
-		modal := lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			Padding(1, 2).
-			Width(50).
-			Render(title + "\n\n" + m.input.View())
-
-		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, modal)
+	if !m.loaded {
+		return fmt.Sprintf("\n  %s Loading downloads... Please wait.\n\n", m.spinner.View())
 	}
 
-	if m.confirmCancel {
-		msg := "Cancel this download? (y/n)"
-		dialog := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Padding(1, 2).
-			Width(lipgloss.Width(msg) + 4).Align(lipgloss.Center).
-			Render(msg)
-		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, dialog)
+	mainContent := ""
+
+	switch m.view {
+	case viewList:
+		// CORRECTED: Call the component function.
+		mainContent = components.RenderDownloadList(m.list.downloads, m.list.selected, m.width, m.height-10)
+	case viewAddURL, viewAddPriority:
+		mainContent = m.renderAddView()
+	case viewConfirmRemove:
+		mainContent = m.renderConfirmDialog("Are you sure you want to remove this download? (y/n)")
+	case viewConfirmCancel:
+		mainContent = m.renderConfirmDialog("Are you sure you want to cancel this download? (y/n)")
 	}
 
-	if m.confirmRemove {
-		msg := "Remove this download? (y/n)"
-		dialog := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Padding(1, 2).
-			Width(lipgloss.Width(msg) + 4).Align(lipgloss.Center).
-			Render(msg)
-		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, dialog)
+	header := renderHeader(&m)
+	footer := styles.FooterStyle.Width(m.width).Render(m.help.View(m.keys))
+	notification := m.renderNotification()
+
+	return lipgloss.JoinVertical(lipgloss.Left,
+		header,
+		notification,
+		mainContent,
+		footer,
+	)
+}
+
+func (m *Model) renderAddView() string {
+	var b strings.Builder
+
+	title := lipgloss.NewStyle().Bold(true).Foreground(styles.Pink).Render("Add New Download")
+	b.WriteString(title)
+	b.WriteString("\n\n" + m.urlInput.View())
+	b.WriteString("\n\n" + m.priorityInput.View())
+
+	err := m.priorityInput.Validate(m.priorityInput.Value())
+	if err != nil {
+		b.WriteString("\n" + styles.ErrorStyle.Render(err.Error()))
 	}
 
-	if m.loaded && len(m.stats) == 0 {
-		logo := []string{
-			"████████╗██████╗ ███╗   ███╗",
-			"╚══██╔══╝██╔══██╗████╗ ████║",
-			"   ██║   ██║  ██║██╔████╔██║",
-			"   ██║   ██║  ██║██║╚██╔╝██║",
-			"   ██║   ██████╔╝██║ ╚═╝ ██║",
-			"   ╚═╝   ╚═════╝ ╚═╝     ╚═╝",
-		}
-		colors := []lipgloss.Color{
-			styles.Blue, styles.Mauve, styles.Red,
-			styles.Peach, styles.Yellow, styles.Green,
-		}
-		var lines []string
-		for i, line := range logo {
-			styled := lipgloss.NewStyle().Foreground(colors[i]).Align(lipgloss.Center).Render(line)
-			lines = append(lines, styled)
-		}
-		subtitle := lipgloss.NewStyle().Foreground(styles.Text).Italic(true).Align(lipgloss.Center).Render("Terminal Download Manager")
+	b.WriteString("\n\n(esc to go back)")
 
-		instruction := lipgloss.NewStyle().Foreground(styles.Subtext0).Align(lipgloss.Center).Render("Press 'a' to add a download or 'q' to quit")
-		content := lipgloss.JoinVertical(lipgloss.Center, lines...)
-		content = lipgloss.JoinVertical(lipgloss.Center, content, "", subtitle, "", instruction)
-		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, content)
-	}
-
-	headerContent := renderHeader(m)
-
-	var errorBox string
-	if m.errMsg != "" {
-		errorBox = renderErrorBox(m)
-	}
-
-	padding := lipgloss.NewStyle().Height(1).Render("")
-
-	listHeight := m.height - 10
-	if listHeight < 10 {
-		listHeight = 10
-	}
-
-	bodyStyle := lipgloss.NewStyle().
-		Padding(0, 2).
-		Width(m.width)
-
-	body := bodyStyle.Render(RenderDownloadList(&m, m.width-4, listHeight))
-
-	// Footer with help
-	footerStyle := styles.FooterStyle.
-		Width(m.width).
+	dialog := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(styles.Pink).
 		Padding(1, 2).
-		Border(lipgloss.NormalBorder(), true, false, false, false).
-		BorderForeground(styles.Surface0)
+		Render(b.String())
 
-	footer := footerStyle.Render(m.help.View(m.keys))
-
-	parts := []string{headerContent}
-
-	if errorBox != "" {
-		parts = append(parts, errorBox)
-	} else {
-		parts = append(parts, padding)
-	}
-
-	parts = append(parts, padding, body, footer)
-
-	return lipgloss.JoinVertical(lipgloss.Top, parts...)
+	return lipgloss.Place(m.width, m.height-10, lipgloss.Center, lipgloss.Center, dialog)
 }
 
-// countStatus returns how many downloads match the given status.
-func (m Model) countStatus(status common.Status) int {
-	count := 0
-	for _, st := range m.stats {
-		if st.Status == status {
-			count++
-		}
-	}
-	return count
+func (m *Model) renderConfirmDialog(prompt string) string {
+	dialog := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(styles.Red).
+		Padding(1, 2).
+		Render(prompt)
+
+	return lipgloss.Place(m.width, m.height-10, lipgloss.Center, lipgloss.Center, dialog)
 }
 
-// renderHeader creates a nice header with logo and stats.
-func renderHeader(m Model) string {
+func (m *Model) renderNotification() string {
+	if m.errMsg != "" {
+		return styles.ErrorStyle.Width(m.width).Align(lipgloss.Center).Render(m.errMsg)
+	}
+
+	if m.successMsg != "" {
+		return styles.SuccessStyle.Width(m.width).Align(lipgloss.Center).Render(m.successMsg)
+	}
+
+	return lipgloss.NewStyle().Height(1).Render("") // Placeholder for alignment
+}
+
+func renderHeader(m *Model) string {
 	title := "TDM - Terminal Download Manager"
 	headerStyle := lipgloss.NewStyle().
 		Bold(true).
 		Foreground(styles.Crust).
 		Background(styles.Pink).
-		Padding(1, 2).
+		Padding(0, 1).
 		Width(m.width).
 		Align(lipgloss.Center)
-
 	header := headerStyle.Render(title)
 
-	total := len(m.stats)
-	active := m.countStatus(common.StatusActive)
-	paused := m.countStatus(common.StatusPaused)
-	failed := m.countStatus(common.StatusFailed)
-	completed := m.countStatus(common.StatusCompleted)
+	active := 0
+	paused := 0
+	completed := 0
+	failed := 0
+
+	for _, d := range m.list.downloads {
+		switch d.Status {
+		case 1: // Active
+			active++
+		case 2: // Paused
+			paused++
+		case 3: // Completed
+			completed++
+		case 4: // Failed
+			failed++
+		}
+	}
 
 	statsText := fmt.Sprintf(
-		"Total: %d   |   Active: %d   |   Paused: %d   |   Completed: %d   |   Failed: %d",
-		total, active, paused, completed, failed,
+		"Total: %d | Active: %d | Paused: %d | Completed: %d | Failed: %d",
+		len(m.list.downloads), active, paused, completed, failed,
 	)
 
 	statsStyle := lipgloss.NewStyle().
 		Foreground(styles.Text).
 		Background(styles.Surface0).
-		Padding(0, 2).
+		Padding(0, 1).
 		Width(m.width).
 		Align(lipgloss.Center)
-
 	stats := statsStyle.Render(statsText)
 
 	return lipgloss.JoinVertical(lipgloss.Top, header, stats)
-}
-
-// renderErrorBox renders the error/notification box centered under the stats.
-func renderErrorBox(m Model) string {
-	msgWidth := lipgloss.Width(m.errMsg) + 8
-	maxWidth := m.width - 4
-	if msgWidth > maxWidth {
-		msgWidth = maxWidth
-	}
-
-	var style lipgloss.Style
-	if strings.HasPrefix(m.errMsg, "Download") {
-		style = styles.SuccessStyle.
-			Width(msgWidth).
-			Padding(0, 2).
-			Align(lipgloss.Center)
-	} else {
-		style = styles.ErrorStyle.
-			Width(msgWidth).
-			Padding(0, 2).
-			Align(lipgloss.Center)
-	}
-
-	return lipgloss.NewStyle().
-		Width(m.width).
-		Align(lipgloss.Center).
-		Padding(1, 0).
-		Render(style.Render(m.errMsg))
 }

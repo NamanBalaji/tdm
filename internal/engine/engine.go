@@ -2,422 +2,476 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
 
-	"github.com/NamanBalaji/tdm/internal/common"
-	"github.com/NamanBalaji/tdm/internal/connection"
-	"github.com/NamanBalaji/tdm/internal/downloader"
+	"github.com/NamanBalaji/tdm/internal/http"
 	"github.com/NamanBalaji/tdm/internal/logger"
-	"github.com/NamanBalaji/tdm/internal/protocol"
+	"github.com/NamanBalaji/tdm/internal/progress"
 	"github.com/NamanBalaji/tdm/internal/repository"
+	"github.com/NamanBalaji/tdm/internal/status"
+	"github.com/NamanBalaji/tdm/internal/worker"
 )
 
 var (
-	ErrDownloadNotFound = errors.New("download not found")
-	ErrInvalidURL       = errors.New("invalid URL")
-	ErrDownloadExists   = errors.New("download already exists")
-	ErrEngineNotRunning = errors.New("engine is not running")
+	ErrWorkerNotFound    = errors.New("worker not found")
+	ErrInvalidPriority   = errors.New("priority must be between 1 and 10")
+	ErrDownloadNotPaused = errors.New("download is not paused")
 )
 
-// Engine orchestrates downloads, persistence and graceful shutdown.
+// DownloadError represents an error for a specific download.
+type DownloadError struct {
+	ID    uuid.UUID
+	Error error
+}
+
+// Engine manages multiple download workers.
 type Engine struct {
-	mu sync.RWMutex
-
-	downloads       map[uuid.UUID]*downloader.Download
-	protocolHandler *protocol.Handler
-	connectionPool  *connection.Pool
-	config          *Config
-	repository      *repository.BboltRepository
-	queueProcessor  *QueueProcessor
-
-	stopCh chan struct{}
-
-	wg            sync.WaitGroup
-	saveStateChan chan *downloader.Download
-	running       bool
+	mu            sync.RWMutex
+	repo          *repository.BboltRepository
+	maxConcurrent int
+	workers       map[uuid.UUID]worker.Worker
+	queue         *PriorityQueue
+	activeCount   int
+	shutdownOnce  sync.Once
+	shutdownDone  chan struct{}
+	errors        chan DownloadError
+	schedulerStop chan struct{}
 }
 
-// runTask spawns a helper goroutine tracked by the WaitGroup.
-func (e *Engine) runTask(task func()) {
-	e.wg.Add(1)
-	go func() {
-		defer e.wg.Done()
-		task()
-	}()
+// NewEngine creates a new download engine.
+func NewEngine(repo *repository.BboltRepository, maxConcurrent int) *Engine {
+	return &Engine{
+		repo:          repo,
+		maxConcurrent: maxConcurrent,
+		workers:       make(map[uuid.UUID]worker.Worker),
+		queue:         NewPriorityQueue(),
+		shutdownDone:  make(chan struct{}),
+		errors:        make(chan DownloadError),
+		schedulerStop: make(chan struct{}),
+	}
 }
 
-// New builds an Engine with sane defaults and no persisted state loaded yet.
-func New(cfg *Config) (*Engine, error) {
-	if cfg == nil {
-		cfg = DefaultConfig()
+// Start initializes the engine and loads existing downloads.
+func (e *Engine) Start(ctx context.Context) error {
+	downloads, err := e.repo.GetAll()
+	if err != nil {
+		return fmt.Errorf("failed to load downloads: %w", err)
 	}
 
-	if err := os.MkdirAll(cfg.DownloadDir, 0o755); err != nil {
-		return nil, fmt.Errorf("create download directory: %w", err)
-	}
-	if err := os.MkdirAll(cfg.TempDir, 0o755); err != nil {
-		return nil, fmt.Errorf("create temp directory: %w", err)
-	}
-
-	eng := &Engine{
-		downloads:       make(map[uuid.UUID]*downloader.Download),
-		protocolHandler: protocol.NewHandler(),
-		connectionPool:  connection.NewPool(cfg.MaxConnectionsPerHost, 5*time.Minute),
-		config:          cfg,
-		stopCh:          make(chan struct{}),
-		saveStateChan:   make(chan *downloader.Download, 5),
-	}
-	return eng, nil
-}
-
-// Init loads persisted downloads, starts background workers and marks the engine running.
-func (e *Engine) Init() error {
-	e.mu.Lock()
-	if e.running {
-		e.mu.Unlock()
-		return nil
-	}
-	e.running = true
-	e.mu.Unlock()
-
-	if err := e.initRepository(); err != nil {
-		return err
-	}
-	if err := e.loadDownloads(); err != nil {
-		return err
-	}
-
-	e.queueProcessor = NewQueueProcessor(e.config.MaxConcurrentDownloads, e.StartDownload)
-
-	e.runTask(e.startPeriodicSave)
-
-	e.runTask(func() {
-		for {
-			select {
-			case <-e.stopCh:
-				return
-			case d := <-e.saveStateChan:
-				_ = e.saveDownload(d)
+	for _, dl := range downloads {
+		switch dl.Type {
+		case "http":
+			var download http.Download
+			err := json.Unmarshal(dl.Data, &download)
+			if err != nil {
+				logger.Errorf("Failed to unmarshal download: %v", err)
+				continue
 			}
-		}
-	})
 
-	for _, dl := range e.downloads {
-		if dl.GetStatus() == common.StatusQueued {
-			e.queueProcessor.Enqueue(dl.ID, dl.Config.Priority)
-		}
-	}
-
-	logger.Infof("Engine initialised and running")
-	return nil
-}
-
-func (e *Engine) initRepository() error {
-	dir := e.config.ConfigDir
-	if dir == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return fmt.Errorf("home dir: %w", err)
-		}
-		dir = filepath.Join(home, ".tdm")
-	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("create config dir: %w", err)
-	}
-
-	repo, err := repository.NewBboltRepository(filepath.Join(dir, "tdm.db"))
-	if err != nil {
-		return fmt.Errorf("open db: %w", err)
-	}
-	e.repository = repo
-	return nil
-}
-
-func (e *Engine) loadDownloads() error {
-	if e.repository == nil {
-		return nil
-	}
-	dls, err := e.repository.FindAll()
-	if err != nil {
-		return fmt.Errorf("retrieve downloads: %w", err)
-	}
-
-	for _, dl := range dls {
-		if err := dl.RestoreFromSerialization(e.protocolHandler, e.saveStateChan); err != nil {
-			logger.Errorf("restore %s: %v", dl.ID, err)
-			continue
-		}
-		e.downloads[dl.ID] = dl
-	}
-	return nil
-}
-
-func (e *Engine) AddDownload(url string, cfg *common.Config) (uuid.UUID, error) {
-	if url == "" {
-		return uuid.Nil, ErrInvalidURL
-	}
-	e.mu.RLock()
-	if !e.running {
-		e.mu.RUnlock()
-		return uuid.Nil, ErrEngineNotRunning
-	}
-	e.mu.RUnlock()
-
-	e.mu.RLock()
-	for _, dl := range e.downloads {
-		if dl.URL == url {
-			st := dl.GetStatus()
-			if st == common.StatusActive || st == common.StatusPending || st == common.StatusPaused {
-				e.mu.RUnlock()
-				return uuid.Nil, ErrDownloadExists
+			if download.Status == status.Active {
+				download.Status = status.Paused
 			}
+
+			w, err := http.New(ctx, download.URL, &download, e.repo)
+			if err != nil {
+				logger.Errorf("Failed to create worker for download %s: %v", download.Id, err)
+				continue
+			}
+
+			e.addWorker(w)
+
+			go e.monitorWorker(w)
 		}
 	}
-	e.mu.RUnlock()
 
-	if cfg == nil {
-		cfg = &common.Config{}
-	}
-	if cfg.Directory == "" {
-		cfg.Directory = e.config.DownloadDir
-	}
-	if cfg.Connections <= 0 {
-		cfg.Connections = e.config.MaxConnectionsPerDownload
-	}
-	if cfg.MaxRetries <= 0 {
-		cfg.MaxRetries = e.config.MaxRetries
-	}
-	if cfg.RetryDelay <= 0 {
-		cfg.RetryDelay = time.Duration(e.config.RetryDelay) * time.Second
-	}
-
-	dl, err := downloader.NewDownload(context.Background(), url, e.protocolHandler, cfg, e.saveStateChan)
-	if err != nil {
-		return uuid.Nil, err
-	}
-
-	e.mu.Lock()
-	e.downloads[dl.ID] = dl
-	e.mu.Unlock()
-
-	select {
-	case e.saveStateChan <- dl:
-	default:
-	}
-
-	if e.config.AutoStartDownloads {
-		dl.SetStatus(common.StatusQueued)
-		e.queueProcessor.Enqueue(dl.ID, dl.Config.Priority)
-	}
-
-	return dl.ID, nil
-}
-
-// StartDownload is called by the queue processor; blocks until the download finishes.
-func (e *Engine) StartDownload(id uuid.UUID) error {
-	dl, err := e.GetDownload(id)
-	if err != nil {
-		return err
-	}
-
-	select {
-	case e.saveStateChan <- dl:
-	default:
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	go func() {
-		select {
-		case <-e.stopCh:
-			cancel()
-		case <-ctx.Done():
-		}
-	}()
-
-	dl.Start(ctx, e.connectionPool)
-
-	select {
-	case e.saveStateChan <- dl:
-	default:
-	}
+	go e.scheduler(ctx)
 
 	return nil
 }
 
-func (e *Engine) PauseDownload(id uuid.UUID) error {
-	dl, err := e.GetDownload(id)
-	if err != nil {
-		return err
-	}
-	dl.Stop(common.StatusPaused, false)
-	return nil
-}
-
-func (e *Engine) CancelDownload(id uuid.UUID, remove bool) error {
-	dl, err := e.GetDownload(id)
-	if err != nil {
-		return err
-	}
-	dl.Stop(common.StatusCancelled, remove)
-	return nil
-}
-
-func (e *Engine) ResumeDownload(id uuid.UUID) error {
-	dl, err := e.GetDownload(id)
-	if err != nil {
-		return err
-	}
-	if !dl.Resume(context.Background()) {
-		return nil // nothing to do
-	}
-	dl.SetStatus(common.StatusQueued)
-	e.queueProcessor.Enqueue(dl.ID, dl.Config.Priority)
-	return nil
-}
-
-// RemoveDownload removes a download from the manager.
-func (e *Engine) RemoveDownload(id uuid.UUID, removeFiles bool) error {
-	logger.Infof("Removing download %s (removeFiles: %v)", id, removeFiles)
-
-	e.mu.RLock()
-	if !e.running {
-		e.mu.RUnlock()
-		return ErrEngineNotRunning
-	}
-	e.mu.RUnlock()
-
-	download, err := e.GetDownload(id)
-	if err != nil {
-		return fmt.Errorf("failed to get download: %w", err)
-	}
-
-	download.Remove() // stops & cleans chunks
-	if err := e.deleteDownload(id); err != nil {
-		return fmt.Errorf("failed to delete download: %w", err)
-	}
-	logger.Infof("Download %s removed successfully", id)
-	return nil
-}
-
-// Shutdown broadcasts stop, pauses active downloads, waits for workers and flushes state.
-func (e *Engine) Shutdown() error {
-	e.mu.Lock()
-	if !e.running {
-		e.mu.Unlock()
-		return nil
-	}
-	e.running = false
-	close(e.stopCh)
-
-	activeIDs := make([]uuid.UUID, 0)
-	for id, dl := range e.downloads {
-		if dl.GetStatus() == common.StatusActive {
-			activeIDs = append(activeIDs, id)
-		}
-	}
-	e.mu.Unlock()
-
-	for _, id := range activeIDs {
-		_ = e.PauseDownload(id)
-	}
-
-	done := make(chan struct{})
-	go func() {
-		e.wg.Wait()
-		close(done)
-	}()
-
-	select {
-	case <-done:
-	case <-time.After(30 * time.Second):
-		logger.Warnf("shutdown timeout – workers still running")
-	}
-
-	e.saveAllDownloads()
-	if e.connectionPool != nil {
-		e.connectionPool.CloseAll()
-	}
-	if e.repository != nil {
-		_ = e.repository.Close()
-	}
-	return nil
-}
-
-func (e *Engine) startPeriodicSave() {
-	ticker := time.NewTicker(time.Duration(e.config.SaveInterval) * time.Second)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-e.stopCh:
-			return
-		case <-ticker.C:
-			e.saveAllDownloads()
-		}
-	}
-}
-
-func (e *Engine) saveDownload(dl *downloader.Download) error {
-	if e.repository == nil {
-		return errors.New("repository not initialised")
-	}
-	return e.repository.Save(dl)
-}
-
-func (e *Engine) saveAllDownloads() {
-	if e.repository == nil {
-		return
-	}
-	e.mu.RLock()
-	list := make([]*downloader.Download, 0, len(e.downloads))
-	for _, dl := range e.downloads {
-		list = append(list, dl)
-	}
-	e.mu.RUnlock()
-
-	for _, dl := range list {
-		_ = e.saveDownload(dl)
-	}
-}
-
-// deleteDownload removes the download from the in‑memory map and repository.
-func (e *Engine) deleteDownload(id uuid.UUID) error {
+// addWorker adds a worker to the engine.
+func (e *Engine) addWorker(w worker.Worker) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	if e.repository != nil {
-		if err := e.repository.Delete(id); err != nil && !errors.Is(err, repository.ErrDownloadNotFound) {
-			return fmt.Errorf("failed to delete from repository: %w", err)
+	e.workers[w.GetID()] = w
+}
+
+// scheduler manages the download queue and active downloads.
+func (e *Engine) scheduler(ctx context.Context) {
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-e.schedulerStop:
+			return
+		case <-ticker.C:
+			e.processQueue(ctx)
 		}
 	}
-	delete(e.downloads, id)
+}
+
+// monitorWorker monitors a single worker for completion.
+func (e *Engine) monitorWorker(w worker.Worker) {
+	select {
+	case err := <-w.Done():
+		e.handleWorkerDone(w.GetID(), err)
+	}
+}
+
+// handleWorkerDone handles cleanup when a worker finishes.
+func (e *Engine) handleWorkerDone(workerID uuid.UUID, err error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	w, exists := e.workers[workerID]
+	if !exists {
+		return
+	}
+
+	s := w.GetStatus()
+
+	if s == status.Completed || s == status.Failed || s == status.Cancelled {
+		if e.activeCount > 0 {
+			e.activeCount--
+		}
+
+		e.queue.Remove(workerID)
+
+		// Send error if any
+		if err != nil {
+			select {
+			case e.errors <- DownloadError{ID: workerID, Error: err}:
+			default:
+				logger.Errorf("Download %s failed: %v", workerID, err)
+			}
+		}
+	}
+}
+
+func (e *Engine) processQueue(ctx context.Context) {
+	for {
+		e.mu.Lock()
+
+		if e.queue.Size() == 0 {
+			e.mu.Unlock()
+			return
+		}
+
+		item := e.queue.PopHighest()
+		if item == nil {
+			e.mu.Unlock()
+			return
+		}
+
+		w, ok := e.workers[item.ID]
+		if !ok || w.GetStatus() == status.Active {
+			e.mu.Unlock()
+			continue
+		}
+
+		if e.activeCount < e.maxConcurrent {
+			e.activeCount++
+			e.mu.Unlock()
+
+			err := w.Start(ctx)
+			if err != nil && !errors.Is(err, http.ErrAlreadyStarted) {
+				logger.Errorf("Failed to start download %s: %v", item.ID, err)
+				e.mu.Lock()
+				e.activeCount--
+				e.mu.Unlock()
+			} else {
+				go e.monitorWorker(w)
+			}
+
+			continue
+		}
+
+		var lowest worker.Worker
+
+		lowPrio := 11
+		for _, aw := range e.workers {
+			if aw.GetStatus() == status.Active && aw.GetPriority() < lowPrio {
+				lowest, lowPrio = aw, aw.GetPriority()
+			}
+		}
+
+		// No one weaker → re-queue and quit
+		if lowest == nil || lowPrio >= item.Priority {
+			e.queue.Add(item.ID, item.Priority)
+			e.mu.Unlock()
+
+			return
+		}
+
+		e.activeCount--
+		e.mu.Unlock()
+
+		_ = lowest.Pause()
+
+		w.Queue()
+
+		e.mu.Lock()
+		e.queue.Add(lowest.GetID(), lowPrio)
+		e.activeCount++
+		e.mu.Unlock()
+
+		err := w.Start(ctx)
+		if err != nil && !errors.Is(err, http.ErrAlreadyStarted) {
+			logger.Errorf("Failed to start download %s: %v", item.ID, err)
+			e.mu.Lock()
+			e.activeCount--
+			e.mu.Unlock()
+		} else {
+			go e.monitorWorker(w)
+		}
+	}
+}
+
+// AddDownload adds a new download to the engine.
+func (e *Engine) AddDownload(ctx context.Context, url string, priority int, opts ...http.ConfigOption) (uuid.UUID, error) {
+	if priority < 1 || priority > 10 {
+		return uuid.Nil, ErrInvalidPriority
+	}
+
+	opts = append(opts, http.WithPriority(priority))
+
+	w, err := worker.GetWorker(ctx, url, e.repo)
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("failed to create worker: %w", err)
+	}
+
+	id := w.GetID()
+
+	e.mu.Lock()
+	e.workers[id] = w
+	e.queue.Add(id, priority)
+	e.mu.Unlock()
+
+	go e.monitorWorker(w)
+
+	e.processQueue(ctx)
+
+	return id, nil
+}
+
+// PauseDownload pauses a download.
+func (e *Engine) PauseDownload(id uuid.UUID) error {
+	e.mu.RLock()
+	w, exists := e.workers[id]
+	e.mu.RUnlock()
+
+	if !exists {
+		return ErrWorkerNotFound
+	}
+
+	err := w.Pause()
+	if err != nil {
+		return err
+	}
+
+	e.mu.Lock()
+	e.queue.Remove(id)
+
+	if w.GetStatus() == status.Paused && e.activeCount > 0 {
+		e.activeCount--
+	}
+
+	e.mu.Unlock()
+
 	return nil
 }
 
-func (e *Engine) GetDownload(id uuid.UUID) (*downloader.Download, error) {
+// ResumeDownload resumes a paused download.
+func (e *Engine) ResumeDownload(ctx context.Context, id uuid.UUID) error {
 	e.mu.RLock()
-	dl, ok := e.downloads[id]
+	w, exists := e.workers[id]
 	e.mu.RUnlock()
-	if !ok {
-		return nil, ErrDownloadNotFound
+
+	if !exists {
+		return ErrWorkerNotFound
 	}
-	return dl, nil
+
+	s := w.GetStatus()
+	if s != status.Paused && s != status.Failed {
+		return ErrDownloadNotPaused
+	}
+
+	e.mu.Lock()
+	e.queue.Add(id, w.GetPriority())
+	w.Queue()
+	e.mu.Unlock()
+
+	e.processQueue(ctx)
+
+	return nil
 }
 
-func (e *Engine) ListDownloads() []*downloader.Download {
+// CancelDownload cancels a download.
+func (e *Engine) CancelDownload(id uuid.UUID) error {
 	e.mu.RLock()
-	out := make([]*downloader.Download, 0, len(e.downloads))
-	for _, dl := range e.downloads {
-		out = append(out, dl)
-	}
+	w, exists := e.workers[id]
 	e.mu.RUnlock()
-	return out
+
+	if !exists {
+		return ErrWorkerNotFound
+	}
+
+	err := w.Cancel()
+	if err != nil {
+		return err
+	}
+
+	e.mu.Lock()
+	e.queue.Remove(id)
+
+	if w.GetStatus() == status.Cancelled && e.activeCount > 0 {
+		e.activeCount--
+	}
+
+	e.mu.Unlock()
+
+	return nil
+}
+
+// RemoveDownload removes a download completely.
+func (e *Engine) RemoveDownload(id uuid.UUID) error {
+	e.mu.Lock()
+
+	w, exists := e.workers[id]
+	if !exists {
+		e.mu.Unlock()
+		return ErrWorkerNotFound
+	}
+
+	delete(e.workers, id)
+	e.queue.Remove(id)
+
+	s := w.GetStatus()
+	if s == status.Active && e.activeCount > 0 {
+		e.activeCount--
+	}
+
+	e.mu.Unlock()
+
+	return w.Remove()
+}
+
+// GetProgress returns the progress of a download.
+func (e *Engine) GetProgress(id uuid.UUID) (progress.Progress, error) {
+	e.mu.RLock()
+	w, exists := e.workers[id]
+	e.mu.RUnlock()
+
+	if !exists {
+		return nil, ErrWorkerNotFound
+	}
+
+	return w.Progress(), nil
+}
+
+// GetAllDownloads returns info about all downloads.
+func (e *Engine) GetAllDownloads() []DownloadInfo {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	downloads := make([]DownloadInfo, 0, len(e.workers))
+	for id, w := range e.workers {
+		downloads = append(downloads, DownloadInfo{
+			ID:       id,
+			Filename: w.GetFilename(),
+			Status:   w.GetStatus(),
+			Priority: w.GetPriority(),
+			Progress: w.Progress(),
+		})
+	}
+
+	sort.Slice(downloads, func(i, j int) bool {
+		if downloads[i].Priority != downloads[j].Priority {
+			return downloads[i].Priority > downloads[j].Priority
+		}
+
+		return downloads[i].ID.String() < downloads[j].ID.String()
+	})
+
+	return downloads
+}
+
+// GetErrors returns the error channel for monitoring download errors.
+func (e *Engine) GetErrors() <-chan DownloadError {
+	return e.errors
+}
+
+// Shutdown gracefully shuts down the engine.
+func (e *Engine) Shutdown(ctx context.Context) error {
+	var shutdownErr error
+
+	e.shutdownOnce.Do(func() {
+		close(e.schedulerStop)
+
+		e.mu.Lock()
+
+		var wg sync.WaitGroup
+
+		for _, w := range e.workers {
+			if w.GetStatus() == status.Active {
+				wg.Add(1)
+
+				go func(worker worker.Worker) {
+					defer wg.Done()
+					err := worker.Pause()
+
+					if err != nil {
+						logger.Errorf("Failed to pause download %s: %v", worker.GetID(), err)
+					}
+				}(w)
+			}
+		}
+
+		e.mu.Unlock()
+
+		done := make(chan struct{})
+
+		go func() {
+			wg.Wait()
+			close(done)
+		}()
+
+		select {
+		case <-done:
+		case <-ctx.Done():
+			shutdownErr = ctx.Err()
+		case <-time.After(10 * time.Second):
+			shutdownErr = errors.New("timeout waiting for downloads to pause")
+		}
+
+		close(e.errors)
+		close(e.shutdownDone)
+	})
+
+	return shutdownErr
+}
+
+// Wait waits for the engine to shut down.
+func (e *Engine) Wait() {
+	<-e.shutdownDone
+}
+
+// DownloadInfo contains information about a download.
+type DownloadInfo struct {
+	ID       uuid.UUID
+	Filename string
+	Status   status.Status
+	Priority int
+	Progress progress.Progress
 }

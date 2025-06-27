@@ -36,7 +36,7 @@ type PeerConn struct {
 
 	// PEX and extension state
 	supportsExtended bool
-	utPexID          uint8 // ID for ut_pex message
+	utPexID          uint8 // Id for ut_pex message
 	listeningPort    uint16
 
 	// Rate-limiting and choking state
@@ -77,18 +77,23 @@ func NewPeerConn(peer Peer, infoHash [20]byte, peerID [20]byte) (*PeerConn, erro
 // Handshake performs the BitTorrent handshake.
 func (pc *PeerConn) Handshake() (*Handshake, error) {
 	handshake := NewHandshake(pc.infoHash, pc.peerID)
-	if err := handshake.Serialize(pc.writer); err != nil {
+	err := handshake.Serialize(pc.writer)
+	if err != nil {
 		return nil, fmt.Errorf("failed to send handshake: %w", err)
 	}
-	if err := pc.writer.Flush(); err != nil {
+	err = pc.writer.Flush()
+
+	if err != nil {
 		return nil, fmt.Errorf("failed to flush handshake: %w", err)
 	}
 
 	pc.conn.SetReadDeadline(time.Now().Add(30 * time.Second))
+
 	peerHandshake, err := ReadHandshake(pc.reader)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read handshake: %w", err)
 	}
+
 	pc.conn.SetReadDeadline(time.Time{})
 
 	if peerHandshake.InfoHash != pc.infoHash {
@@ -115,6 +120,7 @@ func (pc *PeerConn) SendMessage(msg *Message) error {
 	copy(buf[5:], msg.Payload)
 
 	_, err := pc.conn.Write(buf)
+
 	return err
 }
 
@@ -125,6 +131,7 @@ func (pc *PeerConn) SendExtendedHandshake(port uint16) error {
 		"p": port,
 		"v": "TDM v0.1",
 	}
+
 	bencodedPayload, err := bencode.Encode(payload)
 	if err != nil {
 		return err
@@ -153,6 +160,7 @@ func (pc *PeerConn) SendPEX(added, dropped []Peer) error {
 	}
 
 	var addedBytes, droppedBytes []byte
+
 	for _, p := range added {
 		ip := p.IP.To4()
 		if ip != nil {
@@ -160,6 +168,7 @@ func (pc *PeerConn) SendPEX(added, dropped []Peer) error {
 			addedBytes = binary.BigEndian.AppendUint16(addedBytes, p.Port)
 		}
 	}
+
 	for _, p := range dropped {
 		ip := p.IP.To4()
 		if ip != nil {
@@ -169,6 +178,7 @@ func (pc *PeerConn) SendPEX(added, dropped []Peer) error {
 	}
 
 	pexPayload := map[string]any{"added": addedBytes, "dropped": droppedBytes}
+
 	bencodedPayload, err := bencode.Encode(pexPayload)
 	if err != nil {
 		return err
@@ -182,6 +192,7 @@ func (pc *PeerConn) SendPEX(added, dropped []Peer) error {
 		Type:    MsgExtended,
 		Payload: extendedMsgPayload,
 	}
+
 	return pc.SendMessage(msg)
 }
 
@@ -198,56 +209,68 @@ func (pc *PeerConn) ReadMessage(timeout time.Duration) (*Message, error) {
 // SendInterested sends an interested message.
 func (pc *PeerConn) SendInterested() error {
 	pc.mu.Lock()
+
 	if pc.state.AmInterested {
 		pc.mu.Unlock()
 		return nil
 	}
+
 	pc.state.AmInterested = true
 	pc.mu.Unlock()
 
 	msg := &Message{Type: MsgInterested}
+
 	return pc.SendMessage(msg)
 }
 
 // SendNotInterested sends a not interested message.
 func (pc *PeerConn) SendNotInterested() error {
 	pc.mu.Lock()
+
 	if !pc.state.AmInterested {
 		pc.mu.Unlock()
 		return nil
 	}
+
 	pc.state.AmInterested = false
 	pc.mu.Unlock()
 
 	msg := &Message{Type: MsgNotInterested}
+
 	return pc.SendMessage(msg)
 }
 
 // SendChoke sends a choke message.
 func (pc *PeerConn) SendChoke() error {
 	pc.mu.Lock()
+
 	if pc.state.AmChoking {
 		pc.mu.Unlock()
 		return nil
 	}
+
 	pc.state.AmChoking = true
 	pc.mu.Unlock()
 
 	msg := &Message{Type: MsgChoke}
+
 	return pc.SendMessage(msg)
 }
 
 // SendUnchoke sends an unchoke message.
 func (pc *PeerConn) SendUnchoke() error {
 	pc.mu.Lock()
+
 	if !pc.state.AmChoking {
 		pc.mu.Unlock()
 		return nil
 	}
+
 	pc.state.AmChoking = false
 	pc.mu.Unlock()
 
 	msg := &Message{Type: MsgUnchoke}
+
 	return pc.SendMessage(msg)
 }
 
@@ -307,6 +330,7 @@ func (pc *PeerConn) SendHave(pieceIndex int) error {
 		Type:    MsgHave,
 		Payload: payload,
 	}
+
 	return pc.SendMessage(msg)
 }
 
@@ -316,6 +340,7 @@ func (pc *PeerConn) SendBitfield(bitfield *Bitfield) error {
 		Type:    MsgBitfield,
 		Payload: bitfield.Bytes(),
 	}
+
 	return pc.SendMessage(msg)
 }
 
@@ -337,6 +362,7 @@ func (pc *PeerConn) HandleMessage(msg *Message) {
 		if len(msg.Payload) != 4 {
 			return // Malformed message
 		}
+
 		pieceIndex := int(binary.BigEndian.Uint32(msg.Payload))
 		if pc.bitfield != nil {
 			pc.bitfield.SetPiece(pieceIndex)
@@ -348,6 +374,7 @@ func (pc *PeerConn) HandleMessage(msg *Message) {
 func (pc *PeerConn) IsChoked() bool {
 	pc.mu.RLock()
 	defer pc.mu.RUnlock()
+
 	return pc.state.PeerChoking
 }
 
@@ -368,6 +395,7 @@ func (pc *PeerConn) CalculateRates(interval time.Duration) {
 	if seconds == 0 {
 		return
 	}
+
 	downloaded := atomic.SwapInt64(&pc.downloadedSinceLastReview, 0)
 	pc.downloadRate = int64(float64(downloaded) / seconds)
 
@@ -379,9 +407,11 @@ func (pc *PeerConn) CalculateRates(interval time.Duration) {
 func (pc *PeerConn) AddPendingRequest(pieceIndex, offset, length int) {
 	pc.pendingMu.Lock()
 	defer pc.pendingMu.Unlock()
+
 	if _, ok := pc.pendingRequests[pieceIndex]; !ok {
 		pc.pendingRequests[pieceIndex] = make(map[int]time.Time)
 	}
+
 	pc.pendingRequests[pieceIndex][offset] = time.Now()
 }
 
@@ -389,8 +419,10 @@ func (pc *PeerConn) AddPendingRequest(pieceIndex, offset, length int) {
 func (pc *PeerConn) RemovePendingRequest(pieceIndex, offset int) {
 	pc.pendingMu.Lock()
 	defer pc.pendingMu.Unlock()
+
 	if _, ok := pc.pendingRequests[pieceIndex]; ok {
 		delete(pc.pendingRequests[pieceIndex], offset)
+
 		if len(pc.pendingRequests[pieceIndex]) == 0 {
 			delete(pc.pendingRequests, pieceIndex)
 		}

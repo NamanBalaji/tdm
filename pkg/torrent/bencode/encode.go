@@ -37,39 +37,51 @@ func Encode(data any) ([]byte, error) {
 		return []byte("i" + strconv.FormatUint(v, 10) + "e"), nil
 	case []any:
 		var result []byte
+
 		result = append(result, 'l')
+
 		for _, item := range v {
 			encoded, err := Encode(item)
 			if err != nil {
 				return nil, err
 			}
+
 			result = append(result, encoded...)
 		}
+
 		result = append(result, 'e')
+
 		return result, nil
 	case map[string]any:
 		var result []byte
+
 		result = append(result, 'd')
 
 		keys := make([]string, 0, len(v))
 		for k := range v {
 			keys = append(keys, k)
 		}
+
 		sort.Strings(keys)
+
 		for _, k := range keys {
 			keyEnc, err := Encode(k)
 			if err != nil {
 				return nil, err
 			}
+
 			result = append(result, keyEnc...)
 
 			valEnc, err := Encode(v[k])
 			if err != nil {
 				return nil, err
 			}
+
 			result = append(result, valEnc...)
 		}
+
 		result = append(result, 'e')
+
 		return result, nil
 	default:
 		return nil, ErrEncoding

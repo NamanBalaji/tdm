@@ -50,21 +50,25 @@ func parseMetainfo(value any, originalData []byte) (*Metainfo, error) {
 			metainfo.AnnounceList = announceList
 		}
 	}
+
 	if commentVal, exists := dict["comment"]; exists {
 		if commentStr, err := bytesToString(commentVal); err == nil {
 			metainfo.Comment = commentStr
 		}
 	}
+
 	if createdByVal, exists := dict["created by"]; exists {
 		if createdByStr, err := bytesToString(createdByVal); err == nil {
 			metainfo.CreatedBy = createdByStr
 		}
 	}
+
 	if encodingVal, exists := dict["encoding"]; exists {
 		if encodingStr, err := bytesToString(encodingVal); err == nil {
 			metainfo.Encoding = encodingStr
 		}
 	}
+
 	if creationDateVal, exists := dict["creation date"]; exists {
 		if creationDateInt, ok := creationDateVal.(int64); ok {
 			metainfo.CreationDate = creationDateInt
@@ -80,6 +84,7 @@ func parseMetainfo(value any, originalData []byte) (*Metainfo, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	metainfo.Info = info
 
 	// Efficiently extract the raw info dictionary bytes
@@ -88,9 +93,11 @@ func parseMetainfo(value any, originalData []byte) (*Metainfo, error) {
 		return nil, newValidationError(ErrInvalidInfoDict, "info_bytes",
 			fmt.Sprintf("failed to extract info bytes: %v", err))
 	}
+
 	metainfo.infoBytes = infoBytes
 
-	if err := metainfo.validate(); err != nil {
+	err = metainfo.validate()
+	if err != nil {
 		return nil, err
 	}
 
@@ -122,16 +129,19 @@ func parseAnnounceList(value any) ([][]string, error) {
 		if !ok {
 			continue // Skip malformed tier
 		}
+
 		tier := make([]string, 0, len(tierList))
 		for _, urlVal := range tierList {
 			if urlStr, err := bytesToString(urlVal); err == nil {
 				tier = append(tier, urlStr)
 			}
 		}
+
 		if len(tier) > 0 {
 			announceList = append(announceList, tier)
 		}
 	}
+
 	return announceList, nil
 }
 
@@ -147,9 +157,11 @@ func parseInfo(value any) (Info, error) {
 	if nameVal, ok := infoDict["name"]; ok {
 		info.Name, _ = bytesToString(nameVal)
 	}
+
 	if plVal, ok := infoDict["piece length"]; ok {
 		info.PieceLength, _ = plVal.(int64)
 	}
+
 	if pVal, ok := infoDict["pieces"]; ok {
 		info.Pieces, _ = bytesToString(pVal)
 	}
@@ -162,6 +174,7 @@ func parseInfo(value any) (Info, error) {
 			info.MD5Sum, _ = bytesToString(md5Val)
 		}
 	}
+
 	if filesVal, exists := infoDict["files"]; exists {
 		if files, err := parseFiles(filesVal); err == nil {
 			info.Files = files
@@ -184,10 +197,12 @@ func parseFiles(value any) ([]File, error) {
 		if !ok {
 			continue
 		}
+
 		var file File
 		if lengthVal, ok := fileDict["length"].(int64); ok {
 			file.Length = lengthVal
 		}
+
 		if pathVal, ok := fileDict["path"].([]any); ok {
 			path := make([]string, 0, len(pathVal))
 			for _, comp := range pathVal {
@@ -195,13 +210,17 @@ func parseFiles(value any) ([]File, error) {
 					path = append(path, compStr)
 				}
 			}
+
 			file.Path = path
 		}
+
 		if md5Val, exists := fileDict["md5sum"]; exists {
 			file.MD5Sum, _ = bytesToString(md5Val)
 		}
+
 		files = append(files, file)
 	}
+
 	return files, nil
 }
 
@@ -210,6 +229,7 @@ func parseFiles(value any) ([]File, error) {
 func extractInfoBytes(data []byte) ([]byte, error) {
 	// The info dictionary is prefixed by d...4:info
 	infoKey := []byte("4:info")
+
 	index := bytes.Index(data, infoKey)
 	if index == -1 {
 		return nil, errors.New("'info' dictionary not found")
@@ -243,14 +263,17 @@ func parseBencodedValue(data []byte) (any, int, error) {
 		if colon == -1 {
 			return nil, 0, errors.New("string length delimiter not found")
 		}
+
 		length, err := strconv.Atoi(string(data[:colon]))
 		if err != nil {
 			return nil, 0, err
 		}
+
 		end := colon + 1 + length
 		if end > len(data) {
 			return nil, 0, errors.New("string length exceeds data bounds")
 		}
+
 		return nil, end, nil
 
 	case data[0] == 'i': // Integer
@@ -258,6 +281,7 @@ func parseBencodedValue(data []byte) (any, int, error) {
 		if end == -1 {
 			return nil, 0, errors.New("integer not terminated")
 		}
+
 		return nil, end + 1, nil
 
 	case data[0] == 'l': // List
@@ -266,12 +290,15 @@ func parseBencodedValue(data []byte) (any, int, error) {
 			if data[pos] == 'e' {
 				return nil, pos + 1, nil
 			}
+
 			_, n, err := parseBencodedValue(data[pos:])
 			if err != nil {
 				return nil, 0, err
 			}
+
 			pos += n
 		}
+
 		return nil, 0, errors.New("list not terminated")
 
 	case data[0] == 'd': // Dictionary
@@ -285,14 +312,17 @@ func parseBencodedValue(data []byte) (any, int, error) {
 			if err != nil {
 				return nil, 0, err
 			}
+
 			pos += n
 			// Parse value
 			_, n, err = parseBencodedValue(data[pos:])
 			if err != nil {
 				return nil, 0, err
 			}
+
 			pos += n
 		}
+
 		return nil, 0, errors.New("dictionary not terminated")
 
 	default:

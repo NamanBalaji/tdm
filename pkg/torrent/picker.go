@@ -61,6 +61,7 @@ func (pp *PiecePicker) PickPiece(peerBitfield *Bitfield) (int, bool) {
 	}
 
 	var selected int
+
 	switch pp.strategy {
 	case PickerRandom:
 		selected = candidates[pp.rand.Intn(len(candidates))]
@@ -74,6 +75,7 @@ func (pp *PiecePicker) PickPiece(peerBitfield *Bitfield) (int, bool) {
 	}
 
 	pp.inProgress[selected] = true
+
 	return selected, true
 }
 
@@ -112,11 +114,13 @@ func (pp *PiecePicker) pickRarest(candidates []int) int {
 	// Sort by rarity (least available first)
 	sort.Slice(candidates, func(i, j int) bool {
 		availI := pp.availability[candidates[i]]
+
 		availJ := pp.availability[candidates[j]]
 		if availI == availJ {
 			// If rarity is the same, prefer lower index
 			return candidates[i] < candidates[j]
 		}
+
 		return availI < availJ
 	})
 
@@ -130,6 +134,7 @@ func (pp *PiecePicker) pickSequential(candidates []int) int {
 	}
 
 	sort.Ints(candidates)
+
 	return candidates[0]
 }
 
@@ -137,6 +142,7 @@ func (pp *PiecePicker) pickSequential(candidates []int) int {
 func (pp *PiecePicker) MarkComplete(index int) {
 	pp.mu.Lock()
 	defer pp.mu.Unlock()
+
 	delete(pp.inProgress, index)
 }
 
@@ -144,6 +150,7 @@ func (pp *PiecePicker) MarkComplete(index int) {
 func (pp *PiecePicker) MarkFailed(index int) {
 	pp.mu.Lock()
 	defer pp.mu.Unlock()
+
 	delete(pp.inProgress, index)
 }
 
@@ -151,5 +158,6 @@ func (pp *PiecePicker) MarkFailed(index int) {
 func (pp *PiecePicker) InProgressCount() int {
 	pp.mu.RLock()
 	defer pp.mu.RUnlock()
+
 	return len(pp.inProgress)
 }

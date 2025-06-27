@@ -34,6 +34,7 @@ func newChoker(t *Torrent) *choker {
 func (c *choker) start() {
 	reviewTicker := time.NewTicker(chokeReviewInterval)
 	optimisticTicker := time.NewTicker(optimisticUnchokeInterval)
+
 	defer reviewTicker.Stop()
 	defer optimisticTicker.Stop()
 
@@ -81,6 +82,7 @@ func (c *choker) reviewUnchokes() {
 
 	// Find candidates for unchoking. These are peers interested in our data.
 	var candidates []*PeerConn
+
 	for _, p := range peers {
 		p.mu.RLock()
 		interested := p.state.PeerInterested
@@ -101,6 +103,7 @@ func (c *choker) reviewUnchokes() {
 
 	// Unchoke the top N peers and choke the rest.
 	newlyUnchoked := make(map[*PeerConn]bool)
+
 	for i := 0; i < len(candidates) && i < numRegularUnchokes; i++ {
 		p := candidates[i]
 		c.t.unchokePeer(p)
@@ -128,6 +131,7 @@ func (c *choker) reviewOptimisticUnchoke() {
 
 	// Find candidates: interested peers that we are currently choking.
 	var candidates []*PeerConn
+
 	for _, p := range peers {
 		p.mu.RLock()
 		interested := p.state.PeerInterested

@@ -15,6 +15,7 @@ type Bitfield struct {
 // NewBitfield creates a new bitfield of the given length.
 func NewBitfield(numPieces int) *Bitfield {
 	numBytes := (numPieces + 7) / 8
+
 	return &Bitfield{
 		bits: make([]byte, numBytes),
 		len:  numPieces,
@@ -33,6 +34,7 @@ func NewBitfieldFromBytes(data []byte, numPieces int) (*Bitfield, error) {
 		len:  numPieces,
 	}
 	copy(bf.bits, data)
+
 	return bf, nil
 }
 
@@ -48,6 +50,7 @@ func (bf *Bitfield) SetPiece(index int) error {
 	byteIndex := index / 8
 	bitIndex := uint(index % 8)
 	bf.bits[byteIndex] |= 1 << (7 - bitIndex)
+
 	return nil
 }
 
@@ -62,6 +65,7 @@ func (bf *Bitfield) HasPiece(index int) bool {
 
 	byteIndex := index / 8
 	bitIndex := uint(index % 8)
+
 	return bf.bits[byteIndex]&(1<<(7-bitIndex)) != 0
 }
 
@@ -72,6 +76,7 @@ func (bf *Bitfield) Bytes() []byte {
 
 	result := make([]byte, len(bf.bits))
 	copy(result, bf.bits)
+
 	return result
 }
 
@@ -81,11 +86,13 @@ func (bf *Bitfield) Count() int {
 	defer bf.mu.RUnlock()
 
 	count := 0
+
 	for i := range bf.len {
 		if bf.HasPiece(i) {
 			count++
 		}
 	}
+
 	return count
 }
 

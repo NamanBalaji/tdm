@@ -254,7 +254,7 @@ func NewUDPTrackerClient(announceURL string) (*UDPTrackerClient, error) {
 // Announce sends an announce request to the UDP tracker.
 func (c *UDPTrackerClient) Announce(ctx context.Context, req *AnnounceRequest) (*TrackerResponse, error) {
 	var resp *TrackerResponse
-	var err error = retry(3, 15*time.Second, func() error {
+	var err = retry(3, 15*time.Second, func() error {
 		connID, innerErr := c.connect(ctx)
 		if innerErr != nil {
 			return innerErr
@@ -270,7 +270,7 @@ func (c *UDPTrackerClient) Announce(ctx context.Context, req *AnnounceRequest) (
 func (c *UDPTrackerClient) connect(ctx context.Context) (uint64, error) {
 	transactionID := rand.Uint32()
 	buf := new(bytes.Buffer)
-	binary.Write(buf, binary.BigEndian, uint64(0x41727101980)) // Protocol ID
+	binary.Write(buf, binary.BigEndian, uint64(0x41727101980)) // Protocol Id
 	binary.Write(buf, binary.BigEndian, uint32(actionConnect))
 	binary.Write(buf, binary.BigEndian, transactionID)
 
@@ -356,7 +356,7 @@ func (c *UDPTrackerClient) announce(ctx context.Context, connID uint64, req *Ann
 	binary.Read(respBuf, binary.BigEndian, &respTransID)
 
 	if respTransID != transactionID {
-		return nil, errors.New("transaction ID mismatch in announce response")
+		return nil, errors.New("transaction Id mismatch in announce response")
 	}
 	if action == actionError {
 		errorMsg, _ := io.ReadAll(respBuf)
@@ -389,7 +389,8 @@ func (c *UDPTrackerClient) Close() error {
 
 // retry is a helper function to retry a function with exponential backoff.
 func retry(attempts int, sleep time.Duration, f func() error) error {
-	if err := f(); err != nil {
+	err := f()
+	if err != nil {
 		if attempts--; attempts > 0 {
 			// Add jitter to avoid thundering herd problem
 			jitter := time.Duration(rand.Int63n(int64(sleep)))

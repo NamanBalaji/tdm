@@ -43,6 +43,7 @@ func NewPiece(index int, length int64, hash [20]byte) *Piece {
 
 	for i := range numBlocks {
 		blockOffset := i * BlockSize
+
 		blockLength := BlockSize
 		if i == numBlocks-1 {
 			// Last block might be smaller
@@ -88,6 +89,7 @@ func (p *Piece) AddBlock(offset int, data []byte) error {
 
 	block.Data = make([]byte, len(data))
 	copy(block.Data, data)
+
 	p.received++
 
 	if p.received == len(p.Blocks) {
@@ -101,6 +103,7 @@ func (p *Piece) AddBlock(offset int, data []byte) error {
 func (p *Piece) IsComplete() bool {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
+
 	return p.State == PieceStateComplete || p.State == PieceStateVerified
 }
 
@@ -119,6 +122,7 @@ func (p *Piece) Verify() bool {
 		if block.Data == nil {
 			return false
 		}
+
 		data = append(data, block.Data...)
 	}
 
@@ -164,11 +168,13 @@ func (p *Piece) GetMissingBlocks() []*Block {
 	defer p.mu.RUnlock()
 
 	var missing []*Block
+
 	for _, block := range p.Blocks {
 		if block.Data == nil {
 			missing = append(missing, block)
 		}
 	}
+
 	return missing
 }
 
@@ -178,6 +184,7 @@ func (p *Piece) Reset() {
 	defer p.mu.Unlock()
 
 	p.State = PieceStateEmpty
+
 	p.received = 0
 	for _, block := range p.Blocks {
 		block.Data = nil
@@ -210,6 +217,7 @@ func NewPieceManager(metainfo *Metainfo) *PieceManager {
 		if i == totalPieces-1 {
 			length = lastPieceLen
 		}
+
 		pieces[i] = NewPiece(i, length, hashes[i])
 	}
 
@@ -228,6 +236,7 @@ func (pm *PieceManager) GetPiece(index int) (*Piece, error) {
 	if index < 0 || index >= pm.totalPieces {
 		return nil, fmt.Errorf("piece index %d out of range", index)
 	}
+
 	return pm.pieces[index], nil
 }
 
@@ -238,11 +247,13 @@ func (pm *PieceManager) GetAllMissingBlocks() []*Block {
 	defer pm.mu.RUnlock()
 
 	var missing []*Block
+
 	for _, piece := range pm.pieces {
 		if !pm.verified.HasPiece(piece.Index) {
 			missing = append(missing, piece.GetMissingBlocks()...)
 		}
 	}
+
 	return missing
 }
 
@@ -251,6 +262,7 @@ func (pm *PieceManager) GetPieceLength(index int) int64 {
 	if index == pm.totalPieces-1 {
 		return pm.lastPieceLen
 	}
+
 	return pm.pieceLength
 }
 
@@ -258,6 +270,7 @@ func (pm *PieceManager) GetPieceLength(index int) int64 {
 func (pm *PieceManager) IsComplete() bool {
 	pm.mu.RLock()
 	defer pm.mu.RUnlock()
+
 	return pm.verified.IsComplete()
 }
 
@@ -269,9 +282,11 @@ func (pm *PieceManager) MarkVerified(index int) error {
 // Progress returns download progress as a percentage.
 func (pm *PieceManager) Progress() float64 {
 	verified := float64(pm.verified.Count())
+
 	total := float64(pm.totalPieces)
 	if total == 0 {
 		return 0
 	}
+
 	return (verified / total) * 100
 }

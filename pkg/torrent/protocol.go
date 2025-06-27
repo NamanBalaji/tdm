@@ -53,6 +53,7 @@ func NewHandshake(infoHash, peerID [20]byte) *Handshake {
 	}
 	// Set the 20th bit of the reserved bytes to indicate support for extensions.
 	h.Reserved[5] |= 0x10
+
 	return h
 }
 
@@ -63,21 +64,27 @@ func (h *Handshake) HasExtensionSupport() bool {
 
 // Serialize writes the handshake to a writer.
 func (h *Handshake) Serialize(w io.Writer) error {
-	if err := binary.Write(w, binary.BigEndian, uint8(len(h.Pstr))); err != nil {
+	err := binary.Write(w, binary.BigEndian, uint8(len(h.Pstr)))
+	if err != nil {
 		return err
 	}
+
 	if _, err := w.Write([]byte(h.Pstr)); err != nil {
 		return err
 	}
+
 	if _, err := w.Write(h.Reserved[:]); err != nil {
 		return err
 	}
+
 	if _, err := w.Write(h.InfoHash[:]); err != nil {
 		return err
 	}
+
 	if _, err := w.Write(h.PeerID[:]); err != nil {
 		return err
 	}
+
 	return nil
 }
 
@@ -86,7 +93,8 @@ func ReadHandshake(r io.Reader) (*Handshake, error) {
 	h := &Handshake{}
 
 	var pstrLen uint8
-	if err := binary.Read(r, binary.BigEndian, &pstrLen); err != nil {
+	err := binary.Read(r, binary.BigEndian, &pstrLen)
+	if err != nil {
 		return nil, err
 	}
 
@@ -94,14 +102,17 @@ func ReadHandshake(r io.Reader) (*Handshake, error) {
 	if _, err := io.ReadFull(r, pstr); err != nil {
 		return nil, err
 	}
+
 	h.Pstr = string(pstr)
 
 	if _, err := io.ReadFull(r, h.Reserved[:]); err != nil {
 		return nil, err
 	}
+
 	if _, err := io.ReadFull(r, h.InfoHash[:]); err != nil {
 		return nil, err
 	}
+
 	if _, err := io.ReadFull(r, h.PeerID[:]); err != nil {
 		return nil, err
 	}
@@ -118,24 +129,30 @@ type Message struct {
 // Serialize writes the message to a writer.
 func (m *Message) Serialize(w io.Writer) error {
 	length := uint32(len(m.Payload) + 1)
-	if err := binary.Write(w, binary.BigEndian, length); err != nil {
+	err := binary.Write(w, binary.BigEndian, length)
+	if err != nil {
 		return err
 	}
-	if err := binary.Write(w, binary.BigEndian, m.Type); err != nil {
+	err = binary.Write(w, binary.BigEndian, m.Type)
+
+	if err != nil {
 		return err
 	}
+
 	if len(m.Payload) > 0 {
 		if _, err := w.Write(m.Payload); err != nil {
 			return err
 		}
 	}
+
 	return nil
 }
 
 // ReadMessage reads a message from a reader.
 func ReadMessage(r io.Reader) (*Message, error) {
 	var length uint32
-	if err := binary.Read(r, binary.BigEndian, &length); err != nil {
+	err := binary.Read(r, binary.BigEndian, &length)
+	if err != nil {
 		return nil, err
 	}
 
@@ -185,6 +202,7 @@ func (r *RequestMessage) Serialize() []byte {
 	binary.BigEndian.PutUint32(payload[0:4], r.Index)
 	binary.BigEndian.PutUint32(payload[4:8], r.Begin)
 	binary.BigEndian.PutUint32(payload[8:12], r.Length)
+
 	return payload
 }
 

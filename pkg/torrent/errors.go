@@ -32,6 +32,7 @@ func (e *ValidationError) Error() string {
 	if e.Field != "" {
 		return fmt.Sprintf("%v in field '%s': %s", e.Type, e.Field, e.Message)
 	}
+
 	return fmt.Sprintf("%v: %s", e.Type, e.Message)
 }
 

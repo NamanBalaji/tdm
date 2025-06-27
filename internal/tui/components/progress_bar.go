@@ -5,12 +5,12 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/NamanBalaji/tdm/internal/common"
+	"github.com/NamanBalaji/tdm/internal/status"
 	"github.com/NamanBalaji/tdm/internal/tui/styles"
 )
 
-// ProgressBar returns a styled progress bar of given width and fill percentage.
-func ProgressBar(width int, percent float64, status common.Status) string {
+// ProgressBar returns a styled progress bar.
+func ProgressBar(width int, percent float64, s status.Status) string {
 	if width <= 0 {
 		return ""
 	}
@@ -18,49 +18,35 @@ func ProgressBar(width int, percent float64, status common.Status) string {
 	if percent < 0 {
 		percent = 0
 	}
-	if percent > 1 {
-		percent = 1
-	}
 
-	if status == common.StatusCompleted {
+	if percent > 1.0 {
 		percent = 1.0
 	}
 
-	filled := int(percent * float64(width))
-	if filled > width {
-		filled = width
-	}
+	filledWidth := int(float64(width) * percent)
+	emptyWidth := width - filledWidth
 
-	empty := width - filled
-
-	filledStr := strings.Repeat("█", filled)
-	emptyStr := strings.Repeat("░", empty)
+	filledStr := strings.Repeat("█", filledWidth)
+	emptyStr := strings.Repeat("░", emptyWidth)
 
 	var filledStyle lipgloss.Style
-	switch status {
-	case common.StatusActive:
+
+	switch s {
+	case status.Active:
 		filledStyle = lipgloss.NewStyle().Foreground(styles.Teal)
-	case common.StatusQueued:
-		filledStyle = lipgloss.NewStyle().Foreground(styles.Yellow)
-	case common.StatusPaused:
+	case status.Paused:
 		filledStyle = lipgloss.NewStyle().Foreground(styles.Peach)
-	case common.StatusCompleted:
+	case status.Completed:
 		filledStyle = lipgloss.NewStyle().Foreground(styles.Green)
-	case common.StatusCancelled:
+	case status.Cancelled:
 		filledStyle = lipgloss.NewStyle().Foreground(styles.Mauve)
-	case common.StatusFailed:
+	case status.Failed:
 		filledStyle = lipgloss.NewStyle().Foreground(styles.Red)
-	default:
-		filledStyle = styles.ProgressBarFilledStyle
+	default: // Queued or Pending
+		filledStyle = lipgloss.NewStyle().Foreground(styles.Yellow)
 	}
 
-	var result string
-	if filled > 0 {
-		result = filledStyle.Render(filledStr)
-	}
-	if empty > 0 {
-		result += styles.ProgressBarEmptyStyle.Render(emptyStr)
-	}
+	bar := filledStyle.Render(filledStr) + styles.ProgressBarEmptyStyle.Render(emptyStr)
 
-	return result
+	return bar
 }
