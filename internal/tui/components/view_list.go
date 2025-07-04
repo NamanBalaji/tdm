@@ -7,57 +7,39 @@ import (
 	"github.com/NamanBalaji/tdm/internal/tui/styles"
 )
 
-// RenderDownloadList displays the list of download items.
 func RenderDownloadList(downloads []engine.DownloadInfo, selected int, width, height int) string {
 	if len(downloads) == 0 {
 		return renderEmptyView(width, height)
 	}
+	if height <= 0 {
+		return lipgloss.NewStyle().Width(width).Height(height).Render("")
+	}
 
 	var rows []string
-	// Each item takes 3 lines + 1 separator
 	itemHeight := 4
 
 	visibleCount := height / itemHeight
-	if visibleCount < 1 {
-		visibleCount = 1
-	}
-
 	start := selected - (visibleCount / 2)
 	if start < 0 {
 		start = 0
 	}
-
 	end := start + visibleCount
 	if end > len(downloads) {
 		end = len(downloads)
+		start = end - visibleCount
+		if start < 0 {
+			start = 0
+		}
 	}
 
 	for i := start; i < end; i++ {
-		item := DownloadItem(downloads[i], width-4, i == selected)
+		item := DownloadItem(downloads[i], width, i == selected)
 		rows = append(rows, item)
 	}
 
 	listContent := lipgloss.JoinVertical(lipgloss.Left, rows...)
 
-	if start > 0 {
-		upIndicator := lipgloss.NewStyle().
-			Foreground(styles.Subtext0).
-			Align(lipgloss.Center).
-			Width(width).
-			Render("↑ more above")
-		listContent = lipgloss.JoinVertical(lipgloss.Top, upIndicator, listContent)
-	}
-
-	if end < len(downloads) {
-		downIndicator := lipgloss.NewStyle().
-			Foreground(styles.Subtext0).
-			Align(lipgloss.Center).
-			Width(width).
-			Render("↓ more below")
-		listContent = lipgloss.JoinVertical(lipgloss.Bottom, listContent, downIndicator)
-	}
-
-	return lipgloss.NewStyle().Padding(1, 2).Render(listContent)
+	return lipgloss.NewStyle().Width(width).Height(height).Render(listContent)
 }
 
 // renderEmptyView displays the ASCII art and instructions when there are no downloads.

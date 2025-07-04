@@ -577,10 +577,12 @@ func (w *Worker) GetDownload() *Download {
 	return w.download
 }
 
+// GetFilename returns the filename of the download.
 func (w *Worker) GetFilename() string {
 	return w.download.Filename
 }
 
+// Queue sets the download status to Queued.
 func (w *Worker) Queue() {
 	w.download.setStatus(status.Queued)
 }

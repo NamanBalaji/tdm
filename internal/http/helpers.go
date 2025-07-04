@@ -12,7 +12,7 @@ var retryableErrors = map[error]struct{}{
 	httpPkg.ErrServerProblem:   {},
 	httpPkg.ErrTooManyRequests: {},
 	httpPkg.ErrTimeout:         {},
-	ErrChunkFileWriteFailed:    {}, // Retry if writing to disk fails
+	ErrChunkFileWriteFailed:    {},
 }
 
 func isRetryableError(err error) bool {

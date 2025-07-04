@@ -75,7 +75,6 @@ func (c *connection) Read(ctx context.Context, p []byte) (n int, err error) {
 		}
 	}
 
-	// Read from the response body
 	return c.response.Body.Read(p)
 }
 

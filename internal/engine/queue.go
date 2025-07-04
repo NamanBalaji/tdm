@@ -137,7 +137,6 @@ func (pq *PriorityQueue) process(ctx context.Context) {
 		}
 	}
 
-	// Any previously active worker that is no longer in the new active set should be paused and re-queued.
 	for id := range pq.active {
 		if !newActive[id] {
 			if idx, ok := pq.lookup[id]; ok && idx >= 0 && idx < len(pq.items) {

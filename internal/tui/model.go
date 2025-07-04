@@ -25,7 +25,7 @@ type currentView int
 
 const (
 	viewList currentView = iota
-	viewAdd              // Replaces viewAddURL and viewAddPriority
+	viewAdd
 	viewConfirmRemove
 	viewConfirmCancel
 )
@@ -34,7 +34,7 @@ const (
 type Model struct {
 	actions           engineActions
 	view              currentView
-	addFormFocusIndex int // 0 for URL, 1 for priority
+	addFormFocusIndex int
 
 	list          listModel
 	urlInput      textinput.Model
@@ -257,7 +257,6 @@ func (m *Model) updateAddView(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		switch {
-		// Handle navigation between input boxes
 		case key.Matches(msg, m.keys.Up), key.Matches(msg, m.keys.Down):
 			m.addFormFocusIndex = (m.addFormFocusIndex + 1) % 2
 			if m.addFormFocusIndex == 0 {
@@ -268,7 +267,6 @@ func (m *Model) updateAddView(msg tea.Msg) tea.Cmd {
 				m.priorityInput.Focus()
 			}
 
-		// Handle submission
 		case key.Matches(msg, m.keys.Confirm):
 			if m.urlInput.Value() != "" {
 				priority := 5 // Default priority
@@ -285,18 +283,19 @@ func (m *Model) updateAddView(msg tea.Msg) tea.Cmd {
 				m.view = viewList
 				m.urlInput.SetValue("")
 				m.priorityInput.SetValue("")
+				m.addFormFocusIndex = 0
+
 				return clearNotifications()
 			}
 
-		// Handle backing out of the view
 		case key.Matches(msg, m.keys.Back):
 			m.view = viewList
 			m.urlInput.SetValue("")
 			m.priorityInput.SetValue("")
+			m.addFormFocusIndex = 0
 		}
 	}
 
-	// Pass the message to the currently focused input
 	var cmd tea.Cmd
 	if m.addFormFocusIndex == 0 {
 		m.urlInput, cmd = m.urlInput.Update(msg)
@@ -357,11 +356,19 @@ func (m Model) View() string {
 		return fmt.Sprintf("\n  %s Loading downloads... Please wait.\n\n", m.spinner.View())
 	}
 
-	mainContent := ""
+	header := renderHeader(&m)
+	footer := styles.FooterStyle.Width(m.width).Render(m.help.View(m.keys))
+	notification := m.renderNotification()
 
+	listHeight := m.height - lipgloss.Height(header) - lipgloss.Height(notification) - lipgloss.Height(footer)
+	if listHeight < 0 {
+		listHeight = 0
+	}
+
+	var mainContent string
 	switch m.view {
 	case viewList:
-		mainContent = components.RenderDownloadList(m.list.downloads, m.list.selected, m.width, m.height-10)
+		mainContent = components.RenderDownloadList(m.list.downloads, m.list.selected, m.width, listHeight)
 	case viewAdd:
 		mainContent = m.renderAddView()
 	case viewConfirmRemove:
@@ -369,10 +376,6 @@ func (m Model) View() string {
 	case viewConfirmCancel:
 		mainContent = m.renderConfirmDialog("Are you sure you want to cancel this download? (y/n)")
 	}
-
-	header := renderHeader(&m)
-	footer := styles.FooterStyle.Width(m.width).Render(m.help.View(m.keys))
-	notification := m.renderNotification()
 
 	return lipgloss.JoinVertical(lipgloss.Left,
 		header,
@@ -390,7 +393,6 @@ func (m *Model) renderAddView() string {
 	b.WriteString("\n\n" + m.urlInput.View())
 	b.WriteString("\n\n" + m.priorityInput.View())
 
-	// Display validation errors if any
 	err := m.priorityInput.Validate(m.priorityInput.Value())
 	if err != nil {
 		b.WriteString("\n" + styles.ErrorStyle.Render(err.Error()))
@@ -426,7 +428,7 @@ func (m *Model) renderNotification() string {
 		return styles.SuccessStyle.Width(m.width).Align(lipgloss.Center).Render(m.successMsg)
 	}
 
-	return lipgloss.NewStyle().Height(1).Render("") // Placeholder for alignment
+	return lipgloss.NewStyle().Height(1).Render("")
 }
 
 func renderHeader(m *Model) string {
