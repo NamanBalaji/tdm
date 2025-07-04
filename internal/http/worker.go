@@ -54,7 +54,7 @@ type Worker struct {
 	lastProgress Progress
 }
 
-func New(ctx context.Context, url string, downloadData *Download, repo *repository.BboltRepository, opts ...ConfigOption) (*Worker, error) {
+func New(ctx context.Context, url string, downloadData *Download, repo *repository.BboltRepository, priority int, opts ...ConfigOption) (*Worker, error) {
 	client := httpPkg.NewClient()
 
 	cfg := defaultConfig()
@@ -68,19 +68,18 @@ func New(ctx context.Context, url string, downloadData *Download, repo *reposito
 	)
 
 	if downloadData == nil {
-		d, err := NewDownload(ctx, url, client, cfg.MaxChunks)
+		d, err := NewDownload(ctx, url, client, cfg.MaxChunks, priority)
 		if err != nil {
 			return nil, err
 		}
 
 		download = d
-		err = repo.Save(download)
-		if err != nil {
-			return nil, fmt.Errorf("failed to save download: %w", err)
-		}
 	} else {
 		download = downloadData
 		download.mu = sync.RWMutex{}
+		if download.Status == status.Queued || download.Status == status.Pending {
+			download.setStatus(status.Paused)
+		}
 
 		var downloaded int64
 
@@ -109,6 +108,11 @@ func New(ctx context.Context, url string, downloadData *Download, repo *reposito
 		}
 	}
 
+	err := repo.Save(download)
+	if err != nil {
+		return nil, fmt.Errorf("failed to save download: %w", err)
+	}
+
 	return &Worker{
 		repo:         repo,
 		download:     download,
@@ -121,7 +125,7 @@ func New(ctx context.Context, url string, downloadData *Download, repo *reposito
 
 // GetPriority returns the worker's priority.
 func (w *Worker) GetPriority() int {
-	return w.config.Priority
+	return w.download.Priority
 }
 
 // GetID returns the download ID.
@@ -135,12 +139,10 @@ func (w *Worker) GetStatus() status.Status {
 }
 
 func (w *Worker) Start(ctx context.Context) error {
-	// Check if already started
 	if !w.started.CompareAndSwap(false, true) {
 		return ErrAlreadyStarted
 	}
 
-	// Reset finished flag if restarting
 	w.finished.Store(false)
 
 	s := w.download.getStatus()
@@ -520,7 +522,8 @@ func (w *Worker) Cancel() error {
 }
 
 func (w *Worker) Pause() error {
-	if w.download.getStatus() != status.Active {
+	currentStatus := w.download.getStatus()
+	if currentStatus != status.Active && currentStatus != status.Queued {
 		return nil
 	}
 

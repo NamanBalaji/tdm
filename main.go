@@ -57,23 +57,20 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Graceful shutdown on Ctrl+C
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
 	go func() {
 		<-sigChan
 		logger.Infof("\nReceived interrupt signal, shutting down...")
-		cancel() // Signal all background processes to stop
+		cancel()
 	}()
 
-	// Run the TUI. This is a blocking call.
-	err = tui.Run(eng)
+	err = tui.Run(ctx, eng)
 	if err != nil {
 		fmt.Printf("TUI Error: %v\n", err)
 	}
 
-	// Once the TUI exits (from 'q' or error), shut down the engine.
 	logger.Infof("TUI has exited. Shutting down engine...")
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)

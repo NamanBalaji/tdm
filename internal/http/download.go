@@ -36,9 +36,10 @@ type Download struct {
 	Protocol       string        `json:"protocol"`
 	Dir            string        `json:"dir"`
 	TempDir        string        `json:"tempDir"`
+	Priority       int           `json:"priority"`
 }
 
-func NewDownload(ctx context.Context, url string, client *httpPkg.Client, maxChunks int) (*Download, error) {
+func NewDownload(ctx context.Context, url string, client *httpPkg.Client, maxChunks int, priority int) (*Download, error) {
 	id := uuid.New()
 
 	download := &Download{
@@ -48,6 +49,7 @@ func NewDownload(ctx context.Context, url string, client *httpPkg.Client, maxChu
 		Protocol: "http",
 		Dir:      xdg.UserDirs.Download,
 		TempDir:  filepath.Join(os.TempDir(), "tdm", id.String()),
+		Priority: priority,
 	}
 
 	err := download.initialize(ctx, client)
@@ -139,6 +141,13 @@ func (d *Download) getChunks() []*Chunk {
 	defer d.mu.RUnlock()
 
 	return d.Chunks
+}
+
+func (d *Download) getPriority() int {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	return d.Priority
 }
 
 func (d *Download) setStartTime(t time.Time) {

@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"strconv"
@@ -26,16 +25,16 @@ type currentView int
 
 const (
 	viewList currentView = iota
-	viewAddURL
-	viewAddPriority
+	viewAdd              // Replaces viewAddURL and viewAddPriority
 	viewConfirmRemove
 	viewConfirmCancel
 )
 
 // Model is the main TUI application model.
 type Model struct {
-	engine *engine.Engine
-	view   currentView
+	actions           engineActions
+	view              currentView
+	addFormFocusIndex int // 0 for URL, 1 for priority
 
 	list          listModel
 	urlInput      textinput.Model
@@ -70,7 +69,7 @@ func clearNotifications() tea.Cmd {
 }
 
 // NewModel creates a new TUI model.
-func NewModel(e *engine.Engine) Model {
+func NewModel(actions engineActions) Model {
 	urlInput := textinput.New()
 	urlInput.Placeholder = "Enter download URL"
 	urlInput.Focus()
@@ -103,14 +102,15 @@ func NewModel(e *engine.Engine) Model {
 	sp.Style = lipgloss.NewStyle().Foreground(styles.Pink)
 
 	return Model{
-		engine:        e,
-		view:          viewList,
-		urlInput:      urlInput,
-		priorityInput: priorityInput,
-		spinner:       sp,
-		help:          help.New(),
-		keys:          newKeyMap(),
-		lastRefresh:   time.Now().Add(-10 * time.Second),
+		actions:           actions,
+		view:              viewList,
+		addFormFocusIndex: 0,
+		urlInput:          urlInput,
+		priorityInput:     priorityInput,
+		spinner:           sp,
+		help:              help.New(),
+		keys:              newKeyMap(),
+		lastRefresh:       time.Now().Add(-10 * time.Second),
 	}
 }
 
@@ -127,7 +127,7 @@ func (m Model) Init() tea.Cmd {
 
 func (m Model) refreshDownloads() tea.Cmd {
 	return func() tea.Msg {
-		return downloadsMsg(m.engine.GetAllDownloads())
+		return downloadsMsg(m.actions.GetAll())
 	}
 }
 
@@ -191,10 +191,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch m.view {
 	case viewList:
 		cmd = m.updateListView(msg)
-	case viewAddURL:
-		cmd = m.updateAddURLView(msg)
-	case viewAddPriority:
-		cmd = m.updateAddPriorityView(msg)
+	case viewAdd:
+		cmd = m.updateAddView(msg)
 	case viewConfirmRemove:
 		cmd = m.updateConfirmRemoveView(msg)
 	case viewConfirmCancel:
@@ -227,17 +225,17 @@ func (m *Model) updateListView(msg tea.Msg) tea.Cmd {
 				m.list.selected++
 			}
 		case key.Matches(msg, m.keys.Add):
-			m.view = viewAddURL
+			m.view = viewAdd
 			m.urlInput.Focus()
 
 			return textinput.Blink
 		case key.Matches(msg, m.keys.Pause):
 			if id, ok := m.getSelectedDownloadID(); ok {
-				go m.engine.PauseDownload(id)
+				go m.actions.Pause(id)
 			}
 		case key.Matches(msg, m.keys.Resume):
 			if id, ok := m.getSelectedDownloadID(); ok {
-				go m.engine.ResumeDownload(context.Background(), id)
+				go m.actions.Resume(id)
 			}
 		case key.Matches(msg, m.keys.Cancel):
 			if _, ok := m.getSelectedDownloadID(); ok {
@@ -253,73 +251,62 @@ func (m *Model) updateListView(msg tea.Msg) tea.Cmd {
 	return nil
 }
 
-func (m *Model) updateAddURLView(msg tea.Msg) tea.Cmd {
-	var cmd tea.Cmd
-
-	m.urlInput, cmd = m.urlInput.Update(msg)
+func (m *Model) updateAddView(msg tea.Msg) tea.Cmd {
+	var cmds []tea.Cmd
 
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		switch {
+		// Handle navigation between input boxes
+		case key.Matches(msg, m.keys.Up), key.Matches(msg, m.keys.Down):
+			m.addFormFocusIndex = (m.addFormFocusIndex + 1) % 2
+			if m.addFormFocusIndex == 0 {
+				m.urlInput.Focus()
+				m.priorityInput.Blur()
+			} else {
+				m.urlInput.Blur()
+				m.priorityInput.Focus()
+			}
+
+		// Handle submission
 		case key.Matches(msg, m.keys.Confirm):
 			if m.urlInput.Value() != "" {
-				m.view = viewAddPriority
-				m.priorityInput.Focus()
-
-				return textinput.Blink
-			}
-		case key.Matches(msg, m.keys.Back):
-			m.view = viewList
-			m.urlInput.SetValue("")
-		}
-	}
-
-	return cmd
-}
-
-func (m *Model) updateAddPriorityView(msg tea.Msg) tea.Cmd {
-	var cmd tea.Cmd
-
-	m.priorityInput, cmd = m.priorityInput.Update(msg)
-
-	switch msg := msg.(type) {
-	case tea.KeyMsg:
-		switch {
-		case key.Matches(msg, m.keys.Confirm):
-			if m.priorityInput.Validate(m.priorityInput.Value()) == nil {
 				priority := 5 // Default priority
-
 				if m.priorityInput.Value() != "" {
 					p, _ := strconv.Atoi(m.priorityInput.Value())
 					priority = p
 				}
-
 				url := m.urlInput.Value()
-
 				go func() {
-					_, err := m.engine.AddDownload(context.Background(), url, priority)
-					if err != nil {
-						// This should be handled by a message from the engine
-					}
+					m.actions.Add(url, priority)
 				}()
 
 				m.successMsg = "Added download for: " + url
 				m.view = viewList
 				m.urlInput.SetValue("")
 				m.priorityInput.SetValue("")
-
 				return clearNotifications()
 			}
-		case key.Matches(msg, m.keys.Back):
-			m.view = viewAddURL
-			m.priorityInput.SetValue("")
-			m.urlInput.Focus()
 
-			return textinput.Blink
+		// Handle backing out of the view
+		case key.Matches(msg, m.keys.Back):
+			m.view = viewList
+			m.urlInput.SetValue("")
+			m.priorityInput.SetValue("")
 		}
 	}
 
-	return cmd
+	// Pass the message to the currently focused input
+	var cmd tea.Cmd
+	if m.addFormFocusIndex == 0 {
+		m.urlInput, cmd = m.urlInput.Update(msg)
+		cmds = append(cmds, cmd)
+	} else {
+		m.priorityInput, cmd = m.priorityInput.Update(msg)
+		cmds = append(cmds, cmd)
+	}
+
+	return tea.Batch(cmds...)
 }
 
 func (m *Model) updateConfirmRemoveView(msg tea.Msg) tea.Cmd {
@@ -328,7 +315,7 @@ func (m *Model) updateConfirmRemoveView(msg tea.Msg) tea.Cmd {
 		switch msg.String() {
 		case "y", "Y", "enter":
 			if id, ok := m.getSelectedDownloadID(); ok {
-				go m.engine.RemoveDownload(id)
+				go m.actions.Remove(id)
 			}
 
 			m.view = viewList
@@ -349,7 +336,7 @@ func (m *Model) updateConfirmCancelView(msg tea.Msg) tea.Cmd {
 		switch msg.String() {
 		case "y", "Y", "enter":
 			if id, ok := m.getSelectedDownloadID(); ok {
-				go m.engine.CancelDownload(id)
+				go m.actions.Cancel(id)
 			}
 
 			m.view = viewList
@@ -374,9 +361,8 @@ func (m Model) View() string {
 
 	switch m.view {
 	case viewList:
-		// CORRECTED: Call the component function.
 		mainContent = components.RenderDownloadList(m.list.downloads, m.list.selected, m.width, m.height-10)
-	case viewAddURL, viewAddPriority:
+	case viewAdd:
 		mainContent = m.renderAddView()
 	case viewConfirmRemove:
 		mainContent = m.renderConfirmDialog("Are you sure you want to remove this download? (y/n)")
@@ -404,12 +390,13 @@ func (m *Model) renderAddView() string {
 	b.WriteString("\n\n" + m.urlInput.View())
 	b.WriteString("\n\n" + m.priorityInput.View())
 
+	// Display validation errors if any
 	err := m.priorityInput.Validate(m.priorityInput.Value())
 	if err != nil {
 		b.WriteString("\n" + styles.ErrorStyle.Render(err.Error()))
 	}
 
-	b.WriteString("\n\n(esc to go back)")
+	b.WriteString("\n\n(↑/↓ to switch, enter to confirm, esc to cancel)")
 
 	dialog := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
@@ -454,26 +441,29 @@ func renderHeader(m *Model) string {
 	header := headerStyle.Render(title)
 
 	active := 0
+	queued := 0
 	paused := 0
 	completed := 0
 	failed := 0
 
 	for _, d := range m.list.downloads {
 		switch d.Status {
-		case 1: // Active
+		case 1:
 			active++
-		case 2: // Paused
+		case 2:
 			paused++
-		case 3: // Completed
+		case 3:
 			completed++
-		case 4: // Failed
+		case 4:
 			failed++
+		case 5:
+			queued++
 		}
 	}
 
 	statsText := fmt.Sprintf(
-		"Total: %d | Active: %d | Paused: %d | Completed: %d | Failed: %d",
-		len(m.list.downloads), active, paused, completed, failed,
+		"Total: %d | Active: %d | Queues: %d | Paused: %d | Completed: %d | Failed: %d",
+		len(m.list.downloads), active, queued, paused, completed, failed,
 	)
 
 	statsStyle := lipgloss.NewStyle().

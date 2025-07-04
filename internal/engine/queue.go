@@ -2,222 +2,160 @@ package engine
 
 import (
 	"container/heap"
+	"context"
+	"sort"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/NamanBalaji/tdm/internal/worker"
 )
 
-// QueueItem represents an item in the priority queue.
-type QueueItem struct {
-	ID       uuid.UUID
-	Priority int
-	AddedAt  time.Time
-	index    int
+// queueItem wraps a Worker so it can live inside a heap.
+type queueItem struct {
+	worker  worker.Worker
+	addedAt time.Time
+	index   int
 }
 
-// PriorityQueue implements a thread-safe priority queue.
 type PriorityQueue struct {
-	mu     sync.RWMutex
-	items  []*QueueItem
-	lookup map[uuid.UUID]*QueueItem
+	mu            sync.RWMutex
+	items         []*queueItem       // the heap
+	lookup        map[uuid.UUID]int  // workerID → heap index (or -1 if gone)
+	active        map[uuid.UUID]bool // workers currently started
+	maxConcurrent int
 }
 
-// NewPriorityQueue creates a new priority queue.
-func NewPriorityQueue() *PriorityQueue {
+// NewPriorityQueue returns an empty queue that will allow at most
+func NewPriorityQueue(maxConcurrent int) *PriorityQueue {
 	pq := &PriorityQueue{
-		items:  make([]*QueueItem, 0),
-		lookup: make(map[uuid.UUID]*QueueItem),
+		items:         make([]*queueItem, 0),
+		lookup:        make(map[uuid.UUID]int),
+		active:        make(map[uuid.UUID]bool),
+		maxConcurrent: maxConcurrent,
 	}
 	heap.Init(pq)
-
 	return pq
 }
 
 func (pq *PriorityQueue) Len() int { return len(pq.items) }
 
 func (pq *PriorityQueue) Less(i, j int) bool {
-	if pq.items[i].Priority != pq.items[j].Priority {
-		return pq.items[i].Priority > pq.items[j].Priority
+	pi, pj := pq.items[i].worker.GetPriority(), pq.items[j].worker.GetPriority()
+	if pi != pj {
+		return pi > pj
 	}
 
-	return pq.items[i].AddedAt.Before(pq.items[j].AddedAt)
+	return pq.items[i].addedAt.Before(pq.items[j].addedAt)
 }
 
 func (pq *PriorityQueue) Swap(i, j int) {
 	pq.items[i], pq.items[j] = pq.items[j], pq.items[i]
 	pq.items[i].index = i
 	pq.items[j].index = j
+	pq.lookup[pq.items[i].worker.GetID()] = i
+	pq.lookup[pq.items[j].worker.GetID()] = j
 }
 
-func (pq *PriorityQueue) Push(x interface{}) {
-	n := len(pq.items)
-	item := x.(*QueueItem)
-	item.index = n
+func (pq *PriorityQueue) Push(x any) {
+	item := x.(*queueItem)
+	item.index = len(pq.items)
 	pq.items = append(pq.items, item)
-	pq.lookup[item.ID] = item
+	pq.lookup[item.worker.GetID()] = item.index
 }
 
-func (pq *PriorityQueue) Pop() interface{} {
-	old := pq.items
-	n := len(old)
-	item := old[n-1]
-	old[n-1] = nil
+func (pq *PriorityQueue) Pop() any {
+	n := len(pq.items) - 1
+	item := pq.items[n]
+	pq.items[n] = nil
+	pq.items = pq.items[:n]
+	delete(pq.lookup, item.worker.GetID())
 	item.index = -1
-	pq.items = old[0 : n-1]
-	delete(pq.lookup, item.ID)
-
 	return item
 }
 
-// Add adds a new item to the queue.
-func (pq *PriorityQueue) Add(id uuid.UUID, priority int) {
+func (pq *PriorityQueue) Add(ctx context.Context, w worker.Worker) {
 	pq.mu.Lock()
-	defer pq.mu.Unlock()
-
-	if _, exists := pq.lookup[id]; exists {
+	if _, already := pq.lookup[w.GetID()]; already {
+		pq.mu.Unlock()
 		return
 	}
+	heap.Push(pq, &queueItem{worker: w, addedAt: time.Now()})
+	pq.mu.Unlock()
 
-	item := &QueueItem{
-		ID:       id,
-		Priority: priority,
-		AddedAt:  time.Now(),
-	}
-	heap.Push(pq, item)
+	w.Queue()
+
+	pq.process(ctx)
 }
 
-// Remove removes an item from the queue.
-func (pq *PriorityQueue) Remove(id uuid.UUID) {
+func (pq *PriorityQueue) Remove(ctx context.Context, w worker.Worker) {
 	pq.mu.Lock()
-	defer pq.mu.Unlock()
-
-	item, exists := pq.lookup[id]
-	if !exists {
+	idx, ok := pq.lookup[w.GetID()]
+	if !ok {
+		pq.mu.Unlock()
 		return
 	}
+	heap.Remove(pq, idx)
 
-	heap.Remove(pq, item.index)
+	delete(pq.active, w.GetID())
+
+	if idx, ok := pq.lookup[w.GetID()]; ok {
+		heap.Remove(pq, idx)
+		delete(pq.lookup, w.GetID())
+	}
+	pq.mu.Unlock()
+
+	pq.process(ctx)
 }
 
-// Peek returns the highest priority item without removing it.
-func (pq *PriorityQueue) Peek() *QueueItem {
-	pq.mu.RLock()
-	defer pq.mu.RUnlock()
+func (pq *PriorityQueue) process(ctx context.Context) {
+	var toStart []worker.Worker
+	var toPause []worker.Worker
 
-	if len(pq.items) == 0 {
-		return nil
-	}
-
-	item := pq.items[0]
-
-	return &QueueItem{
-		ID:       item.ID,
-		Priority: item.Priority,
-		AddedAt:  item.AddedAt,
-	}
-}
-
-// PopHighest removes and returns the highest priority item.
-func (pq *PriorityQueue) PopHighest() *QueueItem {
 	pq.mu.Lock()
-	defer pq.mu.Unlock()
 
-	if len(pq.items) == 0 {
-		return nil
-	}
-
-	return heap.Pop(pq).(*QueueItem)
-}
-
-// GetLowestPriority returns the item with lowest priority.
-func (pq *PriorityQueue) GetLowestPriority(excludeIDs ...uuid.UUID) *QueueItem {
-	pq.mu.RLock()
-	defer pq.mu.RUnlock()
-
-	if len(pq.items) == 0 {
-		return nil
-	}
-
-	exclude := make(map[uuid.UUID]bool)
-	for _, id := range excludeIDs {
-		exclude[id] = true
-	}
-
-	var lowest *QueueItem
-
-	for _, item := range pq.items {
-		if exclude[item.ID] {
-			continue
+	itemsCopy := make([]*queueItem, len(pq.items))
+	copy(itemsCopy, pq.items)
+	sort.Slice(itemsCopy, func(i, j int) bool { // same rule as Less()
+		pi, pj := itemsCopy[i].worker.GetPriority(), itemsCopy[j].worker.GetPriority()
+		if pi != pj {
+			return pi > pj
 		}
+		return itemsCopy[i].addedAt.Before(itemsCopy[j].addedAt)
+	})
+	if len(itemsCopy) > pq.maxConcurrent {
+		itemsCopy = itemsCopy[:pq.maxConcurrent]
+	}
 
-		if lowest == nil || item.Priority < lowest.Priority ||
-			(item.Priority == lowest.Priority && item.AddedAt.After(lowest.AddedAt)) {
-			lowest = item
+	newActive := make(map[uuid.UUID]bool, pq.maxConcurrent)
+	for _, item := range itemsCopy {
+		id := item.worker.GetID()
+		newActive[id] = true
+		if !pq.active[id] {
+			toStart = append(toStart, item.worker)
 		}
 	}
 
-	if lowest == nil {
-		return nil
-	}
-
-	return &QueueItem{
-		ID:       lowest.ID,
-		Priority: lowest.Priority,
-		AddedAt:  lowest.AddedAt,
-	}
-}
-
-// Size returns the number of items in the queue.
-func (pq *PriorityQueue) Size() int {
-	pq.mu.RLock()
-	defer pq.mu.RUnlock()
-
-	return len(pq.items)
-}
-
-// Clear removes all items from the queue.
-func (pq *PriorityQueue) Clear() {
-	pq.mu.Lock()
-	defer pq.mu.Unlock()
-
-	pq.items = make([]*QueueItem, 0)
-	pq.lookup = make(map[uuid.UUID]*QueueItem)
-	heap.Init(pq)
-}
-
-// Contains checks if an item exists in the queue.
-func (pq *PriorityQueue) Contains(id uuid.UUID) bool {
-	pq.mu.RLock()
-	defer pq.mu.RUnlock()
-
-	_, exists := pq.lookup[id]
-
-	return exists
-}
-
-// GetAll returns all items in priority order.
-func (pq *PriorityQueue) GetAll() []*QueueItem {
-	pq.mu.RLock()
-	defer pq.mu.RUnlock()
-
-	result := make([]*QueueItem, len(pq.items))
-	for i, item := range pq.items {
-		result[i] = &QueueItem{
-			ID:       item.ID,
-			Priority: item.Priority,
-			AddedAt:  item.AddedAt,
+	// Any previously active worker that is no longer in the new active set should be paused and re-queued.
+	for id := range pq.active {
+		if !newActive[id] {
+			if idx, ok := pq.lookup[id]; ok && idx >= 0 && idx < len(pq.items) {
+				toPause = append(toPause, pq.items[idx].worker)
+			}
 		}
 	}
 
-	sorted := make([]*QueueItem, len(result))
-	copy(sorted, result)
-	tempPQ := &PriorityQueue{items: sorted}
-	heap.Init(tempPQ)
+	pq.active = newActive
 
-	for i := 0; i < len(result); i++ {
-		result[i] = heap.Pop(tempPQ).(*QueueItem)
+	pq.mu.Unlock()
+
+	for _, w := range toStart {
+		_ = w.Start(ctx)
 	}
 
-	return result
+	for _, w := range toPause {
+		_ = w.Pause()
+		w.Queue()
+	}
 }

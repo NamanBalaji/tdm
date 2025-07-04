@@ -31,7 +31,7 @@ type Worker interface {
 	Queue()
 }
 
-func GetWorker(ctx context.Context, urlStr string, repo *repository.BboltRepository) (Worker, error) {
+func GetWorker(ctx context.Context, urlStr string, priority int, repo *repository.BboltRepository) (Worker, error) {
 	u, err := url.Parse(urlStr)
 	if err != nil {
 		return nil, err
@@ -40,7 +40,7 @@ func GetWorker(ctx context.Context, urlStr string, repo *repository.BboltReposit
 	switch u.Scheme {
 	case "http", "https":
 		if http.CanHandle(urlStr) {
-			return http.New(ctx, urlStr, nil, repo)
+			return http.New(ctx, urlStr, nil, repo, priority)
 		}
 	}
 

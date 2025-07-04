@@ -12,7 +12,6 @@ type Config struct {
 	Headers     map[string]string `json:"headers,omitempty"`
 	MaxRetries  int               `json:"maxRetries"`
 	RetryDelay  time.Duration     `json:"retryDelay,omitempty"`
-	Priority    int               `json:"priority"`
 }
 
 func defaultConfig() *Config {
@@ -21,7 +20,6 @@ func defaultConfig() *Config {
 		Headers:     make(map[string]string),
 		MaxRetries:  3,
 		RetryDelay:  2 * time.Second,
-		Priority:    5,
 		MaxChunks:   32,
 	}
 }
@@ -57,11 +55,5 @@ func WithMaxRetries(maxRetries int) ConfigOption {
 func WithRetryDelay(retryDelay time.Duration) ConfigOption {
 	return func(cfg *Config) {
 		cfg.RetryDelay = retryDelay
-	}
-}
-
-func WithPriority(priority int) ConfigOption {
-	return func(cfg *Config) {
-		cfg.Priority = priority
 	}
 }
