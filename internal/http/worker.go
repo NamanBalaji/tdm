@@ -126,7 +126,7 @@ func New(ctx context.Context, url string, downloadData *Download, repo *reposito
 
 // GetPriority returns the worker's priority.
 func (w *Worker) GetPriority() int {
-	return w.download.Priority
+	return w.download.getPriority()
 }
 
 // GetID returns the download ID.
@@ -172,6 +172,77 @@ func (w *Worker) Start(ctx context.Context) error {
 	return nil
 }
 
+func (w *Worker) Cancel() error {
+	return w.stop(status.Cancelled, false)
+}
+
+func (w *Worker) Pause() error {
+	currentStatus := w.download.getStatus()
+	if currentStatus != status.Active && currentStatus != status.Queued {
+		return nil
+	}
+
+	return w.stop(status.Paused, false)
+}
+
+func (w *Worker) Resume(ctx context.Context) error {
+	if w.download.getStatus() != status.Paused {
+		return nil
+	}
+
+	w.download.setStatus(status.Pending)
+
+	return w.Start(ctx)
+}
+
+func (w *Worker) Remove() error {
+	err := w.stop(status.Cancelled, true)
+	if err != nil {
+		return err
+	}
+
+	err = w.repo.Delete(w.download.GetID().String())
+	if err != nil {
+		return err
+	}
+
+	finalPath := filepath.Join(w.download.getDir(), w.download.Filename)
+
+	err = os.Remove(finalPath)
+	if err != nil && !os.IsNotExist(err) {
+		logger.Warnf("Could not remove final download file %s: %v", finalPath, err)
+	}
+
+	return nil
+}
+
+func (w *Worker) Done() <-chan error {
+	return w.done
+}
+
+// Progress returns the current download progress.
+func (w *Worker) Progress() progress.Progress {
+	w.progressMu.RLock()
+	defer w.progressMu.RUnlock()
+
+	return w.lastProgress
+}
+
+// GetDownload returns the download info (for engine use).
+func (w *Worker) GetDownload() *Download {
+	return w.download
+}
+
+// GetFilename returns the filename of the download.
+func (w *Worker) GetFilename() string {
+	return w.download.Filename
+}
+
+// Queue sets the download status to Queued.
+func (w *Worker) Queue() {
+	w.download.setStatus(status.Queued)
+}
+
 func (w *Worker) setCancel(cancel context.CancelFunc) {
 	w.cancelMu.Lock()
 	defer w.cancelMu.Unlock()
@@ -196,7 +267,9 @@ func (w *Worker) saveState(ctx context.Context) {
 			return
 		case <-ticker.C:
 			if w.repo != nil {
-				w.repo.Save(w.download)
+				if err := w.repo.Save(w.download); err != nil {
+					logger.Errorf("Failed to save download: %v", err)
+				}
 			}
 		}
 	}
@@ -340,7 +413,7 @@ func (w *Worker) downloadChunkWithRetries(ctx context.Context, chunk *Chunk) err
 	chunk.setStatus(status.Failed)
 	logger.Errorf("Chunk %s failed after max retries: %v", chunk.ID, lastErr)
 
-	return ErrChunkDownloadFailed
+	return fmt.Errorf("%w: %w", ErrChunkDownloadFailed, lastErr)
 }
 
 func (w *Worker) downloadChunk(ctx context.Context, chunk *Chunk) error {
@@ -355,7 +428,12 @@ func (w *Worker) downloadChunk(ctx context.Context, chunk *Chunk) error {
 	}
 
 	conn := newConnection(w.download.getURL(), headers, w.client, currentStartByte, chunk.getEndByte())
-	defer conn.close()
+
+	defer func() {
+		if err := conn.close(); err != nil {
+			logger.Errorf("Failed to close connection for chunk %s: %v", chunk.ID, err)
+		}
+	}()
 
 	return chunk.Download(ctx, conn, !w.download.getSupportsRanges())
 }
@@ -371,7 +449,9 @@ func (w *Worker) finish(err error) {
 		}
 
 		if w.repo != nil {
-			w.repo.Save(w.download)
+			if err := w.repo.Save(w.download); err != nil {
+				logger.Errorf("Failed to save download state on finish: %v", err)
+			}
 		}
 
 		w.started.Store(false)
@@ -425,7 +505,9 @@ func (w *Worker) finish(err error) {
 	}
 	w.progressMu.Unlock()
 
-	os.RemoveAll(w.download.getTempDir())
+	if err := os.RemoveAll(w.download.getTempDir()); err != nil {
+		logger.Errorf("Failed to remove temporary directory %s: %v", w.download.getTempDir(), err)
+	}
 }
 
 func (w *Worker) mergeChunks() error {
@@ -442,10 +524,20 @@ func (w *Worker) mergeChunks() error {
 	if err != nil {
 		return fmt.Errorf("%w: %w", ErrFileCreateFailed, err)
 	}
-	defer outFile.Close()
+
+	defer func() {
+		if err := outFile.Close(); err != nil {
+			logger.Errorf("Failed to close output file %s: %v", targetPath, err)
+		}
+	}()
 
 	bufWriter := bufio.NewWriterSize(outFile, 4*1024*1024) // 4MB buffer
-	defer bufWriter.Flush()
+
+	defer func() {
+		if err := bufWriter.Flush(); err != nil {
+			logger.Errorf("Failed to flush buffer for file %s: %v", targetPath, err)
+		}
+	}()
 
 	sortedChunks := w.download.getChunks()
 	sort.Slice(sortedChunks, func(i, j int) bool {
@@ -461,7 +553,9 @@ func (w *Worker) mergeChunks() error {
 		}
 
 		bytesCopied, err := io.Copy(bufWriter, chunkFile)
-		chunkFile.Close()
+		if fileCloseErr := chunkFile.Close(); fileCloseErr != nil {
+			logger.Errorf("Failed to close file %s: %v", c.getTempFilePath(), fileCloseErr)
+		}
 
 		if err != nil {
 			return fmt.Errorf("%w: %w", ErrFileCopyFailed, err)
@@ -474,7 +568,7 @@ func (w *Worker) mergeChunks() error {
 
 	err = bufWriter.Flush()
 	if err != nil {
-		return ErrFileWriteFailed
+		return fmt.Errorf("%w: %w", ErrFileWriteFailed, err)
 	}
 
 	return nil
@@ -512,7 +606,9 @@ func (w *Worker) stop(s status.Status, remove bool) error {
 	}
 
 	if w.repo != nil {
-		w.repo.Save(w.download)
+		if err := w.repo.Save(w.download); err != nil {
+			return fmt.Errorf("failed to save download state: %w", err)
+		}
 	}
 
 	return nil
@@ -525,75 +621,4 @@ func (w *Worker) cleanupFiles() {
 	if w.repo != nil {
 		_ = w.repo.Delete(w.download.GetID().String())
 	}
-}
-
-func (w *Worker) Cancel() error {
-	return w.stop(status.Cancelled, false)
-}
-
-func (w *Worker) Pause() error {
-	currentStatus := w.download.getStatus()
-	if currentStatus != status.Active && currentStatus != status.Queued {
-		return nil
-	}
-
-	return w.stop(status.Paused, false)
-}
-
-func (w *Worker) Resume(ctx context.Context) error {
-	if w.download.getStatus() != status.Paused {
-		return nil
-	}
-
-	w.download.setStatus(status.Pending)
-
-	return w.Start(ctx)
-}
-
-func (w *Worker) Remove() error {
-	err := w.stop(status.Cancelled, true)
-	if err != nil {
-		return err
-	}
-
-	err = w.repo.Delete(w.download.GetID().String())
-	if err != nil {
-		return err
-	}
-
-	finalPath := filepath.Join(w.download.getDir(), w.download.Filename)
-
-	err = os.Remove(finalPath)
-	if err != nil && !os.IsNotExist(err) {
-		logger.Warnf("Could not remove final download file %s: %v", finalPath, err)
-	}
-
-	return nil
-}
-
-func (w *Worker) Done() <-chan error {
-	return w.done
-}
-
-// Progress returns the current download progress.
-func (w *Worker) Progress() progress.Progress {
-	w.progressMu.RLock()
-	defer w.progressMu.RUnlock()
-
-	return w.lastProgress
-}
-
-// GetDownload returns the download info (for engine use).
-func (w *Worker) GetDownload() *Download {
-	return w.download
-}
-
-// GetFilename returns the filename of the download.
-func (w *Worker) GetFilename() string {
-	return w.download.Filename
-}
-
-// Queue sets the download status to Queued.
-func (w *Worker) Queue() {
-	w.download.setStatus(status.Queued)
 }

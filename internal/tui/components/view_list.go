@@ -62,7 +62,7 @@ func renderEmptyView(width, height int) string {
 		styles.Peach, styles.Yellow, styles.Green,
 	}
 
-	var lines []string
+	lines := make([]string, 0, len(logo))
 
 	for i, line := range logo {
 		styled := lipgloss.NewStyle().Foreground(colors[i]).Render(line)
@@ -70,9 +70,8 @@ func renderEmptyView(width, height int) string {
 	}
 
 	subtitle := lipgloss.NewStyle().Foreground(styles.Text).Italic(true).Render("Terminal Download Manager")
-	instruction := lipgloss.NewStyle().Foreground(styles.Subtext0).Render("Press 'a' to add a download or 'q' to quit")
 	content := lipgloss.JoinVertical(lipgloss.Center, lines...)
-	content = lipgloss.JoinVertical(lipgloss.Center, content, "", subtitle, "", instruction)
+	content = lipgloss.JoinVertical(lipgloss.Center, content, "", subtitle)
 
 	return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, content)
 }

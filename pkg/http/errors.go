@@ -26,9 +26,8 @@ var (
 	ErrGone             = errors.New("resource gone (410)")
 	ErrClientRequest    = errors.New("client error (4xx)")
 
-	ErrUnknown          = errors.New("unknown error")
-	ErrUnexpectedEOF    = errors.New("unexpected EOF")
-	ErrContextCancelled = errors.New("operation cancelled")
+	ErrUnknown       = errors.New("unknown error")
+	ErrUnexpectedEOF = errors.New("unexpected EOF")
 )
 
 // ClassifyHTTPError converts an HTTP status code into an appropriate error.
@@ -50,9 +49,9 @@ func ClassifyHTTPError(statusCode int) error {
 		return ErrTooManyRequests
 	default:
 		switch {
-		case statusCode >= 500:
+		case statusCode >= http.StatusInternalServerError:
 			return ErrServerProblem
-		case statusCode >= 400:
+		case statusCode >= http.StatusBadRequest:
 			return ErrClientRequest
 		default:
 			return nil

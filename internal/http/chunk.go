@@ -13,6 +13,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/NamanBalaji/tdm/internal/logger"
 	"github.com/NamanBalaji/tdm/internal/status"
 )
 
@@ -25,7 +26,7 @@ var (
 // ChunkDownloader defines the interface for a connection that can read data for a chunk.
 // This allows for mocking in tests.
 type ChunkDownloader interface {
-	Read(ctx context.Context, p []byte) (n int, err error)
+	Read(ctx context.Context, p []byte) (int, error)
 }
 
 type Chunk struct {
@@ -37,6 +38,60 @@ type Chunk struct {
 	Status       status.Status `json:"status"`
 	TempFilePath string        `json:"tempFilePath"`
 	RetryCount   int32         `json:"retryCount"`
+}
+
+func (c *Chunk) Download(ctx context.Context, downloader ChunkDownloader, isSequential bool) error {
+	c.setStatus(status.Active)
+
+	file, err := os.OpenFile(c.TempFilePath, os.O_WRONLY|os.O_CREATE, 0o644)
+	if err != nil {
+		c.setStatus(status.Failed)
+		return fmt.Errorf("%w: %w", ErrChunkFileOpenFailed, err)
+	}
+
+	defer func() {
+		if err := file.Close(); err != nil {
+			logger.Errorf("failed to close file %s: %v", c.TempFilePath, err)
+		}
+	}()
+
+	if isSequential {
+		atomic.StoreInt64(&c.Downloaded, 0)
+	}
+
+	if c.getDownloaded() > 0 && !isSequential {
+		if _, err := file.Seek(c.getDownloaded(), 0); err != nil {
+			c.setStatus(status.Failed)
+			return fmt.Errorf("%w: %w", ErrChunkFileSeekFailed, err)
+		}
+	} else {
+		if _, err := file.Seek(0, 0); err != nil {
+			c.setStatus(status.Failed)
+			return fmt.Errorf("%w: %w", ErrChunkFileSeekFailed, err)
+		}
+	}
+
+	return c.downloadLoop(ctx, downloader, file)
+}
+
+func (c *Chunk) MarshalJSON() ([]byte, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	type Alias Chunk
+
+	return json.Marshal(&struct {
+		*Alias
+
+		Status     int32 `json:"status"`
+		Downloaded int64 `json:"downloaded"`
+		RetryCount int32 `json:"retryCount"`
+	}{
+		Status:     c.getStatus(),
+		Downloaded: c.getDownloaded(),
+		RetryCount: c.getRetryCount(),
+		Alias:      (*Alias)(c),
+	})
 }
 
 func newChunk(start, end int64, path string) *Chunk {
@@ -95,35 +150,6 @@ func (c *Chunk) getTempFilePath() string {
 	return c.TempFilePath
 }
 
-func (c *Chunk) Download(ctx context.Context, downloader ChunkDownloader, isSequential bool) error {
-	c.setStatus(status.Active)
-
-	file, err := os.OpenFile(c.TempFilePath, os.O_WRONLY|os.O_CREATE, 0o644)
-	if err != nil {
-		c.setStatus(status.Failed)
-		return fmt.Errorf("%w: %w", ErrChunkFileOpenFailed, err)
-	}
-	defer file.Close()
-
-	if isSequential {
-		atomic.StoreInt64(&c.Downloaded, 0)
-	}
-
-	if c.getDownloaded() > 0 && !isSequential {
-		if _, err := file.Seek(c.getDownloaded(), 0); err != nil {
-			c.setStatus(status.Failed)
-			return fmt.Errorf("%w: %w", ErrChunkFileSeekFailed, err)
-		}
-	} else {
-		if _, err := file.Seek(0, 0); err != nil {
-			c.setStatus(status.Failed)
-			return fmt.Errorf("%w: %w", ErrChunkFileSeekFailed, err)
-		}
-	}
-
-	return c.downloadLoop(ctx, downloader, file)
-}
-
 func (c *Chunk) downloadLoop(ctx context.Context, downloader ChunkDownloader, file *os.File) error {
 	buffer := make([]byte, 32*1024)
 	totalSize := c.getTotalSize()
@@ -172,23 +198,4 @@ func (c *Chunk) downloadLoop(ctx context.Context, downloader ChunkDownloader, fi
 	c.setStatus(status.Completed)
 
 	return nil
-}
-
-func (c *Chunk) MarshalJSON() ([]byte, error) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	type Alias Chunk
-
-	return json.Marshal(&struct {
-		Status     int32 `json:"status"`
-		Downloaded int64 `json:"downloaded"`
-		RetryCount int32 `json:"retryCount"`
-		*Alias
-	}{
-		Status:     c.getStatus(),
-		Downloaded: c.getDownloaded(),
-		RetryCount: c.getRetryCount(),
-		Alias:      (*Alias)(c),
-	})
 }

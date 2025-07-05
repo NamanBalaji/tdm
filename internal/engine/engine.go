@@ -20,8 +20,9 @@ import (
 )
 
 var (
-	ErrWorkerNotFound  = errors.New("worker not found")
-	ErrInvalidPriority = errors.New("priority must be between 1 and 10")
+	ErrWorkerNotFound       = errors.New("worker not found")
+	ErrInvalidPriority      = errors.New("priority must be between 1 and 10")
+	ErrDownloadPauseTimeout = errors.New("timeout waiting for downloads to pause")
 )
 
 // DownloadError represents an error for a specific download.
@@ -48,7 +49,7 @@ func NewEngine(repo *repository.BboltRepository, maxConcurrent int) *Engine {
 		workers:      make(map[uuid.UUID]worker.Worker),
 		queue:        NewPriorityQueue(maxConcurrent),
 		shutdownDone: make(chan struct{}),
-		errors:       make(chan DownloadError),
+		errors:       make(chan DownloadError, 3),
 	}
 }
 
@@ -87,51 +88,6 @@ func (e *Engine) Start(ctx context.Context) error {
 	}
 
 	return nil
-}
-
-// addWorker adds a worker to the engine.
-func (e *Engine) addWorker(w worker.Worker) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
-	e.workers[w.GetID()] = w
-}
-
-// monitorWorker monitors a single worker for completion.
-func (e *Engine) monitorWorker(ctx context.Context, w worker.Worker) {
-	select {
-	case err := <-w.Done():
-		e.handleWorkerDone(ctx, w.GetID(), err)
-	case <-e.shutdownDone:
-		return
-	case <-ctx.Done():
-		return
-	}
-}
-
-// handleWorkerDone handles cleanup when a worker finishes.
-func (e *Engine) handleWorkerDone(ctx context.Context, workerID uuid.UUID, err error) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
-	w, exists := e.workers[workerID]
-	if !exists {
-		return
-	}
-
-	s := w.GetStatus()
-
-	if s == status.Completed || s == status.Failed || s == status.Cancelled {
-		e.queue.Remove(ctx, w)
-
-		if err != nil {
-			select {
-			case e.errors <- DownloadError{ID: workerID, Error: err}:
-			default:
-				logger.Errorf("Download %s failed: %v", workerID, err)
-			}
-		}
-	}
 }
 
 // AddDownload adds a new download to the engine.
@@ -327,7 +283,7 @@ func (e *Engine) Shutdown(ctx context.Context) error {
 		case <-ctx.Done():
 			shutdownErr = ctx.Err()
 		case <-time.After(10 * time.Second):
-			shutdownErr = errors.New("timeout waiting for downloads to pause")
+			shutdownErr = ErrDownloadPauseTimeout
 		}
 
 		close(e.errors)
@@ -340,6 +296,51 @@ func (e *Engine) Shutdown(ctx context.Context) error {
 // Wait waits for the engine to shut down.
 func (e *Engine) Wait() {
 	<-e.shutdownDone
+}
+
+// addWorker adds a worker to the engine.
+func (e *Engine) addWorker(w worker.Worker) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	e.workers[w.GetID()] = w
+}
+
+// monitorWorker monitors a single worker for completion.
+func (e *Engine) monitorWorker(ctx context.Context, w worker.Worker) {
+	select {
+	case err := <-w.Done():
+		e.handleWorkerDone(ctx, w.GetID(), err)
+	case <-e.shutdownDone:
+		return
+	case <-ctx.Done():
+		return
+	}
+}
+
+// handleWorkerDone handles cleanup when a worker finishes.
+func (e *Engine) handleWorkerDone(ctx context.Context, workerID uuid.UUID, err error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	w, exists := e.workers[workerID]
+	if !exists {
+		return
+	}
+
+	s := w.GetStatus()
+
+	if s == status.Completed || s == status.Failed || s == status.Cancelled {
+		e.queue.Remove(ctx, w)
+
+		if err != nil {
+			select {
+			case e.errors <- DownloadError{ID: workerID, Error: err}:
+			default:
+				logger.Errorf("Download %s failed: %v", workerID, err)
+			}
+		}
+	}
 }
 
 // DownloadInfo contains information about a download.

@@ -21,8 +21,8 @@ linters:
     - protogetter
     - lll
     - revive
-    - err113
-    - errcheck
+    - noinlineerr
+    - ireturn
   settings:
     cyclop:
       max-complexity: 25

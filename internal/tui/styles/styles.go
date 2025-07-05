@@ -4,16 +4,13 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// Catppuccin Mocha color palette.
 var (
-	// Base colors.
 	Base     = lipgloss.Color("#1e1e2e")
 	Crust    = lipgloss.Color("#11111b")
 	Text     = lipgloss.Color("#cdd6f4")
 	Subtext0 = lipgloss.Color("#a6adc8")
 	Surface0 = lipgloss.Color("#313244")
 
-	// Accents.
 	Pink     = lipgloss.Color("#f5c2e7")
 	Mauve    = lipgloss.Color("#cba6f7")
 	Red      = lipgloss.Color("#f38ba8")
@@ -26,9 +23,7 @@ var (
 	Lavender = lipgloss.Color("#b4befe")
 )
 
-// Styles.
 var (
-	// Header with pink background.
 	HeaderStyle = lipgloss.NewStyle().
 			Bold(true).
 			Foreground(Crust).
@@ -36,14 +31,12 @@ var (
 			Padding(1, 2).
 			Align(lipgloss.Center)
 
-		// Stats line under header.
 	StatsStyle = lipgloss.NewStyle().
 			Foreground(Text).
 			Background(Surface0).
 			Padding(0, 2).
 			Align(lipgloss.Center)
 
-	// Compact error box.
 	ErrorStyle = lipgloss.NewStyle().
 			Foreground(Base).
 			Background(Red).
@@ -52,12 +45,10 @@ var (
 			Padding(0, 1).
 			Align(lipgloss.Center)
 
-	// Each download row.
 	ListItemStyle = lipgloss.NewStyle().
 			Padding(0, 1).
 			Foreground(Text)
 
-		// Selected download row - simpler highlight.
 	SelectedItemStyle = lipgloss.NewStyle().
 				BorderLeft(true).
 				BorderStyle(lipgloss.NormalBorder()).
@@ -65,11 +56,9 @@ var (
 				Padding(0, 1).
 				Foreground(Text)
 
-	// Progress bar segments.
 	ProgressBarFilledStyle = lipgloss.NewStyle().Foreground(Green)
 	ProgressBarEmptyStyle  = lipgloss.NewStyle().Foreground(Surface0)
 
-	// Status badges.
 	StatusActive    = lipgloss.NewStyle().Foreground(Teal).Bold(true)
 	StatusQueued    = lipgloss.NewStyle().Foreground(Yellow).Bold(true)
 	StatusPaused    = lipgloss.NewStyle().Foreground(Peach).Bold(true)
@@ -77,7 +66,6 @@ var (
 	StatusCancelled = lipgloss.NewStyle().Foreground(Mauve).Bold(true)
 	StatusFailed    = lipgloss.NewStyle().Foreground(Red).Bold(true)
 
-	// Footer/help area.
 	FooterStyle = lipgloss.NewStyle().
 			Foreground(Subtext0).
 			Padding(0, 1).

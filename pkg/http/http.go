@@ -117,7 +117,7 @@ func (c *Client) Head(ctx context.Context, urlStr string, headers map[string]str
 
 	logger.Debugf("HEAD response for %s: status=%d", urlStr, resp.StatusCode)
 
-	if resp.StatusCode >= 400 {
+	if resp.StatusCode >= http.StatusBadRequest {
 		logger.Errorf("HEAD request returned error status %d for %s", resp.StatusCode, urlStr)
 		return nil, ClassifyHTTPError(resp.StatusCode)
 	}
@@ -152,7 +152,7 @@ func (c *Client) Range(ctx context.Context, urlStr string, start, end int64, hea
 
 	logger.Debugf("Range GET response for %s: status=%d", urlStr, resp.StatusCode)
 
-	if resp.StatusCode >= 400 {
+	if resp.StatusCode >= http.StatusBadRequest {
 		logger.Errorf("Range GET request returned error status %d for %s", resp.StatusCode, urlStr)
 		return nil, ClassifyHTTPError(resp.StatusCode)
 	}
@@ -188,7 +188,7 @@ func (c *Client) Get(ctx context.Context, urlStr string) (*http.Response, error)
 
 	logger.Debugf("GET response for %s: status=%d", urlStr, resp.StatusCode)
 
-	if resp.StatusCode >= 400 {
+	if resp.StatusCode >= http.StatusBadRequest {
 		logger.Errorf("GET request returned error status %d for %s", resp.StatusCode, urlStr)
 		return nil, ClassifyHTTPError(resp.StatusCode)
 	}

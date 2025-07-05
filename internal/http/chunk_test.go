@@ -23,7 +23,7 @@ type mockDownloader struct {
 	block  chan struct{}
 }
 
-func (m *mockDownloader) Read(ctx context.Context, p []byte) (n int, err error) {
+func (m *mockDownloader) Read(ctx context.Context, p []byte) (int, error) {
 	if m.err != nil {
 		return 0, m.err
 	}

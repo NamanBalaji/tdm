@@ -21,10 +21,8 @@ func isRetryableError(err error) bool {
 }
 
 func calculateBackoff(retryCount int, baseDelay time.Duration) time.Duration {
-	// Exponential backoff: 1s, 2s, 4s, 8s...
 	delay := baseDelay * (1 << uint(retryCount))
 
-	// Add jitter to prevent thundering herd problem
 	jitter := time.Duration(rand.Float64() * float64(delay) * 0.2) // +/- 10%
 	finalDelay := delay + jitter - (time.Duration(float64(delay) * 0.1))
 

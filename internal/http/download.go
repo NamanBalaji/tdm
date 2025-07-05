@@ -3,6 +3,7 @@ package http
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -20,6 +21,8 @@ import (
 	"github.com/NamanBalaji/tdm/internal/status"
 	httpPkg "github.com/NamanBalaji/tdm/pkg/http"
 )
+
+var ErrTempDirCreation = errors.New("failed to create temporary directory")
 
 type Download struct {
 	mu             sync.RWMutex
@@ -61,14 +64,10 @@ func NewDownload(ctx context.Context, url string, client *httpPkg.Client, maxChu
 
 	err = os.MkdirAll(download.TempDir, 0o755)
 	if err != nil {
-		return nil, fmt.Errorf("creating temp dir %s: %w", download.TempDir, err)
+		return nil, fmt.Errorf("%w, dir: %s, err:  %w", ErrTempDirCreation, download.TempDir, err)
 	}
 
 	return download, nil
-}
-
-func (d *Download) setDownloaded(downloaded int64) {
-	atomic.StoreInt64(&d.Downloaded, downloaded)
 }
 
 func (d *Download) GetID() uuid.UUID {
@@ -76,6 +75,32 @@ func (d *Download) GetID() uuid.UUID {
 	defer d.mu.RUnlock()
 
 	return d.Id
+}
+
+func (d *Download) MarshalJSON() ([]byte, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	type Alias Download
+
+	return json.Marshal(&struct {
+		*Alias
+
+		Status     int32 `json:"status"`
+		Downloaded int64 `json:"downloaded"`
+	}{
+		Status:     d.getStatus(),
+		Downloaded: d.Downloaded,
+		Alias:      (*Alias)(d),
+	})
+}
+
+func (d *Download) Type() string {
+	return "http"
+}
+
+func (d *Download) setDownloaded(downloaded int64) {
+	atomic.StoreInt64(&d.Downloaded, downloaded)
 }
 
 func (d *Download) getURL() string {
@@ -200,7 +225,12 @@ func (d *Download) initializeWithHEAD(ctx context.Context, client *httpPkg.Clien
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			logger.Errorf("Failed to close response body for %s: %v", d.URL, err)
+		}
+	}()
 
 	supportsRanges := resp.Header.Get("Accept-Ranges") == "bytes"
 	logger.Debugf("HEAD request successful, content-length=%d, supports-ranges=%v", resp.ContentLength, supportsRanges)
@@ -216,7 +246,12 @@ func (d *Download) initializeWithRangeGET(ctx context.Context, client *httpPkg.C
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			logger.Errorf("Failed to close response body for %s: %v", d.URL, err)
+		}
+	}()
 
 	contentRange := resp.Header.Get("Content-Range")
 
@@ -248,7 +283,12 @@ func (d *Download) initializeWithRegularGET(ctx context.Context, client *httpPkg
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			logger.Errorf("Failed to close response body for %s: %v", d.URL, err)
+		}
+	}()
 
 	logger.Debugf("Regular GET request successful, content-length=%d", resp.ContentLength)
 	d.populate(resp, false, resp.ContentLength)
@@ -305,25 +345,4 @@ func (d *Download) makeChunks(numChunks int) {
 
 		startByte = endByte + 1
 	}
-}
-
-func (d *Download) MarshalJSON() ([]byte, error) {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
-
-	type Alias Download
-
-	return json.Marshal(&struct {
-		Status     int32 `json:"status"`
-		Downloaded int64 `json:"downloaded"`
-		*Alias
-	}{
-		Status:     d.getStatus(),
-		Downloaded: d.Downloaded,
-		Alias:      (*Alias)(d),
-	})
-}
-
-func (d *Download) Type() string {
-	return "http"
 }

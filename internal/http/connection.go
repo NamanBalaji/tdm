@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 
+	"github.com/NamanBalaji/tdm/internal/logger"
 	httpPkg "github.com/NamanBalaji/tdm/pkg/http"
 )
 
@@ -27,6 +28,26 @@ func newConnection(url string, headers map[string]string, client *httpPkg.Client
 	}
 }
 
+func (c *connection) Read(ctx context.Context, p []byte) (int, error) {
+	if c.response == nil {
+		err := c.connect(ctx)
+		if err != nil {
+			return 0, err
+		}
+	}
+
+	return c.response.Body.Read(p)
+}
+
+func (c *connection) close() error {
+	if c.response != nil && c.response.Body != nil {
+		err := c.response.Body.Close()
+		return err
+	}
+
+	return nil
+}
+
 func (c *connection) connect(ctx context.Context) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.url, http.NoBody)
 	if err != nil {
@@ -43,7 +64,10 @@ func (c *connection) connect(ctx context.Context) error {
 	}
 
 	if resp.StatusCode >= 400 {
-		resp.Body.Close()
+		if err := resp.Body.Close(); err != nil {
+			logger.Errorf("failed to close response body for %s: %v", c.url, err)
+		}
+
 		return httpPkg.ClassifyHTTPError(resp.StatusCode)
 	}
 
@@ -56,33 +80,16 @@ func (c *connection) connect(ctx context.Context) error {
 			// Need to manually skip ahead to the start byte
 			// This is inefficient but necessary for servers without range support
 			if _, err := io.CopyN(io.Discard, resp.Body, c.startByte); err != nil {
-				resp.Body.Close()
+				if err := resp.Body.Close(); err != nil {
+					logger.Errorf("failed to close response body for %s: %v", c.url, err)
+				}
+
 				return httpPkg.ErrIOProblem
 			}
 		}
 	}
 
 	c.response = resp
-
-	return nil
-}
-
-func (c *connection) Read(ctx context.Context, p []byte) (n int, err error) {
-	if c.response == nil {
-		err := c.connect(ctx)
-		if err != nil {
-			return 0, err
-		}
-	}
-
-	return c.response.Body.Read(p)
-}
-
-func (c *connection) close() error {
-	if c.response != nil && c.response.Body != nil {
-		err := c.response.Body.Close()
-		return err
-	}
 
 	return nil
 }
