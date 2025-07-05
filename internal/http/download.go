@@ -272,37 +272,35 @@ func (d *Download) makeChunks(numChunks int) {
 
 	d.Chunks = nil
 
-	if !d.SupportsRanges || d.TotalSize <= 0 {
+	if d.TotalSize <= 0 {
+		return
+	}
+
+	if !d.SupportsRanges {
 		c := newChunk(0, d.TotalSize-1, d.TempDir)
-
-		logger.Debugf("Created single chunk because ranges are not supported or size is unknown.")
-
 		d.Chunks = append(d.Chunks, c)
-
 		return
 	}
 
 	chunkSize := d.TotalSize / int64(numChunks)
 	if chunkSize <= 0 {
-		chunkSize = d.TotalSize
+		c := newChunk(0, d.TotalSize-1, d.TempDir)
+		d.Chunks = append(d.Chunks, c)
+		return
 	}
 
 	var startByte int64
-	for i := range numChunks {
+	for startByte < d.TotalSize {
 		endByte := startByte + chunkSize - 1
-		if i == numChunks-1 || endByte >= d.TotalSize-1 {
+		if endByte >= d.TotalSize-1 {
 			endByte = d.TotalSize - 1
 		}
 
 		c := newChunk(startByte, endByte, d.TempDir)
 		d.Chunks = append(d.Chunks, c)
-		logger.Debugf("Created chunk %d with Id: %s, range: %d-%d", i, c.ID, startByte, endByte)
+		logger.Debugf("Created chunk %d with Id: %s, range: %d-%d", len(d.Chunks), c.ID, startByte, endByte)
 
 		startByte = endByte + 1
-
-		if startByte >= d.TotalSize {
-			break
-		}
 	}
 }
 
@@ -311,13 +309,14 @@ func (d *Download) MarshalJSON() ([]byte, error) {
 	defer d.mu.RUnlock()
 
 	type Alias Download
-
 	return json.Marshal(&struct {
-		Status int32 `json:"status"`
+		Status     int32 `json:"status"`
+		Downloaded int64 `json:"downloaded"`
 		*Alias
 	}{
-		Status: d.getStatus(),
-		Alias:  (*Alias)(d),
+		Status:     d.getStatus(),
+		Downloaded: d.Downloaded,
+		Alias:      (*Alias)(d),
 	})
 }
 

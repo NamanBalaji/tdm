@@ -2,6 +2,7 @@ package http
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -20,6 +21,12 @@ var (
 	ErrChunkFileWriteFailed = errors.New("failed to write to chunk file")
 	ErrChunkFileSeekFailed  = errors.New("failed to seek in chunk file")
 )
+
+// ChunkDownloader defines the interface for a connection that can read data for a chunk.
+// This allows for mocking in tests.
+type ChunkDownloader interface {
+	Read(ctx context.Context, p []byte) (n int, err error)
+}
 
 type Chunk struct {
 	mu           sync.RWMutex
@@ -88,34 +95,36 @@ func (c *Chunk) getTempFilePath() string {
 	return c.TempFilePath
 }
 
-func (c *Chunk) Download(ctx context.Context, conn *connection, isSequential bool) error {
+func (c *Chunk) Download(ctx context.Context, downloader ChunkDownloader, isSequential bool) error {
 	c.setStatus(status.Active)
 
 	file, err := os.OpenFile(c.TempFilePath, os.O_WRONLY|os.O_CREATE, 0o644)
 	if err != nil {
-		fmt.Println(c.TempFilePath)
 		c.setStatus(status.Failed)
-
-		return ErrChunkFileOpenFailed
+		return fmt.Errorf("%w: %v", ErrChunkFileOpenFailed, err)
 	}
 	defer file.Close()
+
+	if isSequential {
+		atomic.StoreInt64(&c.Downloaded, 0)
+	}
 
 	if c.getDownloaded() > 0 && !isSequential {
 		if _, err := file.Seek(c.getDownloaded(), 0); err != nil {
 			c.setStatus(status.Failed)
-			return ErrChunkFileSeekFailed
+			return fmt.Errorf("%w: %v", ErrChunkFileSeekFailed, err)
 		}
 	} else {
 		if _, err := file.Seek(0, 0); err != nil {
 			c.setStatus(status.Failed)
-			return ErrChunkFileSeekFailed
+			return fmt.Errorf("%w: %v", ErrChunkFileSeekFailed, err)
 		}
 	}
 
-	return c.downloadLoop(ctx, conn, file)
+	return c.downloadLoop(ctx, downloader, file)
 }
 
-func (c *Chunk) downloadLoop(ctx context.Context, conn *connection, file *os.File) error {
+func (c *Chunk) downloadLoop(ctx context.Context, downloader ChunkDownloader, file *os.File) error {
 	buffer := make([]byte, 32*1024)
 	totalSize := c.getTotalSize()
 	bytesRemaining := totalSize - c.getDownloaded()
@@ -123,18 +132,17 @@ func (c *Chunk) downloadLoop(ctx context.Context, conn *connection, file *os.Fil
 	for bytesRemaining > 0 {
 		select {
 		case <-ctx.Done():
-			c.setStatus(status.Cancelled)
 			return ctx.Err()
 		default:
-			n, err := conn.Read(ctx, buffer)
+			n, err := downloader.Read(ctx, buffer)
 			if n > 0 {
 				if bytesToWrite := int64(n); bytesToWrite > bytesRemaining {
-					n = int(bytesRemaining) // Adjust n to not exceed remaining bytes
+					n = int(bytesRemaining)
 				}
 
 				if _, writeErr := file.Write(buffer[:n]); writeErr != nil {
 					c.setStatus(status.Failed)
-					return ErrChunkFileWriteFailed
+					return fmt.Errorf("%w: %v", ErrChunkFileWriteFailed, writeErr)
 				}
 
 				newDownloaded := c.updateDownloaded(int64(n))
@@ -143,12 +151,18 @@ func (c *Chunk) downloadLoop(ctx context.Context, conn *connection, file *os.Fil
 
 			if err != nil {
 				if errors.Is(err, io.EOF) {
-					c.setStatus(status.Completed)
+					if bytesRemaining == 0 {
+						c.setStatus(status.Completed)
+					}
 					return nil
-				} else {
-					c.setStatus(status.Failed)
+				}
+
+				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 					return err
 				}
+
+				c.setStatus(status.Failed)
+				return err
 			}
 		}
 	}
@@ -156,4 +170,22 @@ func (c *Chunk) downloadLoop(ctx context.Context, conn *connection, file *os.Fil
 	c.setStatus(status.Completed)
 
 	return nil
+}
+
+func (c *Chunk) MarshalJSON() ([]byte, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	type Alias Chunk
+	return json.Marshal(&struct {
+		Status     int32 `json:"status"`
+		Downloaded int64 `json:"downloaded"`
+		RetryCount int32 `json:"retryCount"`
+		*Alias
+	}{
+		Status:     c.getStatus(),
+		Downloaded: c.getDownloaded(),
+		RetryCount: c.getRetryCount(),
+		Alias:      (*Alias)(c),
+	})
 }

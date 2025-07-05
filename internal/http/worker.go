@@ -482,6 +482,9 @@ func (w *Worker) stop(s status.Status, remove bool) error {
 	currentStatus := w.download.getStatus()
 
 	if currentStatus == status.Completed || currentStatus == status.Failed || currentStatus == status.Cancelled {
+		if remove {
+			w.cleanupFiles()
+		}
 		return nil
 	}
 
@@ -500,12 +503,7 @@ func (w *Worker) stop(s status.Status, remove bool) error {
 	}
 
 	if remove {
-		os.RemoveAll(w.download.getTempDir())
-		os.Remove(filepath.Join(w.download.getDir(), w.download.Filename))
-
-		if w.repo != nil {
-			w.repo.Delete(w.download.GetID().String())
-		}
+		w.cleanupFiles()
 
 		return nil
 	}
@@ -515,6 +513,14 @@ func (w *Worker) stop(s status.Status, remove bool) error {
 	}
 
 	return nil
+}
+
+func (w *Worker) cleanupFiles() {
+	_ = os.RemoveAll(w.download.getTempDir())
+	_ = os.Remove(filepath.Join(w.download.getDir(), w.download.Filename))
+	if w.repo != nil {
+		_ = w.repo.Delete(w.download.GetID().String())
+	}
 }
 
 func (w *Worker) Cancel() error {
