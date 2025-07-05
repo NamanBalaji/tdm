@@ -101,7 +101,7 @@ func (c *Chunk) Download(ctx context.Context, downloader ChunkDownloader, isSequ
 	file, err := os.OpenFile(c.TempFilePath, os.O_WRONLY|os.O_CREATE, 0o644)
 	if err != nil {
 		c.setStatus(status.Failed)
-		return fmt.Errorf("%w: %v", ErrChunkFileOpenFailed, err)
+		return fmt.Errorf("%w: %w", ErrChunkFileOpenFailed, err)
 	}
 	defer file.Close()
 
@@ -112,12 +112,12 @@ func (c *Chunk) Download(ctx context.Context, downloader ChunkDownloader, isSequ
 	if c.getDownloaded() > 0 && !isSequential {
 		if _, err := file.Seek(c.getDownloaded(), 0); err != nil {
 			c.setStatus(status.Failed)
-			return fmt.Errorf("%w: %v", ErrChunkFileSeekFailed, err)
+			return fmt.Errorf("%w: %w", ErrChunkFileSeekFailed, err)
 		}
 	} else {
 		if _, err := file.Seek(0, 0); err != nil {
 			c.setStatus(status.Failed)
-			return fmt.Errorf("%w: %v", ErrChunkFileSeekFailed, err)
+			return fmt.Errorf("%w: %w", ErrChunkFileSeekFailed, err)
 		}
 	}
 
@@ -142,7 +142,7 @@ func (c *Chunk) downloadLoop(ctx context.Context, downloader ChunkDownloader, fi
 
 				if _, writeErr := file.Write(buffer[:n]); writeErr != nil {
 					c.setStatus(status.Failed)
-					return fmt.Errorf("%w: %v", ErrChunkFileWriteFailed, writeErr)
+					return fmt.Errorf("%w: %w", ErrChunkFileWriteFailed, writeErr)
 				}
 
 				newDownloaded := c.updateDownloaded(int64(n))
@@ -154,6 +154,7 @@ func (c *Chunk) downloadLoop(ctx context.Context, downloader ChunkDownloader, fi
 					if bytesRemaining == 0 {
 						c.setStatus(status.Completed)
 					}
+
 					return nil
 				}
 
@@ -162,6 +163,7 @@ func (c *Chunk) downloadLoop(ctx context.Context, downloader ChunkDownloader, fi
 				}
 
 				c.setStatus(status.Failed)
+
 				return err
 			}
 		}
@@ -177,6 +179,7 @@ func (c *Chunk) MarshalJSON() ([]byte, error) {
 	defer c.mu.RUnlock()
 
 	type Alias Chunk
+
 	return json.Marshal(&struct {
 		Status     int32 `json:"status"`
 		Downloaded int64 `json:"downloaded"`

@@ -76,6 +76,7 @@ func New(ctx context.Context, url string, downloadData *Download, repo *reposito
 		download = d
 	} else {
 		download = downloadData
+
 		download.mu = sync.RWMutex{}
 		if download.Status == status.Queued || download.Status == status.Pending {
 			download.setStatus(status.Paused)
@@ -429,6 +430,7 @@ func (w *Worker) finish(err error) {
 
 func (w *Worker) mergeChunks() error {
 	finalDir := w.download.getDir()
+
 	err := os.MkdirAll(finalDir, 0755)
 	if err != nil {
 		return fmt.Errorf("%w: %w", ErrDirectoryCreateFailed, err)
@@ -469,8 +471,8 @@ func (w *Worker) mergeChunks() error {
 	}
 
 	logger.Debugf("Flushing %d bytes to disk for file %s", totalBytes, targetPath)
-	err = bufWriter.Flush()
 
+	err = bufWriter.Flush()
 	if err != nil {
 		return ErrFileWriteFailed
 	}
@@ -485,6 +487,7 @@ func (w *Worker) stop(s status.Status, remove bool) error {
 		if remove {
 			w.cleanupFiles()
 		}
+
 		return nil
 	}
 
@@ -517,6 +520,7 @@ func (w *Worker) stop(s status.Status, remove bool) error {
 
 func (w *Worker) cleanupFiles() {
 	_ = os.RemoveAll(w.download.getTempDir())
+
 	_ = os.Remove(filepath.Join(w.download.getDir(), w.download.Filename))
 	if w.repo != nil {
 		_ = w.repo.Delete(w.download.GetID().String())
@@ -558,6 +562,7 @@ func (w *Worker) Remove() error {
 	}
 
 	finalPath := filepath.Join(w.download.getDir(), w.download.Filename)
+
 	err = os.Remove(finalPath)
 	if err != nil && !os.IsNotExist(err) {
 		logger.Warnf("Could not remove final download file %s: %v", finalPath, err)

@@ -27,7 +27,7 @@ type PriorityQueue struct {
 	maxConcurrent int
 }
 
-// NewPriorityQueue returns an empty queue that will allow at most
+// NewPriorityQueue returns an empty queue that will allow at most.
 func NewPriorityQueue(maxConcurrent int) *PriorityQueue {
 	pq := &PriorityQueue{
 		items:         make([]*queueItem, 0),
@@ -36,6 +36,7 @@ func NewPriorityQueue(maxConcurrent int) *PriorityQueue {
 		maxConcurrent: maxConcurrent,
 	}
 	heap.Init(pq)
+
 	return pq
 }
 
@@ -72,15 +73,18 @@ func (pq *PriorityQueue) Pop() any {
 	pq.items = pq.items[:n]
 	delete(pq.lookup, item.worker.GetID())
 	item.index = -1
+
 	return item
 }
 
 func (pq *PriorityQueue) Add(ctx context.Context, w worker.Worker) {
 	pq.mu.Lock()
+
 	if _, already := pq.lookup[w.GetID()]; already {
 		pq.mu.Unlock()
 		return
 	}
+
 	heap.Push(pq, &queueItem{worker: w, addedAt: time.Now()})
 	pq.mu.Unlock()
 
@@ -91,11 +95,13 @@ func (pq *PriorityQueue) Add(ctx context.Context, w worker.Worker) {
 
 func (pq *PriorityQueue) Remove(ctx context.Context, w worker.Worker) {
 	pq.mu.Lock()
+
 	idx, ok := pq.lookup[w.GetID()]
 	if !ok {
 		pq.mu.Unlock()
 		return
 	}
+
 	heap.Remove(pq, idx)
 
 	delete(pq.active, w.GetID())
@@ -104,14 +110,17 @@ func (pq *PriorityQueue) Remove(ctx context.Context, w worker.Worker) {
 		heap.Remove(pq, idx)
 		delete(pq.lookup, w.GetID())
 	}
+
 	pq.mu.Unlock()
 
 	pq.process(ctx)
 }
 
 func (pq *PriorityQueue) process(ctx context.Context) {
-	var toStart []worker.Worker
-	var toPause []worker.Worker
+	var (
+		toStart []worker.Worker
+		toPause []worker.Worker
+	)
 
 	pq.mu.Lock()
 
@@ -122,15 +131,19 @@ func (pq *PriorityQueue) process(ctx context.Context) {
 		if pi != pj {
 			return pi > pj
 		}
+
 		return itemsCopy[i].addedAt.Before(itemsCopy[j].addedAt)
 	})
+
 	if len(itemsCopy) > pq.maxConcurrent {
 		itemsCopy = itemsCopy[:pq.maxConcurrent]
 	}
 
 	newActive := make(map[uuid.UUID]bool, pq.maxConcurrent)
+
 	for _, item := range itemsCopy {
 		id := item.worker.GetID()
+
 		newActive[id] = true
 		if !pq.active[id] {
 			toStart = append(toStart, item.worker)

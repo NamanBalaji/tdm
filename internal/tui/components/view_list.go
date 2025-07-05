@@ -11,21 +11,26 @@ func RenderDownloadList(downloads []engine.DownloadInfo, selected int, width, he
 	if len(downloads) == 0 {
 		return renderEmptyView(width, height)
 	}
+
 	if height <= 0 {
 		return lipgloss.NewStyle().Width(width).Height(height).Render("")
 	}
 
 	var rows []string
+
 	itemHeight := 4
 
 	visibleCount := height / itemHeight
+
 	start := selected - (visibleCount / 2)
 	if start < 0 {
 		start = 0
 	}
+
 	end := start + visibleCount
 	if end > len(downloads) {
 		end = len(downloads)
+
 		start = end - visibleCount
 		if start < 0 {
 			start = 0

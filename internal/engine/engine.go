@@ -63,6 +63,7 @@ func (e *Engine) Start(ctx context.Context) error {
 		switch dl.Type {
 		case "http":
 			var download http.Download
+
 			err := json.Unmarshal(dl.Data, &download)
 			if err != nil {
 				logger.Errorf("Failed to unmarshal download: %v", err)
@@ -105,7 +106,6 @@ func (e *Engine) monitorWorker(ctx context.Context, w worker.Worker) {
 		return
 	case <-ctx.Done():
 		return
-
 	}
 }
 
@@ -304,8 +304,8 @@ func (e *Engine) Shutdown(ctx context.Context) error {
 
 				go func(worker worker.Worker) {
 					defer wg.Done()
-					err := worker.Pause()
 
+					err := worker.Pause()
 					if err != nil {
 						logger.Errorf("Failed to pause download %s: %v", worker.GetID(), err)
 					}

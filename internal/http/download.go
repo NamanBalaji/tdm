@@ -58,8 +58,8 @@ func NewDownload(ctx context.Context, url string, client *httpPkg.Client, maxChu
 	}
 
 	download.makeChunks(maxChunks)
-	err = os.MkdirAll(download.TempDir, 0o755)
 
+	err = os.MkdirAll(download.TempDir, 0o755)
 	if err != nil {
 		return nil, fmt.Errorf("creating temp dir %s: %w", download.TempDir, err)
 	}
@@ -166,6 +166,7 @@ func (d *Download) setEndTime(t time.Time) {
 
 func (d *Download) initialize(ctx context.Context, client *httpPkg.Client) error {
 	var err error
+
 	err = d.initializeWithHEAD(ctx, client)
 	if err != nil {
 		logger.Warnf("HEAD request failed, falling back. Error: %v", err)
@@ -279,6 +280,7 @@ func (d *Download) makeChunks(numChunks int) {
 	if !d.SupportsRanges {
 		c := newChunk(0, d.TotalSize-1, d.TempDir)
 		d.Chunks = append(d.Chunks, c)
+
 		return
 	}
 
@@ -286,6 +288,7 @@ func (d *Download) makeChunks(numChunks int) {
 	if chunkSize <= 0 {
 		c := newChunk(0, d.TotalSize-1, d.TempDir)
 		d.Chunks = append(d.Chunks, c)
+
 		return
 	}
 
@@ -309,6 +312,7 @@ func (d *Download) MarshalJSON() ([]byte, error) {
 	defer d.mu.RUnlock()
 
 	type Alias Download
+
 	return json.Marshal(&struct {
 		Status     int32 `json:"status"`
 		Downloaded int64 `json:"downloaded"`

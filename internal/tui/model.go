@@ -270,11 +270,14 @@ func (m *Model) updateAddView(msg tea.Msg) tea.Cmd {
 		case key.Matches(msg, m.keys.Confirm):
 			if m.urlInput.Value() != "" {
 				priority := 5 // Default priority
+
 				if m.priorityInput.Value() != "" {
 					p, _ := strconv.Atoi(m.priorityInput.Value())
 					priority = p
 				}
+
 				url := m.urlInput.Value()
+
 				go func() {
 					m.actions.Add(url, priority)
 				}()
@@ -366,6 +369,7 @@ func (m Model) View() string {
 	}
 
 	var mainContent string
+
 	switch m.view {
 	case viewList:
 		mainContent = components.RenderDownloadList(m.list.downloads, m.list.selected, m.width, listHeight)

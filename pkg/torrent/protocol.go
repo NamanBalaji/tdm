@@ -93,6 +93,7 @@ func ReadHandshake(r io.Reader) (*Handshake, error) {
 	h := &Handshake{}
 
 	var pstrLen uint8
+
 	err := binary.Read(r, binary.BigEndian, &pstrLen)
 	if err != nil {
 		return nil, err
@@ -129,12 +130,13 @@ type Message struct {
 // Serialize writes the message to a writer.
 func (m *Message) Serialize(w io.Writer) error {
 	length := uint32(len(m.Payload) + 1)
+
 	err := binary.Write(w, binary.BigEndian, length)
 	if err != nil {
 		return err
 	}
-	err = binary.Write(w, binary.BigEndian, m.Type)
 
+	err = binary.Write(w, binary.BigEndian, m.Type)
 	if err != nil {
 		return err
 	}
@@ -151,6 +153,7 @@ func (m *Message) Serialize(w io.Writer) error {
 // ReadMessage reads a message from a reader.
 func ReadMessage(r io.Reader) (*Message, error) {
 	var length uint32
+
 	err := binary.Read(r, binary.BigEndian, &length)
 	if err != nil {
 		return nil, err

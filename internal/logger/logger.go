@@ -21,6 +21,7 @@ func InitLogging(debugMode bool, logPath string) error {
 
 	if DebugEnabled && logPath != "" {
 		logDir := filepath.Dir(logPath)
+
 		err := os.MkdirAll(logDir, 0o755)
 		if err != nil {
 			return fmt.Errorf("failed to create log directory: %w", err)

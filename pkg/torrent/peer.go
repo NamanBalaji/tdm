@@ -77,12 +77,13 @@ func NewPeerConn(peer Peer, infoHash [20]byte, peerID [20]byte) (*PeerConn, erro
 // Handshake performs the BitTorrent handshake.
 func (pc *PeerConn) Handshake() (*Handshake, error) {
 	handshake := NewHandshake(pc.infoHash, pc.peerID)
+
 	err := handshake.Serialize(pc.writer)
 	if err != nil {
 		return nil, fmt.Errorf("failed to send handshake: %w", err)
 	}
-	err = pc.writer.Flush()
 
+	err = pc.writer.Flush()
 	if err != nil {
 		return nil, fmt.Errorf("failed to flush handshake: %w", err)
 	}

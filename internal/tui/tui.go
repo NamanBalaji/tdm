@@ -2,8 +2,10 @@ package tui
 
 import (
 	"context"
-	tea "github.com/charmbracelet/bubbletea"
+
 	"github.com/google/uuid"
+
+	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/NamanBalaji/tdm/internal/engine"
 )

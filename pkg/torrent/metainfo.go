@@ -165,18 +165,18 @@ func (m *Metainfo) validate() error {
 	if err != nil {
 		return err
 	}
+
 	err = m.validateAnnounceList()
-
 	if err != nil {
 		return err
 	}
+
 	err = m.Info.validate()
-
 	if err != nil {
 		return err
 	}
-	err = m.validateConsistency()
 
+	err = m.validateConsistency()
 	if err != nil {
 		return err
 	}
@@ -274,18 +274,18 @@ func (i *Info) validate() error {
 	if err != nil {
 		return err
 	}
+
 	err = i.validatePieceLength()
-
 	if err != nil {
 		return err
 	}
+
 	err = i.validatePieces()
-
 	if err != nil {
 		return err
 	}
-	err = i.validateFileStructure()
 
+	err = i.validateFileStructure()
 	if err != nil {
 		return err
 	}

@@ -101,6 +101,7 @@ func (b *BboltRepository) GetAll() (map[string]Object, error) {
 
 		return b.ForEach(func(k, v []byte) error {
 			var obj Object
+
 			err := json.Unmarshal(v, &obj)
 			if err != nil {
 				return err
