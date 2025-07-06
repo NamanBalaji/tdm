@@ -196,24 +196,7 @@ func (w *Worker) Resume(ctx context.Context) error {
 }
 
 func (w *Worker) Remove() error {
-	err := w.stop(status.Cancelled, true)
-	if err != nil {
-		return err
-	}
-
-	err = w.repo.Delete(w.download.GetID().String())
-	if err != nil {
-		return err
-	}
-
-	finalPath := filepath.Join(w.download.getDir(), w.download.Filename)
-
-	err = os.Remove(finalPath)
-	if err != nil && !os.IsNotExist(err) {
-		logger.Warnf("Could not remove final download file %s: %v", finalPath, err)
-	}
-
-	return nil
+	return w.stop(status.Cancelled, true)
 }
 
 func (w *Worker) Done() <-chan error {
