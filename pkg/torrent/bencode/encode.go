@@ -1,89 +1,135 @@
 package bencode
 
 import (
+	"bytes"
 	"errors"
+	"fmt"
+	"reflect"
 	"sort"
 	"strconv"
 )
 
-var ErrEncoding = errors.New("error encoding data to bencode format")
+// Marshal encodes v into canonical bencode.
+func Marshal(v any) ([]byte, error) {
+	var buf bytes.Buffer
+	if err := encodeValue(&buf, reflect.ValueOf(v)); err != nil {
+		return nil, err
+	}
 
-func Encode(data any) ([]byte, error) {
-	switch v := data.(type) {
-	case string:
-		bytes := []byte(v)
-		return append([]byte(strconv.Itoa(len(bytes))+":"), bytes...), nil
-	case []byte:
-		return append([]byte(strconv.Itoa(len(v))+":"), v...), nil
-	case int:
-		return []byte("i" + strconv.FormatInt(int64(v), 10) + "e"), nil
-	case int8:
-		return []byte("i" + strconv.FormatInt(int64(v), 10) + "e"), nil
-	case int16:
-		return []byte("i" + strconv.FormatInt(int64(v), 10) + "e"), nil
-	case int32:
-		return []byte("i" + strconv.FormatInt(int64(v), 10) + "e"), nil
-	case int64:
-		return []byte("i" + strconv.FormatInt(v, 10) + "e"), nil
-	case uint:
-		return []byte("i" + strconv.FormatUint(uint64(v), 10) + "e"), nil
-	case uint8:
-		return []byte("i" + strconv.FormatUint(uint64(v), 10) + "e"), nil
-	case uint16:
-		return []byte("i" + strconv.FormatUint(uint64(v), 10) + "e"), nil
-	case uint32:
-		return []byte("i" + strconv.FormatUint(uint64(v), 10) + "e"), nil
-	case uint64:
-		return []byte("i" + strconv.FormatUint(v, 10) + "e"), nil
-	case []any:
-		var result []byte
+	return buf.Bytes(), nil
+}
 
-		result = append(result, 'l')
+func encodeValue(buf *bytes.Buffer, v reflect.Value) error {
+	if !v.IsValid() {
+		buf.WriteString("0:")
+		return nil
+	}
 
-		for _, item := range v {
-			encoded, err := Encode(item)
-			if err != nil {
-				return nil, err
-			}
-
-			result = append(result, encoded...)
+	if v.Kind() == reflect.Pointer || v.Kind() == reflect.Interface {
+		if v.IsNil() {
+			buf.WriteString("0:")
+			return nil
 		}
 
-		result = append(result, 'e')
+		return encodeValue(buf, v.Elem())
+	}
 
-		return result, nil
-	case map[string]any:
-		var result []byte
+	switch v.Kind() {
+	case reflect.String:
+		s := v.String()
+		buf.WriteString(strconv.Itoa(len(s)))
+		buf.WriteByte(':')
+		buf.WriteString(s)
 
-		result = append(result, 'd')
+	case reflect.Slice, reflect.Array:
+		if v.Type().Elem().Kind() == reflect.Uint8 {
+			s := v.Bytes()
+			buf.WriteString(strconv.Itoa(len(s)))
+			buf.WriteByte(':')
+			buf.Write(s)
 
-		keys := make([]string, 0, len(v))
-		for k := range v {
-			keys = append(keys, k)
+			return nil
+		}
+
+		buf.WriteByte('l')
+
+		for i := 0; i < v.Len(); i++ {
+			if err := encodeValue(buf, v.Index(i)); err != nil {
+				return err
+			}
+		}
+
+		buf.WriteByte('e')
+
+	case reflect.Map:
+		if v.Type().Key().Kind() != reflect.String {
+			return errors.New("bencode: map keys must be strings")
+		}
+
+		buf.WriteByte('d')
+
+		keys := make([]string, 0, v.Len())
+		for _, k := range v.MapKeys() {
+			keys = append(keys, k.String())
 		}
 
 		sort.Strings(keys)
 
 		for _, k := range keys {
-			keyEnc, err := Encode(k)
-			if err != nil {
-				return nil, err
+			encodeValue(buf, reflect.ValueOf(k))
+
+			if err := encodeValue(buf, v.MapIndex(reflect.ValueOf(k))); err != nil {
+				return err
 			}
-
-			result = append(result, keyEnc...)
-
-			valEnc, err := Encode(v[k])
-			if err != nil {
-				return nil, err
-			}
-
-			result = append(result, valEnc...)
 		}
 
-		result = append(result, 'e')
+		buf.WriteByte('e')
 
-		return result, nil
+	case reflect.Struct:
+		tmp := make(map[string]any, v.NumField())
+
+		t := v.Type()
+		for i := 0; i < v.NumField(); i++ {
+			sf := t.Field(i)
+			if sf.PkgPath != "" {
+				continue
+			}
+
+			tag := sf.Tag.Get("bencode")
+			if tag == "-" {
+				continue
+			}
+
+			key := tag
+			if key == "" {
+				key = sf.Name
+			}
+
+			tmp[key] = v.Field(i).Interface()
+		}
+
+		return encodeValue(buf, reflect.ValueOf(tmp))
+
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		buf.WriteByte('i')
+		buf.WriteString(strconv.FormatInt(v.Int(), 10))
+		buf.WriteByte('e')
+
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		buf.WriteByte('i')
+		buf.WriteString(strconv.FormatUint(v.Uint(), 10))
+		buf.WriteByte('e')
+
+	case reflect.Bool:
+		if v.Bool() {
+			buf.WriteString("i1e")
+		} else {
+			buf.WriteString("i0e")
+		}
+
 	default:
-		return nil, ErrEncoding
+		return fmt.Errorf("bencode: unsupported type %s", v.Type())
 	}
+
+	return nil
 }
