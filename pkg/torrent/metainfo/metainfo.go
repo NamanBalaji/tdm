@@ -37,8 +37,8 @@ type File struct {
 	Md5  []byte   `bencode:"md5sum" empty:"omit"`
 }
 
-// FromBytes parses a byte slice into a Metainfo structure.
-func FromBytes(data []byte) (*Metainfo, error) {
+// ParseMetainfoFromBytes parses a byte slice into a Metainfo structure.
+func ParseMetainfoFromBytes(data []byte) (*Metainfo, error) {
 	mi := &Metainfo{}
 	if err := bencode.Unmarshal(data, mi); err != nil {
 		return nil, err

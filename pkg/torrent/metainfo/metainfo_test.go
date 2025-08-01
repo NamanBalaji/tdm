@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-func TestFromBytes(t *testing.T) {
+func TestParseMetainfoFromBytes(t *testing.T) {
 	tests := []struct {
 		name    string
 		data    func() []byte
@@ -159,14 +159,14 @@ func TestFromBytes(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := metainfo.FromBytes(tt.data())
+			got, err := metainfo.ParseMetainfoFromBytes(tt.data())
 			if (err != nil) != tt.wantErr {
-				t.Errorf("FromBytes() error = %v, wantErr %v", err, tt.wantErr)
+				t.Errorf("ParseMetainfoFromBytes() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
 			if tt.wantErr {
 				if !strings.Contains(err.Error(), tt.errMsg) {
-					t.Errorf("FromBytes() error = %v, want error containing %q", err, tt.errMsg)
+					t.Errorf("ParseMetainfoFromBytes() error = %v, want error containing %q", err, tt.errMsg)
 				}
 				return
 			}
@@ -202,7 +202,7 @@ func TestFromBytes(t *testing.T) {
 	}
 }
 
-func TestFromBytesErrors(t *testing.T) {
+func TestParseMetainfoFromBytesErrors(t *testing.T) {
 	tests := []struct {
 		name    string
 		data    func() []byte
@@ -338,13 +338,13 @@ func TestFromBytesErrors(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := metainfo.FromBytes(tt.data())
+			_, err := metainfo.ParseMetainfoFromBytes(tt.data())
 			if err == nil {
-				t.Errorf("FromBytes() expected error but got none")
+				t.Errorf("ParseMetainfoFromBytes() expected error but got none")
 				return
 			}
 			if !strings.Contains(err.Error(), tt.wantErr) {
-				t.Errorf("FromBytes() error = %v, want error containing %q", err, tt.wantErr)
+				t.Errorf("ParseMetainfoFromBytes() error = %v, want error containing %q", err, tt.wantErr)
 			}
 		})
 	}
@@ -367,18 +367,18 @@ func TestInfoHashGeneration(t *testing.T) {
 	}
 
 	encoded, _ := bencode.Marshal(data)
-	mi, err := metainfo.FromBytes(encoded)
+	mi, err := metainfo.ParseMetainfoFromBytes(encoded)
 	if err != nil {
-		t.Fatalf("FromBytes() error = %v", err)
+		t.Fatalf("ParseMetainfoFromBytes() error = %v", err)
 	}
 
 	if mi.InfoHash == [20]byte{} {
 		t.Error("InfoHash should not be empty")
 	}
 
-	mi2, err := metainfo.FromBytes(encoded)
+	mi2, err := metainfo.ParseMetainfoFromBytes(encoded)
 	if err != nil {
-		t.Fatalf("FromBytes() second call error = %v", err)
+		t.Fatalf("ParseMetainfoFromBytes() second call error = %v", err)
 	}
 
 	if mi.InfoHash != mi2.InfoHash {
@@ -441,9 +441,9 @@ func TestComplexTorrentData(t *testing.T) {
 	}
 
 	encoded, _ := bencode.Marshal(data)
-	mi, err := metainfo.FromBytes(encoded)
+	mi, err := metainfo.ParseMetainfoFromBytes(encoded)
 	if err != nil {
-		t.Fatalf("FromBytes() error = %v", err)
+		t.Fatalf("ParseMetainfoFromBytes() error = %v", err)
 	}
 
 	if mi.Announce != "http://primary.tracker.com/announce" {
