@@ -3,7 +3,6 @@ package peer
 import (
 	"context"
 	"fmt"
-	"github.com/NamanBalaji/tdm/internal/logger"
 	"io"
 	"net"
 	"sync"
@@ -11,9 +10,9 @@ import (
 )
 
 type ManagerConfig struct {
-	MaxPeers    int           // hard limit (default 200)
-	DialTimeout time.Duration // inherited from T2.3
-	ListenAddr  string        // ":6881" or empty for no inbound
+	MaxPeers    int // hard limit (default 200)
+	DialTimeout time.Duration
+	ListenAddr  string
 	InfoHash    [20]byte
 	PeerID      [20]byte
 }
@@ -32,7 +31,8 @@ type Manager struct {
 	mu         sync.RWMutex
 	conns      map[string]*ConnEntry // key = net.Addr.String()
 	wg         sync.WaitGroup
-	listenAddr net.Addr // actual listener address (nil if no listener)
+	listenAddr net.Addr     // actual listener address (nil if no listener)
+	listener   net.Listener // store listener for proper shutdown
 
 	// channels for async adds/removes
 	dialCh   chan string   // "host:port"
@@ -59,7 +59,8 @@ func NewManager(cfg ManagerConfig) *Manager {
 		if err != nil {
 			panic(fmt.Sprintf("failed to listen on %s: %v", cfg.ListenAddr, err))
 		}
-		m.listenAddr = l.Addr() // store actual address
+		m.listenAddr = l.Addr()
+		m.listener = l
 		m.wg.Add(1)
 		go m.acceptLoop(l)
 	}
@@ -72,13 +73,13 @@ func NewManager(cfg ManagerConfig) *Manager {
 
 // acceptLoop handles incoming connections
 func (m *Manager) acceptLoop(l net.Listener) {
-	defer m.wg.Done()
-	defer l.Close()
+	defer func() {
+		m.wg.Done()
+	}()
 
 	for {
 		conn, err := l.Accept()
 		if err != nil {
-			// Listener closed, likely due to shutdown
 			return
 		}
 
@@ -86,6 +87,7 @@ func (m *Manager) acceptLoop(l net.Listener) {
 		case m.inCh <- conn:
 		case <-m.ctx.Done():
 			conn.Close()
+
 			return
 		}
 	}
@@ -109,7 +111,9 @@ func (m *Manager) RemovePeer(addr string) {
 
 // eventLoop handles all connection lifecycle events in a single goroutine
 func (m *Manager) eventLoop() {
-	defer m.wg.Done()
+	defer func() {
+		m.wg.Done()
+	}()
 
 	for {
 		select {
@@ -131,113 +135,88 @@ func (m *Manager) eventLoop() {
 
 // dialPeer attempts to connect to a peer
 func (m *Manager) dialPeer(addr string) {
-	// Check if we need to evict before adding
 	m.evictIfNeeded()
 
-	// Check again after potential eviction
 	m.mu.RLock()
 	connCount := len(m.conns)
 	_, exists := m.conns[addr]
 	m.mu.RUnlock()
 
 	if exists {
-		logger.Debugf("dial %s: already connected", addr)
 		return
 	}
 
 	if connCount >= m.cfg.MaxPeers {
-		logger.Debugf("dial %s: max peers reached (%d)", addr, m.cfg.MaxPeers)
 		return
 	}
 
 	conn, err := Dial(m.ctx, addr, m.cfg.InfoHash, m.cfg.PeerID)
 	if err != nil {
-		logger.Debugf("dial %s failed: %v", addr, err)
 		return
 	}
 
-	logger.Debugf("dial %s: connected successfully", addr)
 	m.addConn(addr, conn)
 }
 
 // handleInbound processes an incoming connection
 func (m *Manager) handleInbound(netConn net.Conn) {
 	addr := netConn.RemoteAddr().String()
-	logger.Debugf("handleInbound: processing connection from %s", addr)
 
-	// Check if we need to evict before adding
 	m.evictIfNeeded()
 
-	// Check again after potential eviction
 	m.mu.RLock()
 	connCount := len(m.conns)
 	_, exists := m.conns[addr]
 	m.mu.RUnlock()
 
 	if exists {
-		logger.Debugf("inbound %s: duplicate connection", addr)
 		netConn.Close()
 		return
 	}
 
 	if connCount >= m.cfg.MaxPeers {
-		logger.Debugf("inbound %s: max peers reached (%d)", addr, m.cfg.MaxPeers)
 		netConn.Close()
 		return
 	}
 
-	// Perform server-side handshake directly instead of using Accept
-	logger.Debugf("handleInbound: performing server-side handshake for %s", addr)
-	pconn, err := m.acceptHandshake(netConn)
+	err := m.serverHandshake(netConn)
 	if err != nil {
-		logger.Debugf("inbound %s: handshake failed: %v", addr, err)
 		netConn.Close()
 		return
 	}
 
-	logger.Debugf("inbound %s: connected successfully", addr)
+	pconn, err := m.createAcceptedConn(netConn)
+	if err != nil {
+		netConn.Close()
+		return
+	}
+
 	m.addConn(addr, pconn)
 }
 
-// acceptHandshake performs a server-side handshake (read client's handshake, then respond)
-func (m *Manager) acceptHandshake(netConn net.Conn) (*Conn, error) {
-	ctx, cancel := context.WithCancel(m.ctx)
-
-	// Create the connection object first
-	c := &Conn{
-		netConn: netConn,
-		r:       NewReader(netConn),
-		w:       NewWriter(netConn),
-		id:      m.cfg.PeerID,
-		remote:  netConn.RemoteAddr(),
-		ctx:     ctx,
-		cancel:  cancel,
-	}
-
+// serverHandshake performs just the handshake part (read client, send response)
+func (m *Manager) serverHandshake(netConn net.Conn) error {
 	// Set read deadline for handshake
 	if err := netConn.SetReadDeadline(time.Now().Add(DefaultRWTimeout)); err != nil {
-		return nil, err
+		return err
 	}
 
-	// Read client's handshake first (server behavior)
 	buf := make([]byte, HandshakeLen)
 	if _, err := io.ReadFull(netConn, buf); err != nil {
-		return nil, fmt.Errorf("failed to read client handshake: %w", err)
+		return fmt.Errorf("failed to read client handshake: %w", err)
 	}
 
 	clientHS, err := Unmarshal(buf)
 	if err != nil {
-		return nil, fmt.Errorf("failed to unmarshal client handshake: %w", err)
+		return fmt.Errorf("failed to unmarshal client handshake: %w", err)
 	}
 
-	// Verify info hash matches
 	if clientHS.InfoHash != m.cfg.InfoHash {
-		return nil, fmt.Errorf("info hash mismatch: expected %x, got %x", m.cfg.InfoHash, clientHS.InfoHash)
+		return fmt.Errorf("info hash mismatch: expected %x, got %x", m.cfg.InfoHash, clientHS.InfoHash)
 	}
 
-	// Send our handshake response
 	if err := netConn.SetWriteDeadline(time.Now().Add(DefaultRWTimeout)); err != nil {
-		return nil, err
+		return err
 	}
 
 	serverHS := Handshake{
@@ -248,21 +227,38 @@ func (m *Manager) acceptHandshake(netConn net.Conn) (*Conn, error) {
 
 	responseBytes, err := serverHS.Marshal()
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal server handshake: %w", err)
+		return fmt.Errorf("failed to marshal server handshake: %w", err)
 	}
 
 	if _, err := netConn.Write(responseBytes); err != nil {
-		return nil, fmt.Errorf("failed to send server handshake: %w", err)
+		return fmt.Errorf("failed to send server handshake: %w", err)
 	}
 
-	// Clear deadlines
 	netConn.SetReadDeadline(time.Time{})
 	netConn.SetWriteDeadline(time.Time{})
 
-	// Start the connection monitor goroutine
+	return nil
+}
+
+// createAcceptedConn creates a Conn object for an already-handshaken connection
+func (m *Manager) createAcceptedConn(netConn net.Conn) (*Conn, error) {
+	ctx, cancel := context.WithCancel(m.ctx)
+	c := &Conn{
+		netConn: netConn,
+		r:       NewReader(netConn),
+		w:       NewWriter(netConn),
+		id:      m.cfg.PeerID,
+		remote:  netConn.RemoteAddr(),
+		ctx:     ctx,
+		cancel:  cancel,
+	}
+
 	c.wg.Add(1)
 	go func() {
-		defer c.wg.Done()
+		defer func() {
+			c.wg.Done()
+		}()
+
 		<-c.ctx.Done()
 		c.netConn.Close()
 	}()
@@ -279,7 +275,6 @@ func (m *Manager) evictIfNeeded() {
 		return
 	}
 
-	// Find oldest connection
 	var oldestAddr string
 	var oldestTime time.Time
 	first := true
@@ -293,7 +288,6 @@ func (m *Manager) evictIfNeeded() {
 	}
 
 	if oldestAddr != "" {
-		logger.Debugf("evicting oldest connection: %s (added at %v)", oldestAddr, oldestTime)
 		if entry, ok := m.conns[oldestAddr]; ok {
 			entry.Conn.Close()
 			delete(m.conns, oldestAddr)
@@ -308,7 +302,6 @@ func (m *Manager) addConn(addr string, conn *Conn) {
 
 	// Double-check for duplicates under lock
 	if _, exists := m.conns[addr]; exists {
-		logger.Debugf("addConn %s: duplicate detected, closing new connection", addr)
 		conn.Close()
 		return
 	}
@@ -317,8 +310,6 @@ func (m *Manager) addConn(addr string, conn *Conn) {
 		Conn:    conn,
 		addedAt: time.Now(),
 	}
-
-	logger.Debugf("addConn %s: added successfully (total: %d)", addr, len(m.conns))
 }
 
 // dropConn removes and closes a connection
@@ -327,7 +318,6 @@ func (m *Manager) dropConn(addr string) {
 	defer m.mu.Unlock()
 
 	if entry, ok := m.conns[addr]; ok {
-		logger.Debugf("dropConn %s: removing connection", addr)
 		entry.Conn.Close()
 		delete(m.conns, addr)
 	}
@@ -338,9 +328,7 @@ func (m *Manager) closeAll() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	logger.Debugf("closeAll: closing %d connections", len(m.conns))
-	for addr, entry := range m.conns {
-		logger.Debugf("closeAll: closing %s", addr)
+	for _, entry := range m.conns {
 		entry.Conn.Close()
 	}
 	m.conns = make(map[string]*ConnEntry)
@@ -370,8 +358,14 @@ func (m *Manager) ListenAddr() net.Addr {
 
 // Stop gracefully shuts down the manager
 func (m *Manager) Stop() {
-	logger.Debugf("Stop: shutting down peer manager")
+
+	// Close listener first to unblock Accept() calls
+	if m.listener != nil {
+		m.listener.Close()
+	}
+
+	// Cancel context to signal all goroutines to exit
 	m.cancel()
+
 	m.wg.Wait()
-	logger.Debugf("Stop: shutdown complete")
 }
