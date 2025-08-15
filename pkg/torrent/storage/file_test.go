@@ -17,13 +17,12 @@ func TestOpenFileStorage_SingleFile(t *testing.T) {
 	}
 	defer os.RemoveAll(tempDir)
 
-	// Create single-file torrent metainfo
 	mi := &metainfo.Metainfo{
 		Info: metainfo.InfoDict{
 			Name:     "test.txt",
 			Len:      1024,
 			PieceLen: 512,
-			Pieces:   make([]byte, 40), // 2 pieces * 20 bytes each
+			Pieces:   make([]byte, 40),
 		},
 	}
 
@@ -36,7 +35,6 @@ func TestOpenFileStorage_SingleFile(t *testing.T) {
 	}
 	defer s.Close()
 
-	// Verify file was created
 	filePath := filepath.Join(tempDir, "test.txt")
 	stat, err := os.Stat(filePath)
 	if err != nil {
@@ -54,7 +52,6 @@ func TestOpenFileStorage_MultiFile(t *testing.T) {
 	}
 	defer os.RemoveAll(tempDir)
 
-	// Create multi-file torrent metainfo
 	mi := &metainfo.Metainfo{
 		Info: metainfo.InfoDict{
 			Name:     "testdir",
@@ -77,7 +74,6 @@ func TestOpenFileStorage_MultiFile(t *testing.T) {
 	}
 	defer s.Close()
 
-	// Verify files were created with correct sizes
 	files := []struct {
 		path string
 		size int64
@@ -120,11 +116,9 @@ func TestReadWriteBlock_SingleFile(t *testing.T) {
 	}
 	defer s.Close()
 
-	// Test data
 	testData := make([]byte, 512)
 	rand.Read(testData)
 
-	// Write block
 	n, err := s.WriteBlock(testData, 256)
 	if err != nil {
 		t.Fatal("WriteBlock failed:", err)
@@ -133,7 +127,6 @@ func TestReadWriteBlock_SingleFile(t *testing.T) {
 		t.Errorf("WriteBlock: expected %d bytes written, got %d", len(testData), n)
 	}
 
-	// Read block back
 	readData := make([]byte, 512)
 	n, err = s.ReadBlock(readData, 256)
 	if err != nil {
@@ -143,7 +136,6 @@ func TestReadWriteBlock_SingleFile(t *testing.T) {
 		t.Errorf("ReadBlock: expected %d bytes read, got %d", len(readData), n)
 	}
 
-	// Verify data matches
 	for i := range testData {
 		if testData[i] != readData[i] {
 			t.Errorf("Data mismatch at byte %d: wrote 0x%02x, read 0x%02x", i, testData[i], readData[i])
@@ -178,11 +170,9 @@ func TestReadWriteBlock_CrossFile(t *testing.T) {
 	}
 	defer s.Close()
 
-	// Test writing across file boundary (file1 -> file2)
 	testData := make([]byte, 200)
 	rand.Read(testData)
 
-	// Write starting at offset 450 (50 bytes in file1, 150 bytes in file2)
 	n, err := s.WriteBlock(testData, 450)
 	if err != nil {
 		t.Fatal("WriteBlock failed:", err)
@@ -191,7 +181,6 @@ func TestReadWriteBlock_CrossFile(t *testing.T) {
 		t.Errorf("WriteBlock: expected %d bytes written, got %d", len(testData), n)
 	}
 
-	// Read the same span back
 	readData := make([]byte, 200)
 	n, err = s.ReadBlock(readData, 450)
 	if err != nil {
@@ -201,7 +190,6 @@ func TestReadWriteBlock_CrossFile(t *testing.T) {
 		t.Errorf("ReadBlock: expected %d bytes read, got %d", len(readData), n)
 	}
 
-	// Verify data matches
 	for i := range testData {
 		if testData[i] != readData[i] {
 			t.Errorf("Cross-file data mismatch at byte %d: wrote 0x%02x, read 0x%02x", i, testData[i], readData[i])
@@ -232,7 +220,6 @@ func TestReadWriteBlock_EdgeCases(t *testing.T) {
 	}
 	defer s.Close()
 
-	// Test zero-length read/write
 	n, err := s.ReadBlock([]byte{}, 0)
 	if err != nil {
 		t.Error("Zero-length read should not error:", err)
@@ -249,9 +236,8 @@ func TestReadWriteBlock_EdgeCases(t *testing.T) {
 		t.Error("Zero-length write should return 0 bytes")
 	}
 
-	// Test reading past end
 	buf := make([]byte, 100)
-	n, err = s.ReadBlock(buf, 950) // Only 50 bytes available
+	n, err = s.ReadBlock(buf, 950)
 	if n > 50 {
 		t.Errorf("Read past end: expected at most 50 bytes, got %d", n)
 	}
@@ -264,12 +250,10 @@ func TestHashPiece_Valid(t *testing.T) {
 	}
 	defer os.RemoveAll(tempDir)
 
-	// Create test data and compute its hash
 	pieceData := make([]byte, 512)
 	rand.Read(pieceData)
 	expectedHash := sha1.Sum(pieceData)
 
-	// Create pieces array with the expected hash
 	pieces := make([]byte, 20)
 	copy(pieces, expectedHash[:])
 
@@ -288,7 +272,6 @@ func TestHashPiece_Valid(t *testing.T) {
 	}
 	defer s.Close()
 
-	// Write the test data
 	n, err := s.WriteBlock(pieceData, 0)
 	if err != nil {
 		t.Fatal("WriteBlock failed:", err)
@@ -297,7 +280,6 @@ func TestHashPiece_Valid(t *testing.T) {
 		t.Errorf("WriteBlock: expected %d bytes written, got %d", len(pieceData), n)
 	}
 
-	// Verify piece hash
 	if !s.HashPiece(0, 512) {
 		t.Error("HashPiece should return true for valid piece")
 	}
@@ -310,7 +292,6 @@ func TestHashPiece_Invalid(t *testing.T) {
 	}
 	defer os.RemoveAll(tempDir)
 
-	// Create wrong hash
 	wrongHash := make([]byte, 20)
 	rand.Read(wrongHash)
 
@@ -329,12 +310,10 @@ func TestHashPiece_Invalid(t *testing.T) {
 	}
 	defer s.Close()
 
-	// Write some data
 	testData := make([]byte, 512)
 	rand.Read(testData)
 	s.WriteBlock(testData, 0)
 
-	// Verify piece hash fails
 	if s.HashPiece(0, 512) {
 		t.Error("HashPiece should return false for invalid piece")
 	}
@@ -352,7 +331,7 @@ func TestHashPiece_EdgeCases(t *testing.T) {
 			Name:     "test.bin",
 			Len:      1024,
 			PieceLen: 512,
-			Pieces:   make([]byte, 40), // 2 pieces
+			Pieces:   make([]byte, 40),
 		},
 	}
 
@@ -362,7 +341,6 @@ func TestHashPiece_EdgeCases(t *testing.T) {
 	}
 	defer s.Close()
 
-	// Test invalid piece index
 	if s.HashPiece(-1, 512) {
 		t.Error("HashPiece should return false for negative piece index")
 	}
@@ -393,18 +371,14 @@ func TestClose(t *testing.T) {
 		t.Fatal("OpenFileStorage returned nil")
 	}
 
-	// Write some data
 	testData := make([]byte, 100)
 	rand.Read(testData)
 	s.WriteBlock(testData, 0)
 
-	// Close should not error
 	if err := s.Close(); err != nil {
 		t.Error("Close returned error:", err)
 	}
 
-	// Subsequent operations should fail gracefully
-	// (This depends on the OS behavior, but generally operations on closed files fail)
 }
 
 func TestHashPiece_LargePiece(t *testing.T) {
@@ -414,7 +388,6 @@ func TestHashPiece_LargePiece(t *testing.T) {
 	}
 	defer os.RemoveAll(tempDir)
 
-	// Create a large piece (1MB) to test streaming hash
 	pieceSize := 1024 * 1024
 	pieceData := make([]byte, pieceSize)
 	rand.Read(pieceData)
@@ -438,7 +411,6 @@ func TestHashPiece_LargePiece(t *testing.T) {
 	}
 	defer s.Close()
 
-	// Write the large piece
 	n, err := s.WriteBlock(pieceData, 0)
 	if err != nil {
 		t.Fatal("WriteBlock failed:", err)
@@ -447,7 +419,6 @@ func TestHashPiece_LargePiece(t *testing.T) {
 		t.Errorf("WriteBlock: expected %d bytes written, got %d", len(pieceData), n)
 	}
 
-	// Verify piece hash (this tests the streaming implementation)
 	if !s.HashPiece(0, pieceSize) {
 		t.Error("HashPiece should return true for valid large piece")
 	}

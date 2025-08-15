@@ -22,15 +22,20 @@ const (
 )
 
 var (
+	// ErrMsgTooBig indicates a message larger than the permitted 1 MiB.
 	ErrMsgTooBig = errors.New("message larger than 1 MiB")
-	ErrMsgShort  = errors.New("message body too short")
+	// ErrMsgShort indicates a payload that is too short to decode the
+	// expected fields.
+	ErrMsgShort = errors.New("message body too short")
 )
 
+// MaxMsgLen is the maximum allowed payload size for a single message.
 const MaxMsgLen = 1 << 20 // 1 MiB
 
-// Message is a tiny view into the wire bytes.
-// Payload, Block point into Reader's internal buffer and are
-// only valid until the next call to ReadMsg.
+// Message is a tiny view into the wire bytes. Payload and Block point
+// into the Reader's internal buffer and are only valid until the
+// next call to ReadMsg. Index, Begin, Length, Block and Port are
+// decoded when applicable for convenience.
 type Message struct {
 	Type    byte
 	Payload []byte // slice into a shared buffer
@@ -41,7 +46,8 @@ type Message struct {
 	Port    uint16 // decoded for MsgPort (0 otherwise)
 }
 
-// Reader provides zero-copy streaming message decoding.
+// Reader provides zero-copy streaming message decoding. It reuses an
+// internal buffer across calls to minimise allocations.
 type Reader struct {
 	r   io.Reader
 	buf [4 + MaxMsgLen]byte // prefix + max payload
@@ -52,11 +58,11 @@ func NewReader(r io.Reader) *Reader {
 	return &Reader{r: r}
 }
 
-// ReadMsg reads and decodes the next message from the stream.
-// The returned Message's Payload and Block fields point into the Reader's
+// ReadMsg reads and decodes the next message from the stream. The
+// returned Message's Payload and Block fields point into the Reader's
 // internal buffer and are only valid until the next call to ReadMsg.
 func (r *Reader) ReadMsg() (Message, error) {
-	// read 4-byte length prefix
+	// Read 4‑byte length prefix.
 	_, err := io.ReadFull(r.r, r.buf[:4])
 	if err != nil {
 		return Message{}, err
@@ -64,25 +70,24 @@ func (r *Reader) ReadMsg() (Message, error) {
 
 	l := binary.BigEndian.Uint32(r.buf[:4])
 	if l == 0 {
-		return Message{Type: MsgKeepAlive}, nil // keep-alive
+		return Message{Type: MsgKeepAlive}, nil // keep‑alive
 	}
 
 	if l > MaxMsgLen {
 		return Message{}, ErrMsgTooBig
 	}
-
-	// read body (type byte + payload)
+	// Read body (type byte + payload).
 	_, err = io.ReadFull(r.r, r.buf[4:4+l])
 	if err != nil {
 		return Message{}, err
 	}
 
 	typ := r.buf[4]
+
 	msg := Message{
 		Type:    typ,
 		Payload: r.buf[5 : 4+l], // slice into shared buffer
 	}
-
 	switch typ {
 	case MsgHave:
 		if len(msg.Payload) != 4 {
@@ -90,7 +95,6 @@ func (r *Reader) ReadMsg() (Message, error) {
 		}
 
 		msg.Index = binary.BigEndian.Uint32(msg.Payload)
-
 	case MsgRequest, MsgCancel:
 		if len(msg.Payload) != 12 {
 			return Message{}, ErrMsgShort
@@ -99,7 +103,6 @@ func (r *Reader) ReadMsg() (Message, error) {
 		msg.Index = binary.BigEndian.Uint32(msg.Payload[0:4])
 		msg.Begin = binary.BigEndian.Uint32(msg.Payload[4:8])
 		msg.Length = binary.BigEndian.Uint32(msg.Payload[8:12])
-
 	case MsgPiece:
 		if len(msg.Payload) < 8 {
 			return Message{}, ErrMsgShort
@@ -108,14 +111,12 @@ func (r *Reader) ReadMsg() (Message, error) {
 		msg.Index = binary.BigEndian.Uint32(msg.Payload[0:4])
 		msg.Begin = binary.BigEndian.Uint32(msg.Payload[4:8])
 		msg.Block = msg.Payload[8:]
-
 	case MsgPort:
 		if len(msg.Payload) != 2 {
 			return Message{}, ErrMsgShort
 		}
 
 		msg.Port = binary.BigEndian.Uint16(msg.Payload)
-
 	case MsgBitfield:
 		// nothing to parse; payload is the raw bitfield
 	}
@@ -123,10 +124,11 @@ func (r *Reader) ReadMsg() (Message, error) {
 	return msg, nil
 }
 
-// Writer provides efficient message encoding with minimal allocations.
+// Writer provides efficient message encoding with minimal
+// allocations. It holds a scratch buffer for fixed‑length payloads.
 type Writer struct {
 	w   io.Writer
-	buf [12]byte // scratch for fixed-length payloads
+	buf [12]byte // scratch for fixed‑length payloads
 }
 
 // NewWriter creates a new message writer.
@@ -134,8 +136,9 @@ func NewWriter(w io.Writer) *Writer {
 	return &Writer{w: w}
 }
 
-// WriteMsg writes a message with the given type and payload.
-// This is a low-level method; prefer the specific Write* methods.
+// WriteMsg writes a message with the given type and payload. This is
+// a low‑level method; prefer the specific Write* methods defined
+// below.
 func (w *Writer) WriteMsg(typ byte, payload []byte) error {
 	l := uint32(1 + len(payload))
 
@@ -155,9 +158,9 @@ func (w *Writer) WriteMsg(typ byte, payload []byte) error {
 	return err
 }
 
-// WriteKeepAlive writes a keep-alive message (4 zero bytes).
+// WriteKeepAlive writes a keep‑alive message (4 zero bytes).
 func (w *Writer) WriteKeepAlive() error {
-	var prefix [4]byte // already zero
+	var prefix [4]byte // zero initialised
 
 	_, err := w.w.Write(prefix[:])
 
@@ -208,10 +211,10 @@ func (w *Writer) WriteCancel(index, begin, length uint32) error {
 	return w.WriteMsg(MsgCancel, w.buf[:12])
 }
 
-// WritePiece writes a piece message with the given block data.
-// This allocates a single buffer for the entire message.
+// WritePiece writes a piece message with the given block data. This
+// allocates a single buffer for the entire message.
 func (w *Writer) WritePiece(index, begin uint32, block []byte) error {
-	buf := make([]byte, 8+len(block)) // single alloc
+	buf := make([]byte, 8+len(block))
 	binary.BigEndian.PutUint32(buf[0:4], index)
 	binary.BigEndian.PutUint32(buf[4:8], begin)
 	copy(buf[8:], block)

@@ -31,6 +31,9 @@ func Unmarshal(data []byte, v any) error {
 	return assign(val, rv.Elem())
 }
 
+// parseValue reads the next bencoded value from src. It returns the
+// decoded value, the number of bytes consumed and an error if
+// decoding fails.
 func parseValue(src []byte) (any, int, error) {
 	if len(src) == 0 {
 		return nil, 0, errors.New("bencode: unexpected EOF")
@@ -52,6 +55,7 @@ func parseValue(src []byte) (any, int, error) {
 	}
 }
 
+// parseInt parses an integer from src. The format is i<number>e.
 func parseInt(src []byte) (int64, int, error) {
 	idx := bytes.IndexByte(src, 'e')
 	if idx == -1 {
@@ -62,7 +66,7 @@ func parseInt(src []byte) (int64, int, error) {
 	if len(s) == 0 {
 		return 0, 0, errors.New("bencode: empty int")
 	}
-
+	// Disallow leading zeros.
 	if (s[0] == '-' && len(s) > 1 && s[1] == '0') || (s[0] == '0' && len(s) > 1) {
 		return 0, 0, errors.New("bencode: leading zeros in int")
 	}
@@ -75,6 +79,7 @@ func parseInt(src []byte) (int64, int, error) {
 	return val, idx + 1, nil
 }
 
+// parseString parses a length-prefixed string from src.
 func parseString(src []byte) (string, int, error) {
 	col := bytes.IndexByte(src, ':')
 	if col == -1 {
@@ -96,6 +101,8 @@ func parseString(src []byte) (string, int, error) {
 	return string(src[start : start+length]), start + length, nil
 }
 
+// parseList parses a list of values from src. The format is
+// l<item1><item2>...e.
 func parseList(src []byte) ([]any, int, error) {
 	pos := 1
 
@@ -120,6 +127,8 @@ func parseList(src []byte) ([]any, int, error) {
 	}
 }
 
+// parseDict parses a dictionary from src. The format is
+// d<string><value>...e. Keys must appear in lexicographic order.
 func parseDict(src []byte) (map[string]any, int, error) {
 	pos := 1
 	dict := make(map[string]any)
@@ -139,7 +148,7 @@ func parseDict(src []byte) (map[string]any, int, error) {
 		if err != nil {
 			return nil, 0, err
 		}
-
+		// Keys must be in sorted order according to the spec.
 		if lastKey >= key {
 			return nil, 0, errors.New("bencode: dict keys not in order")
 		}
@@ -157,6 +166,8 @@ func parseDict(src []byte) (map[string]any, int, error) {
 	}
 }
 
+// assign copies src into dst. It performs type assertions and
+// conversions to populate dst with the decoded bencoded value.
 func assign(src any, dst reflect.Value) error {
 	if !dst.CanSet() {
 		return errors.New("bencode: cannot set destination")
@@ -175,7 +186,7 @@ func assign(src any, dst reflect.Value) error {
 		switch v := src.(type) {
 		case int64:
 			dst.SetInt(v)
-		case string: // len for convenience
+		case string:
 			i, err := strconv.ParseInt(v, 10, 64)
 			if err != nil {
 				return typeErr(dst.Type(), src)
@@ -187,7 +198,7 @@ func assign(src any, dst reflect.Value) error {
 		}
 
 	case reflect.Slice:
-		if dst.Type().Elem().Kind() == reflect.Uint8 { // []byte
+		if dst.Type().Elem().Kind() == reflect.Uint8 {
 			s, ok := src.(string)
 			if !ok {
 				return typeErr(dst.Type(), src)
@@ -271,6 +282,7 @@ func assign(src any, dst reflect.Value) error {
 	return nil
 }
 
+// typeErr returns a formatted error for a type mismatch.
 func typeErr(dst reflect.Type, src any) error {
 	return fmt.Errorf("bencode: cannot assign %T to %s", src, dst)
 }

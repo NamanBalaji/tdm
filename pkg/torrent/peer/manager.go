@@ -1,5 +1,11 @@
 package peer
 
+// This file defines a simple connection manager used by the torrent
+// client to coordinate multiple peer connections. It supports
+// outbound and inbound connections, eviction of the oldest peers
+// when over the maximum and clean shutdown. The code is adapted
+// directly from the provided manager.go.
+
 import (
 	"context"
 	"fmt"
@@ -9,38 +15,44 @@ import (
 	"time"
 )
 
+// ManagerConfig holds configuration for a Manager. MaxPeers is the
+// maximum number of simultaneous connections. DialTimeout controls
+// how long to wait when dialling outbound peers. ListenAddr, if
+// non-empty, requests the manager to listen for inbound connections.
+// InfoHash and PeerID are passed to Dial/Accept for handshaking.
 type ManagerConfig struct {
-	MaxPeers    int // hard limit (default 200)
-	DialTimeout time.Duration
-	ListenAddr  string
+	MaxPeers    int           // hard limit (default 200)
+	DialTimeout time.Duration // per-dial timeout
+	ListenAddr  string        // address to listen on ("host:port"). Empty disables listening.
 	InfoHash    [20]byte
 	PeerID      [20]byte
 }
 
-// ConnEntry wraps a connection with metadata for lifecycle management
+// ConnEntry wraps a connection with metadata for lifecycle management.
 type ConnEntry struct {
 	Conn    *Conn
 	addedAt time.Time
 }
 
+// Manager tracks active peer connections and provides a unified
+// interface for adding, removing and iterating over peers. All
+// operations are safe for concurrent use.
 type Manager struct {
-	cfg    ManagerConfig
-	ctx    context.Context
-	cancel context.CancelFunc
-
+	cfg        ManagerConfig
+	ctx        context.Context
+	cancel     context.CancelFunc
 	mu         sync.RWMutex
 	conns      map[string]*ConnEntry // key = net.Addr.String()
 	wg         sync.WaitGroup
 	listenAddr net.Addr     // actual listener address (nil if no listener)
 	listener   net.Listener // store listener for proper shutdown
-
 	// channels for async adds/removes
 	dialCh   chan string   // "host:port"
 	inCh     chan net.Conn // accepted conns
 	removeCh chan string   // addr to drop
 }
 
-// NewManager creates a new peer connection manager
+// NewManager creates a new peer connection manager.
 func NewManager(cfg ManagerConfig) *Manager {
 	ctx, cancel := context.WithCancel(context.Background())
 	m := &Manager{
@@ -52,26 +64,28 @@ func NewManager(cfg ManagerConfig) *Manager {
 		inCh:     make(chan net.Conn, 32),
 		removeCh: make(chan string, 32),
 	}
-
-	// start listener if requested
+	// Start listener if requested
 	if cfg.ListenAddr != "" {
 		l, err := net.Listen("tcp", cfg.ListenAddr)
 		if err != nil {
 			panic(fmt.Sprintf("failed to listen on %s: %v", cfg.ListenAddr, err))
 		}
+
 		m.listenAddr = l.Addr()
 		m.listener = l
 		m.wg.Add(1)
+
 		go m.acceptLoop(l)
 	}
 
 	m.wg.Add(1)
+
 	go m.eventLoop()
 
 	return m
 }
 
-// acceptLoop handles incoming connections
+// acceptLoop handles incoming connections.
 func (m *Manager) acceptLoop(l net.Listener) {
 	defer func() {
 		m.wg.Done()
@@ -87,13 +101,12 @@ func (m *Manager) acceptLoop(l net.Listener) {
 		case m.inCh <- conn:
 		case <-m.ctx.Done():
 			conn.Close()
-
 			return
 		}
 	}
 }
 
-// AddOutbound queues an outbound connection attempt
+// AddOutbound queues an outbound connection attempt.
 func (m *Manager) AddOutbound(addr string) {
 	select {
 	case m.dialCh <- addr:
@@ -101,7 +114,7 @@ func (m *Manager) AddOutbound(addr string) {
 	}
 }
 
-// RemovePeer queues a peer for removal (called when connection fails)
+// RemovePeer queues a peer for removal (called when connection fails).
 func (m *Manager) RemovePeer(addr string) {
 	select {
 	case m.removeCh <- addr:
@@ -109,7 +122,9 @@ func (m *Manager) RemovePeer(addr string) {
 	}
 }
 
-// eventLoop handles all connection lifecycle events in a single goroutine
+// eventLoop handles all connection lifecycle events in a single
+// goroutine. It serialises all modifications to the internal
+// connection map.
 func (m *Manager) eventLoop() {
 	defer func() {
 		m.wg.Done()
@@ -119,13 +134,10 @@ func (m *Manager) eventLoop() {
 		select {
 		case addr := <-m.dialCh:
 			m.dialPeer(addr)
-
 		case conn := <-m.inCh:
 			m.handleInbound(conn)
-
 		case addr := <-m.removeCh:
 			m.dropConn(addr)
-
 		case <-m.ctx.Done():
 			m.closeAll()
 			return
@@ -133,10 +145,9 @@ func (m *Manager) eventLoop() {
 	}
 }
 
-// dialPeer attempts to connect to a peer
+// dialPeer attempts to connect to a peer.
 func (m *Manager) dialPeer(addr string) {
 	m.evictIfNeeded()
-
 	m.mu.RLock()
 	connCount := len(m.conns)
 	_, exists := m.conns[addr]
@@ -150,7 +161,10 @@ func (m *Manager) dialPeer(addr string) {
 		return
 	}
 
-	conn, err := Dial(m.ctx, addr, m.cfg.InfoHash, m.cfg.PeerID)
+	dialCtx, cancel := context.WithTimeout(m.ctx, m.cfg.DialTimeout)
+	defer cancel()
+
+	conn, err := Dial(dialCtx, addr, m.cfg.InfoHash, m.cfg.PeerID)
 	if err != nil {
 		return
 	}
@@ -158,12 +172,11 @@ func (m *Manager) dialPeer(addr string) {
 	m.addConn(addr, conn)
 }
 
-// handleInbound processes an incoming connection
+// handleInbound processes an incoming connection.
 func (m *Manager) handleInbound(netConn net.Conn) {
 	addr := netConn.RemoteAddr().String()
 
 	m.evictIfNeeded()
-
 	m.mu.RLock()
 	connCount := len(m.conns)
 	_, exists := m.conns[addr]
@@ -179,8 +192,7 @@ func (m *Manager) handleInbound(netConn net.Conn) {
 		return
 	}
 
-	err := m.serverHandshake(netConn)
-	if err != nil {
+	if err := m.serverHandshake(netConn); err != nil {
 		netConn.Close()
 		return
 	}
@@ -194,7 +206,7 @@ func (m *Manager) handleInbound(netConn net.Conn) {
 	m.addConn(addr, pconn)
 }
 
-// serverHandshake performs just the handshake part (read client, send response)
+// serverHandshake performs just the handshake part (read client, send response).
 func (m *Manager) serverHandshake(netConn net.Conn) error {
 	// Set read deadline for handshake
 	if err := netConn.SetReadDeadline(time.Now().Add(DefaultRWTimeout)); err != nil {
@@ -240,7 +252,7 @@ func (m *Manager) serverHandshake(netConn net.Conn) error {
 	return nil
 }
 
-// createAcceptedConn creates a Conn object for an already-handshaken connection
+// createAcceptedConn creates a Conn object for an already-handshaken connection.
 func (m *Manager) createAcceptedConn(netConn net.Conn) (*Conn, error) {
 	ctx, cancel := context.WithCancel(m.ctx)
 	c := &Conn{
@@ -252,8 +264,8 @@ func (m *Manager) createAcceptedConn(netConn net.Conn) (*Conn, error) {
 		ctx:     ctx,
 		cancel:  cancel,
 	}
-
 	c.wg.Add(1)
+
 	go func() {
 		defer func() {
 			c.wg.Done()
@@ -266,7 +278,7 @@ func (m *Manager) createAcceptedConn(netConn net.Conn) (*Conn, error) {
 	return c, nil
 }
 
-// evictIfNeeded removes the oldest connection if at capacity
+// evictIfNeeded removes the oldest connection if at capacity.
 func (m *Manager) evictIfNeeded() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -275,10 +287,12 @@ func (m *Manager) evictIfNeeded() {
 		return
 	}
 
-	var oldestAddr string
-	var oldestTime time.Time
-	first := true
+	var (
+		oldestAddr string
+		oldestTime time.Time
+	)
 
+	first := true
 	for addr, entry := range m.conns {
 		if first || entry.addedAt.Before(oldestTime) {
 			oldestAddr = addr
@@ -295,11 +309,10 @@ func (m *Manager) evictIfNeeded() {
 	}
 }
 
-// addConn adds a connection to the manager (assumes space is available)
+// addConn adds a connection to the manager (assumes space is available).
 func (m *Manager) addConn(addr string, conn *Conn) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-
 	// Double-check for duplicates under lock
 	if _, exists := m.conns[addr]; exists {
 		conn.Close()
@@ -312,7 +325,7 @@ func (m *Manager) addConn(addr string, conn *Conn) {
 	}
 }
 
-// dropConn removes and closes a connection
+// dropConn removes and closes a connection.
 func (m *Manager) dropConn(addr string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -323,7 +336,7 @@ func (m *Manager) dropConn(addr string) {
 	}
 }
 
-// closeAll closes all connections
+// closeAll closes all connections.
 func (m *Manager) closeAll() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -331,10 +344,13 @@ func (m *Manager) closeAll() {
 	for _, entry := range m.conns {
 		entry.Conn.Close()
 	}
+
 	m.conns = make(map[string]*ConnEntry)
 }
 
-// ForEach calls f for each active connection; f must not block
+// ForEach calls f for each active connection; f must not block. The
+// iteration is performed under a read lock so the map cannot change
+// while f is running.
 func (m *Manager) ForEach(f func(addr string, c *Conn)) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -344,28 +360,26 @@ func (m *Manager) ForEach(f func(addr string, c *Conn)) {
 	}
 }
 
-// Count returns current peer count
+// Count returns the current peer count.
 func (m *Manager) Count() int {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
+
 	return len(m.conns)
 }
 
-// ListenAddr returns the actual address the manager is listening on (nil if no listener)
+// ListenAddr returns the actual address the manager is listening on (nil if no listener).
 func (m *Manager) ListenAddr() net.Addr {
 	return m.listenAddr
 }
 
-// Stop gracefully shuts down the manager
+// Stop gracefully shuts down the manager.
 func (m *Manager) Stop() {
-
 	// Close listener first to unblock Accept() calls
 	if m.listener != nil {
 		m.listener.Close()
 	}
-
 	// Cancel context to signal all goroutines to exit
 	m.cancel()
-
 	m.wg.Wait()
 }

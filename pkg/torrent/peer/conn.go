@@ -10,11 +10,16 @@ import (
 )
 
 const (
+	// DefaultDialTimeout is the timeout used when establishing TCP
+	// connections to peers.
 	DefaultDialTimeout = 5 * time.Second
-	DefaultRWTimeout   = 2 * time.Minute
+	// DefaultRWTimeout is the default per-message read/write timeout.
+	DefaultRWTimeout = 2 * time.Minute
 )
 
 // Conn represents a goroutine-safe BitTorrent peer connection.
+// It wraps a net.Conn and provides convenience methods for the
+// various message types defined by the protocol.
 type Conn struct {
 	netConn net.Conn
 	r       *Reader
@@ -125,21 +130,20 @@ func (c *Conn) handshake(infoHash [20]byte) error {
 }
 
 // ReadMsg returns the next message (blocks until ctx done or EOF).
-// Sets a per-message read deadline to detect dead peers.
+// It sets a per-message read deadline to detect dead peers.
 func (c *Conn) ReadMsg() (Message, error) {
 	if err := c.netConn.SetReadDeadline(time.Now().Add(DefaultRWTimeout)); err != nil {
 		return Message{}, err
 	}
 
 	msg, err := c.r.ReadMsg()
-
 	c.netConn.SetReadDeadline(time.Time{})
 
 	return msg, err
 }
 
-// WriteMsg sends a message (thread-safe).
-// Note: This is a low-level method; prefer the specific Write* methods.
+// WriteMsg sends a message (thread-safe). This is a low-level method;
+// prefer the specific Write* methods defined below.
 func (c *Conn) WriteMsg(typ byte, payload []byte) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -211,7 +215,8 @@ func (c *Conn) WriteCancel(index, begin, length uint32) error {
 	return c.w.WriteCancel(index, begin, length)
 }
 
-// WritePiece writes a piece message with the given block data.
+// WritePiece writes a piece message with the given block data. This
+// function is used when seeding data to other peers.
 func (c *Conn) WritePiece(index, begin uint32, block []byte) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -227,7 +232,8 @@ func (c *Conn) WriteBitfield(bits []byte) error {
 	return c.w.WriteBitfield(bits)
 }
 
-// WritePort writes a port message with the given port number.
+// WritePort writes a port message with the given port number. Port
+// messages are used to indicate a DHT listening port to other peers.
 func (c *Conn) WritePort(port uint16) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()

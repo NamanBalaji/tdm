@@ -19,6 +19,10 @@ func Marshal(v any) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
+// encodeValue walks the value v and writes its bencoded
+// representation to buf. Only types supported by the BitTorrent
+// specification (strings, integers, lists and dictionaries) are
+// allowed. Unsupported types will return an error.
 func encodeValue(buf *bytes.Buffer, v reflect.Value) error {
 	if !v.IsValid() {
 		buf.WriteString("0:")
@@ -28,6 +32,7 @@ func encodeValue(buf *bytes.Buffer, v reflect.Value) error {
 	if v.Kind() == reflect.Pointer || v.Kind() == reflect.Interface {
 		if v.IsNil() {
 			buf.WriteString("0:")
+
 			return nil
 		}
 
@@ -76,7 +81,9 @@ func encodeValue(buf *bytes.Buffer, v reflect.Value) error {
 		sort.Strings(keys)
 
 		for _, k := range keys {
-			encodeValue(buf, reflect.ValueOf(k))
+			if err := encodeValue(buf, reflect.ValueOf(k)); err != nil {
+				return err
+			}
 
 			if err := encodeValue(buf, v.MapIndex(reflect.ValueOf(k))); err != nil {
 				return err
