@@ -143,21 +143,31 @@ func (w *Worker) Start(ctx context.Context) error {
 		return ErrNoClient
 	}
 
-	mi, err := w.download.GetMetainfo(ctx, w.client)
-	if err != nil {
-		w.started.Store(false)
-		return fmt.Errorf("failed to get metainfo: %w", err)
-	}
+	var t *torrent.Torrent
+	var err error
+	if w.download.IsMagnet {
+		t, err = w.client.AddMagnet(w.download.Url)
+		if err != nil {
+			return err
+		}
+		<-t.GotInfo()
+	} else {
+		mi, err := w.download.GetMetainfo(ctx, w.client)
+		if err != nil {
+			w.started.Store(false)
+			return fmt.Errorf("failed to get metainfo: %w", err)
+		}
 
-	if mi == nil {
-		w.started.Store(false)
-		return ErrNoMetainfo
-	}
+		if mi == nil {
+			w.started.Store(false)
+			return ErrNoMetainfo
+		}
 
-	t, err := client.AddTorrent(mi)
-	if err != nil {
-		w.started.Store(false)
-		return fmt.Errorf("failed to add torrent: %w", err)
+		t, err = client.AddTorrent(mi)
+		if err != nil {
+			w.started.Store(false)
+			return fmt.Errorf("failed to add torrent: %w", err)
+		}
 	}
 
 	w.torrentMu.Lock()

@@ -48,6 +48,20 @@ func NewDownload(ctx context.Context, client *torrentPkg.Client, url string, isM
 		Protocol: "torrent",
 	}
 
+	if isMagnet {
+		tr, err := client.AddMagnet(url)
+		if err != nil {
+			return nil, err
+		}
+		<-tr.GotInfo()
+		download.Name = tr.Name()
+		download.TotalSize = tr.Length()
+		download.InfoHash = tr.InfoHash().HexString()
+		tr.Drop()
+
+		return download, nil
+	}
+
 	mi, err := download.GetMetainfo(ctx, client)
 	if err != nil {
 		return nil, err
@@ -132,10 +146,6 @@ func (d *Download) UpdateProgress(downloaded, uploaded int64) {
 func (d *Download) GetMetainfo(ctx context.Context, client *torrentPkg.Client) (*metainfo.MetaInfo, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-
-	if d.IsMagnet {
-		return client.GetMetainfoFromMagnet(ctx, d.Url)
-	}
 
 	return torrentPkg.GetMetainfo(d.Url)
 }
