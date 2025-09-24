@@ -220,7 +220,7 @@ func TestDownload_getDownloadableChunks(t *testing.T) {
 	downloadable := d.getDownloadableChunks()
 	assert.Len(t, downloadable, 3)
 	for _, c := range downloadable {
-		assert.NotEqual(t, status.Completed, c.getStatus(), "Completed chunks should not be downloadable")
+		assert.NotEqual(t, status.Completed, c.getStatus(), "completed chunks should not be downloadable")
 	}
 }
 

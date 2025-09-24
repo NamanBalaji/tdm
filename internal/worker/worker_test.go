@@ -102,7 +102,7 @@ func TestGetWorker(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
-			w, err := worker.GetWorker(ctx, tc.url, tc.priority, repo)
+			w, err := worker.GetWorker(ctx, tc.url, tc.priority, nil, repo)
 
 			if tc.expectWorker {
 				assert.NoError(t, err)

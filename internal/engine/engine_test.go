@@ -80,7 +80,7 @@ func (s *EngineTestSuite) SetupTest() {
 	s.repo, err = repository.NewBboltRepository(tmpFile.Name())
 	require.NoError(s.T(), err)
 
-	s.engine = engine.NewEngine(s.repo, 3)
+	s.engine = engine.NewEngine(s.repo, nil, 3)
 	require.NotNil(s.T(), s.engine)
 
 	s.ctx, s.cancel = context.WithTimeout(context.Background(), 30*time.Second)
@@ -194,7 +194,7 @@ func (s *EngineTestSuite) TestNewEngine() {
 			require.NoError(s.T(), err)
 			defer assert.NoError(s.T(), repo.Close())
 
-			eng := engine.NewEngine(repo, tc.maxConcurrent)
+			eng := engine.NewEngine(repo, nil, tc.maxConcurrent)
 			assert.NotNil(s.T(), eng)
 			assert.NotNil(s.T(), eng.GetErrors(), "error channel should be available")
 		})
@@ -569,7 +569,7 @@ func TestNewEngineEdgeCases(t *testing.T) {
 			require.NoError(t, err)
 			defer assert.NoError(t, repo.Close())
 
-			eng := engine.NewEngine(repo, tt.maxConcurrent)
+			eng := engine.NewEngine(repo, nil, tt.maxConcurrent)
 			if tt.expectNil {
 				assert.Nil(t, eng)
 			} else {

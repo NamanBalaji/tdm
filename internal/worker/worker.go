@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/url"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/NamanBalaji/tdm/internal/repository"
 	"github.com/NamanBalaji/tdm/internal/status"
 	"github.com/NamanBalaji/tdm/internal/torrent"
+	torrentPkg "github.com/NamanBalaji/tdm/pkg/torrent"
 )
 
 var ErrUnsupportedScheme = errors.New("unsupported scheme")
@@ -21,7 +23,6 @@ type Worker interface {
 	Start(ctx context.Context) error
 	Pause() error
 	Cancel() error
-	Resume(ctx context.Context) error
 	Remove() error
 	Done() <-chan error
 	Progress() progress.Progress
@@ -32,7 +33,8 @@ type Worker interface {
 	Queue()
 }
 
-func GetWorker(ctx context.Context, urlStr string, priority int, repo *repository.BboltRepository) (Worker, error) {
+// GetWorker returns a worker based on the URL scheme.
+func GetWorker(ctx context.Context, urlStr string, priority int, torrentClient *torrentPkg.Client, repo *repository.BboltRepository) (Worker, error) {
 	u, err := url.Parse(urlStr)
 	if err != nil {
 		return nil, err
@@ -40,18 +42,54 @@ func GetWorker(ctx context.Context, urlStr string, priority int, repo *repositor
 
 	switch u.Scheme {
 	case "http", "https":
-		if torrent.HasTorrentFile(urlStr) {
-			// worker for torrent files
+		if torrentPkg.HasTorrentFile(urlStr) {
+			return torrent.New(ctx, nil, urlStr, false, torrentClient, repo, priority)
 		}
 
 		if http.CanHandle(urlStr) {
 			return http.New(ctx, urlStr, nil, repo, priority)
 		}
 	case "magnet":
-		if torrent.IsValidMagnetLink(urlStr) {
-
+		if torrentPkg.IsValidMagnetLink(urlStr) {
+			return torrent.New(ctx, nil, urlStr, true, torrentClient, repo, priority)
 		}
 	}
 
 	return nil, ErrUnsupportedScheme
+}
+
+// LoadWorker loads a worker from a saved download object.
+func LoadWorker(ctx context.Context, download repository.Object, torrentClient *torrentPkg.Client, repo *repository.BboltRepository) (Worker, error) {
+	switch download.Type {
+	case "http":
+		var d http.Download
+
+		err := json.Unmarshal(download.Data, &d)
+		if err != nil {
+			return nil, err
+		}
+
+		if d.Status == status.Active {
+			d.Status = status.Paused
+		}
+
+		return http.New(ctx, d.URL, &d, repo, d.Priority)
+
+	case "torrent":
+		var d torrent.Download
+
+		err := json.Unmarshal(download.Data, &d)
+		if err != nil {
+			return nil, err
+		}
+
+		if d.Status == status.Active {
+			d.Status = status.Paused
+		}
+
+		return torrent.New(ctx, &d, d.Url, d.IsMagnet, torrentClient, repo, d.Priority)
+
+	default:
+		return nil, ErrUnsupportedScheme
+	}
 }

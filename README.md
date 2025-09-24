@@ -78,7 +78,7 @@ TDM offers extensive configuration options:
 
 ## 🤝 Contributing
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+Contributions are welcome! Please feel free to submit a Pull RequestMsg.
 
 ### Development Setup
 1. Clone the repository

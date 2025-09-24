@@ -472,7 +472,7 @@ func renderHeader(m *Model) string {
 	}
 
 	statsText := fmt.Sprintf(
-		"Total: %d | Active: %d | Queued: %d | Paused: %d | Completed: %d | Failed: %d",
+		"Total: %d | Active: %d | Queued: %d | Paused: %d | completed: %d | Failed: %d",
 		len(m.list.downloads), active, queued, paused, completed, failed,
 	)
 

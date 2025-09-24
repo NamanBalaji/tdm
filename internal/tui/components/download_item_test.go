@@ -77,7 +77,7 @@ func TestDownloadItem(t *testing.T) {
 			},
 		},
 		{
-			name: "Completed Download",
+			name: "completed Download",
 			info: engine.DownloadInfo{
 				ID:       uuid.New(),
 				Filename: "completed.iso",

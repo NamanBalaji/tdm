@@ -3,17 +3,20 @@ package main
 import (
 	"context"
 	"flag"
-	"fmt"
+	"log"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"syscall"
 	"time"
 
+	"github.com/adrg/xdg"
+
 	"github.com/NamanBalaji/tdm/internal/engine"
 	"github.com/NamanBalaji/tdm/internal/logger"
 	"github.com/NamanBalaji/tdm/internal/repository"
 	"github.com/NamanBalaji/tdm/internal/tui"
+	torrentPkg "github.com/NamanBalaji/tdm/pkg/torrent"
 )
 
 func main() {
@@ -22,39 +25,46 @@ func main() {
 
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
-		fmt.Printf("Error getting home directory: %v\n", err)
-		os.Exit(1)
+		log.Fatalf("Error getting home directory: %v\n", err)
 	}
 
 	configDir := filepath.Join(homeDir, ".tdm")
 
 	err = os.MkdirAll(configDir, 0o755)
 	if err != nil {
-		fmt.Printf("Error creating config directory: %v\n", err)
-		os.Exit(1)
+		log.Fatalf("Error creating config directory: %v\n", err)
 	}
 
 	err = logger.InitLogging(*debug, filepath.Join(configDir, "tdm.log"))
 	if err != nil {
-		fmt.Printf("Warning: Failed to initialize logging: %v\n", err)
+		log.Fatalf("Warning: Failed to initialize logging: %v\n", err)
 	}
 	defer logger.Close()
 
 	repo, err := repository.NewBboltRepository(filepath.Join(configDir, "tdm.db"))
 	if err != nil {
-		logger.Errorf("Error creating repository: %v\n", err)
-		os.Exit(1)
+		log.Fatalf("Error creating repository: %v\n", err)
 	}
 
-	eng := engine.NewEngine(repo, 2)
+	torrentClient, err := torrentPkg.NewClient(xdg.UserDirs.Download)
+	if err != nil {
+		log.Fatalf("Error creating torrent client: %v\n", err)
+	}
+
+	defer func() {
+		if err := torrentClient.Close(); err != nil {
+			log.Printf("Error closing torrent client: %v\n", err)
+		}
+	}()
+
+	eng := engine.NewEngine(repo, torrentClient, 2)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	err = eng.Start(ctx)
 	if err != nil {
-		logger.Errorf("Error starting engine: %v\n", err)
-		os.Exit(1)
+		log.Fatalf("Error starting engine: %v\n", err)
 	}
 
 	sigChan := make(chan os.Signal, 1)
@@ -62,13 +72,12 @@ func main() {
 
 	go func() {
 		<-sigChan
-		logger.Infof("\nReceived interrupt signal, shutting down...")
 		cancel()
 	}()
 
 	err = tui.Run(ctx, eng)
 	if err != nil {
-		fmt.Printf("TUI Error: %v\n", err)
+		logger.Errorf("TUI Error: %v\n", err)
 	}
 
 	logger.Infof("TUI has exited. Shutting down engine...")
@@ -78,7 +87,7 @@ func main() {
 
 	err = eng.Shutdown(shutdownCtx)
 	if err != nil {
-		logger.Errorf("Error during engine shutdown: %v", err)
+		log.Fatalf("Error during engine shutdown: %v", err)
 	}
 
 	eng.Wait()

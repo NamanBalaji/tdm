@@ -2,7 +2,6 @@ package engine
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -11,12 +10,12 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/NamanBalaji/tdm/internal/http"
 	"github.com/NamanBalaji/tdm/internal/logger"
 	"github.com/NamanBalaji/tdm/internal/progress"
 	"github.com/NamanBalaji/tdm/internal/repository"
 	"github.com/NamanBalaji/tdm/internal/status"
 	"github.com/NamanBalaji/tdm/internal/worker"
+	torrentPkg "github.com/NamanBalaji/tdm/pkg/torrent"
 )
 
 var (
@@ -33,23 +32,25 @@ type DownloadError struct {
 
 // Engine manages multiple download workers.
 type Engine struct {
-	mu           sync.RWMutex
-	repo         *repository.BboltRepository
-	workers      map[uuid.UUID]worker.Worker
-	queue        *PriorityQueue
-	shutdownOnce sync.Once
-	shutdownDone chan struct{}
-	errors       chan DownloadError
+	mu            sync.RWMutex
+	torrentClient *torrentPkg.Client
+	repo          *repository.BboltRepository
+	workers       map[uuid.UUID]worker.Worker
+	queue         *PriorityQueue
+	shutdownOnce  sync.Once
+	shutdownDone  chan struct{}
+	errors        chan DownloadError
 }
 
 // NewEngine creates a new download engine.
-func NewEngine(repo *repository.BboltRepository, maxConcurrent int) *Engine {
+func NewEngine(repo *repository.BboltRepository, torrentClient *torrentPkg.Client, maxConcurrent int) *Engine {
 	return &Engine{
-		repo:         repo,
-		workers:      make(map[uuid.UUID]worker.Worker),
-		queue:        NewPriorityQueue(maxConcurrent),
-		shutdownDone: make(chan struct{}),
-		errors:       make(chan DownloadError, 3),
+		repo:          repo,
+		torrentClient: torrentClient,
+		workers:       make(map[uuid.UUID]worker.Worker),
+		queue:         NewPriorityQueue(maxConcurrent),
+		shutdownDone:  make(chan struct{}),
+		errors:        make(chan DownloadError, 3),
 	}
 }
 
@@ -61,30 +62,15 @@ func (e *Engine) Start(ctx context.Context) error {
 	}
 
 	for _, dl := range downloads {
-		switch dl.Type {
-		case "http":
-			var download http.Download
-
-			err := json.Unmarshal(dl.Data, &download)
-			if err != nil {
-				logger.Errorf("Failed to unmarshal download: %v", err)
-				continue
-			}
-
-			if download.Status == status.Active {
-				download.Status = status.Paused
-			}
-
-			w, err := http.New(ctx, download.URL, &download, e.repo, download.Priority)
-			if err != nil {
-				logger.Errorf("Failed to create worker for download %s: %v", download.Id, err)
-				continue
-			}
-
-			e.addWorker(w)
-
-			go e.monitorWorker(ctx, w)
+		w, err := worker.LoadWorker(ctx, dl, e.torrentClient, e.repo)
+		if err != nil {
+			logger.Errorf("Failed to load worker for download: %v", err)
+			continue
 		}
+
+		e.addWorker(w)
+
+		go e.monitorWorker(ctx, w)
 	}
 
 	return nil
@@ -98,7 +84,7 @@ func (e *Engine) AddDownload(ctx context.Context, url string, priority int) uuid
 		return uuid.Nil
 	}
 
-	w, err := worker.GetWorker(ctx, url, priority, e.repo)
+	w, err := worker.GetWorker(ctx, url, priority, e.torrentClient, e.repo)
 	if err != nil {
 		e.errors <- DownloadError{ID: uuid.Nil, Error: err}
 
