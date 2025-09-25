@@ -142,6 +142,7 @@ func (w *Worker) Start(ctx context.Context) error {
 		}
 
 		w.started.Store(false)
+
 		return fmt.Errorf("failed to get torrent handler: %w", err)
 	}
 
@@ -375,6 +376,7 @@ func (w *Worker) waitCompletion(ctx context.Context) {
 			if t.Complete().Bool() && t.BytesCompleted() >= t.Length() {
 				if !w.finished.Swap(true) {
 					w.dropTorrent()
+
 					if cf := w.getCancel(); cf != nil {
 						cf()
 					}

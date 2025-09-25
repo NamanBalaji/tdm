@@ -6,10 +6,11 @@ import (
 	"sync"
 	"time"
 
-	analog "github.com/anacrolix/log"
 	"github.com/anacrolix/torrent"
 	"github.com/anacrolix/torrent/metainfo"
 	"github.com/anacrolix/torrent/storage"
+
+	analog "github.com/anacrolix/log"
 )
 
 var (
@@ -67,8 +68,10 @@ func (c *Client) GetTorrentHandler(ctx context.Context, url string, isMagnet boo
 		return nil, ErrNilClient
 	}
 
-	var t *torrent.Torrent
-	var err error
+	var (
+		t   *torrent.Torrent
+		err error
+	)
 
 	if isMagnet {
 		t, err = client.AddMagnet(url)

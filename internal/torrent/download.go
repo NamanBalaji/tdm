@@ -3,6 +3,7 @@ package torrent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -14,6 +15,8 @@ import (
 	"github.com/NamanBalaji/tdm/internal/status"
 	torrentPkg "github.com/NamanBalaji/tdm/pkg/torrent"
 )
+
+var ErrNilClient = errors.New("torrent client is nil")
 
 // Download represents a torrent download's persistent data.
 type Download struct {
@@ -46,6 +49,10 @@ func NewDownload(ctx context.Context, client *torrentPkg.Client, url string, isM
 		Priority: priority,
 		Status:   status.Pending,
 		Protocol: "torrent",
+	}
+
+	if client == nil {
+		return nil, ErrNilClient
 	}
 
 	th, err := client.GetTorrentHandler(ctx, download.Url, download.IsMagnet)
