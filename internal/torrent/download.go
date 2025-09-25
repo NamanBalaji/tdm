@@ -48,39 +48,15 @@ func NewDownload(ctx context.Context, client *torrentPkg.Client, url string, isM
 		Protocol: "torrent",
 	}
 
-	if isMagnet {
-		tr, err := client.AddMagnet(url)
-		if err != nil {
-			return nil, err
-		}
-		<-tr.GotInfo()
-		download.Name = tr.Name()
-		download.TotalSize = tr.Length()
-		download.InfoHash = tr.InfoHash().HexString()
-		tr.Drop()
-
-		return download, nil
-	}
-
-	mi, err := download.GetMetainfo(ctx, client)
+	th, err := client.GetTorrentHandler(ctx, download.Url, download.IsMagnet)
 	if err != nil {
 		return nil, err
 	}
+	defer th.Drop()
 
-	info, err := mi.UnmarshalInfo()
-	if err != nil {
-		return nil, err
-	}
-
-	t, err := client.AddTorrent(mi)
-	if err != nil {
-		return nil, err
-	}
-	defer t.Drop()
-
-	download.Name = info.Name
-	download.TotalSize = info.TotalLength()
-	download.InfoHash = t.InfoHash().HexString()
+	download.Name = th.Name()
+	download.InfoHash = th.InfoHash().HexString()
+	download.TotalSize = th.Length()
 
 	return download, nil
 }
@@ -140,6 +116,20 @@ func (d *Download) UpdateProgress(downloaded, uploaded int64) {
 
 	d.Downloaded = downloaded
 	d.Uploaded = uploaded
+}
+
+func (d *Download) getUrl() string {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	return d.Url
+}
+
+func (d *Download) isMagnet() bool {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	return d.IsMagnet
 }
 
 // GetMetainfo returns the metainfo.

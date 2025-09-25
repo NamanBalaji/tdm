@@ -21,8 +21,6 @@ import (
 
 var (
 	ErrAlreadyStarted = errors.New("download already started")
-	ErrNoClient       = errors.New("torrent client not available")
-	ErrNoMetainfo     = errors.New("no metainfo available")
 )
 
 // Worker implements the worker.Worker interface for torrents.
@@ -137,37 +135,14 @@ func (w *Worker) Start(ctx context.Context) error {
 		return nil
 	}
 
-	client := w.client.GetClient()
-	if client == nil {
+	t, err := w.client.GetTorrentHandler(ctx, w.download.getUrl(), w.download.isMagnet())
+	if err != nil {
+		if t != nil {
+			t.Drop()
+		}
+
 		w.started.Store(false)
-		return ErrNoClient
-	}
-
-	var t *torrent.Torrent
-	var err error
-	if w.download.IsMagnet {
-		t, err = w.client.AddMagnet(w.download.Url)
-		if err != nil {
-			return err
-		}
-		<-t.GotInfo()
-	} else {
-		mi, err := w.download.GetMetainfo(ctx, w.client)
-		if err != nil {
-			w.started.Store(false)
-			return fmt.Errorf("failed to get metainfo: %w", err)
-		}
-
-		if mi == nil {
-			w.started.Store(false)
-			return ErrNoMetainfo
-		}
-
-		t, err = client.AddTorrent(mi)
-		if err != nil {
-			w.started.Store(false)
-			return fmt.Errorf("failed to add torrent: %w", err)
-		}
+		return fmt.Errorf("failed to get torrent handler: %w", err)
 	}
 
 	w.torrentMu.Lock()
@@ -175,15 +150,6 @@ func (w *Worker) Start(ctx context.Context) error {
 	w.torrentMu.Unlock()
 
 	w.stopping.Store(false)
-
-	select {
-	case <-ctx.Done():
-		w.dropTorrent()
-		w.started.Store(false)
-
-		return ctx.Err()
-	case <-t.GotInfo():
-	}
 
 	if err := t.VerifyDataContext(ctx); err != nil {
 		return fmt.Errorf("failed to verify torrent: %w", err)
@@ -408,12 +374,19 @@ func (w *Worker) waitCompletion(ctx context.Context) {
 
 			if t.Complete().Bool() && t.BytesCompleted() >= t.Length() {
 				if !w.finished.Swap(true) {
+					w.dropTorrent()
+					if cf := w.getCancel(); cf != nil {
+						cf()
+					}
+
 					w.download.SetStatus(status.Completed)
 					w.download.SetEndTime(time.Now())
 
 					if w.repo != nil {
 						_ = w.repo.Save(w.download)
 					}
+
+					w.started.Store(false)
 
 					select {
 					case w.done <- nil:

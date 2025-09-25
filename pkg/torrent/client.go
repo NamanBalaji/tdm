@@ -60,36 +60,42 @@ func NewClient(dataDir string) (*Client, error) {
 	}, nil
 }
 
-// GetMetainfoFromMagnet fetches torrent metadata from a magnet link.
-func (c *Client) GetMetainfoFromMagnet(ctx context.Context, magnetURI string) (*metainfo.MetaInfo, error) {
-	c.mu.RLock()
-	client := c.client
-	c.mu.RUnlock()
-
+// GetTorrentHandler adds a torrent from a URL or magnet link and waits for metadata.
+func (c *Client) GetTorrentHandler(ctx context.Context, url string, isMagnet bool) (*torrent.Torrent, error) {
+	client := c.GetClient()
 	if client == nil {
 		return nil, ErrNilClient
 	}
 
-	t, err := client.AddMagnet(magnetURI)
-	if err != nil {
-		return nil, err
+	var t *torrent.Torrent
+	var err error
+
+	if isMagnet {
+		t, err = client.AddMagnet(url)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		mi, err := GetMetainfo(url)
+		if err != nil {
+			return nil, err
+		}
+
+		t, err = client.AddTorrent(mi)
+		if err != nil {
+			return nil, err
+		}
 	}
-	defer t.Drop()
 
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
-
-	case <-t.GotInfo():
-		mi := t.Metainfo()
-		return &mi, nil
-
-	case <-t.Closed():
-		return nil, ErrTorrentClosed
-
 	case <-time.After(60 * time.Second):
 		return nil, ErrMetadataTimeout
+	case <-t.GotInfo():
 	}
+
+	return t, nil
 }
 
 // GetClient returns the underlying torrent client.
