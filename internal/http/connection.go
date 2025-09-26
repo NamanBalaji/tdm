@@ -72,6 +72,7 @@ func (c *connection) connect(ctx context.Context) error {
 	}
 
 	rangeHeader := req.Header.Get("Range")
+	//nolint:nestif
 	if rangeHeader != "" && resp.StatusCode != http.StatusPartialContent {
 		// Server doesn't support ranges but returned 200 OK
 		// We need to handle this specially - for example, by skipping data

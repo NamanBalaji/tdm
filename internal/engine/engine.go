@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/NamanBalaji/tdm/internal/config"
 	"github.com/NamanBalaji/tdm/internal/logger"
 	"github.com/NamanBalaji/tdm/internal/progress"
 	"github.com/NamanBalaji/tdm/internal/repository"
@@ -33,6 +34,7 @@ type DownloadError struct {
 // Engine manages multiple download workers.
 type Engine struct {
 	mu            sync.RWMutex
+	cfg           *config.Config
 	torrentClient *torrentPkg.Client
 	repo          *repository.BboltRepository
 	workers       map[uuid.UUID]worker.Worker
@@ -43,12 +45,13 @@ type Engine struct {
 }
 
 // NewEngine creates a new download engine.
-func NewEngine(repo *repository.BboltRepository, torrentClient *torrentPkg.Client, maxConcurrent int) *Engine {
+func NewEngine(cfg *config.Config, repo *repository.BboltRepository, torrentClient *torrentPkg.Client) *Engine {
 	return &Engine{
+		cfg:           cfg,
 		repo:          repo,
 		torrentClient: torrentClient,
 		workers:       make(map[uuid.UUID]worker.Worker),
-		queue:         NewPriorityQueue(maxConcurrent),
+		queue:         NewPriorityQueue(cfg.MaxConcurrentDownloads),
 		shutdownDone:  make(chan struct{}),
 		errors:        make(chan DownloadError, 3),
 	}
@@ -62,7 +65,7 @@ func (e *Engine) Start(ctx context.Context) error {
 	}
 
 	for _, dl := range downloads {
-		w, err := worker.LoadWorker(ctx, dl, e.torrentClient, e.repo)
+		w, err := worker.LoadWorker(ctx, e.cfg, dl, e.torrentClient, e.repo)
 		if err != nil {
 			logger.Errorf("Failed to load worker for download: %v", err)
 			continue
@@ -84,7 +87,7 @@ func (e *Engine) AddDownload(ctx context.Context, url string, priority int) uuid
 		return uuid.Nil
 	}
 
-	w, err := worker.GetWorker(ctx, url, priority, e.torrentClient, e.repo)
+	w, err := worker.GetWorker(ctx, e.cfg, url, priority, e.torrentClient, e.repo)
 	if err != nil {
 		e.errors <- DownloadError{ID: uuid.Nil, Error: err}
 

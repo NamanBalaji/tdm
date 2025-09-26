@@ -1,0 +1,25 @@
+# Example .tdm configuration file (YAML format)
+# All fields are optional; defaults are shown below.
+
+maxConcurrentDownloads: 3  # Maximum number of concurrent downloads
+
+http:
+  dir: "${XDG_DOWNLOAD_DIR}"         # Download directory (default: user downloads dir)
+  tempDir: "/tmp/tdm"                 # Temporary directory for downloads
+  connections: 8                       # Number of HTTP connections per download
+  maxChunks: 32                        # Maximum number of chunks per HTTP download
+  maxRetries: 3                        # Maximum number of retries for failed HTTP downloads
+  retryDelay: 2s                       # Delay between HTTP retries (Go duration string)
+
+torrent:
+  dir: "${XDG_DOWNLOAD_DIR}"           # Download directory for torrents
+  seed: true                           # Whether to seed after download
+  establishedConnectionsPerTorrent: 50 # Max established connections per torrent
+  halfOpenConnectionsPerTorrent: 25    # Max half-open connections per torrent
+  totalHalfOpenConnections: 100        # Max total half-open connections
+  disableDht: false                    # Disable DHT
+  disablePex: false                    # Disable PEX
+  disableTrackers: false               # Disable trackers
+  disableIPv6: false                   # Disable IPv6
+  metainfoTimeout: 60s                 # Timeout for torrent metainfo (Go duration string)
+

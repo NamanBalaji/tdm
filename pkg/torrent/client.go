@@ -12,6 +12,9 @@ import (
 	"github.com/anacrolix/torrent/storage"
 
 	analog "github.com/anacrolix/log"
+
+	"github.com/NamanBalaji/tdm/internal/config"
+	"github.com/NamanBalaji/tdm/internal/logger"
 )
 
 var (
@@ -20,36 +23,35 @@ var (
 	ErrMetadataTimeout = errors.New("timeout waiting for metadata")
 )
 
-const metadataTimeout = 60 * time.Second
-
 // Client wraps the anacrolix torrent client with thread-safe operations.
 type Client struct {
-	mu     sync.RWMutex
-	client *torrent.Client
-	config *torrent.ClientConfig
+	mu      sync.RWMutex
+	timeout time.Duration
+	client  *torrent.Client
+	config  *torrent.ClientConfig
 }
 
 // NewClient creates a new torrent client with optimized configuration.
-func NewClient(dataDir string) (*Client, error) {
+func NewClient(cfg *config.TorrentConfig) (*Client, error) {
 	analog.Default.SetHandlers(analog.DiscardHandler)
 
 	config := torrent.NewDefaultClientConfig()
 
-	config.DataDir = dataDir
-	config.Seed = true
+	config.DataDir = cfg.DownloadDir
+	config.Seed = cfg.Seed
 
 	// CRITICAL FIX: Disable UTP to prevent memory leaks
 	// See: https://github.com/anacrolix/torrent/issues/392
 	config.DisableUTP = true
 
-	config.EstablishedConnsPerTorrent = 50
-	config.HalfOpenConnsPerTorrent = 25
-	config.TotalHalfOpenConns = 100
+	config.EstablishedConnsPerTorrent = cfg.EstablishedConnectionsPerTorrent
+	config.HalfOpenConnsPerTorrent = cfg.HalfOpenConnectionsPerTorrent
+	config.TotalHalfOpenConns = cfg.TotalHalfOpenConnections
 
-	config.NoDHT = false      // Enable DHT
-	config.DisablePEX = false // Enable Peer Exchange
-	config.DisableTrackers = false
-	config.DisableIPv6 = false
+	config.NoDHT = cfg.DisableDHT      // Enable DHT
+	config.DisablePEX = cfg.DisablePEX // Enable Peer Exchange
+	config.DisableTrackers = cfg.DisableTrackers
+	config.DisableIPv6 = cfg.DisableIPv6
 
 	config.DefaultStorage = storage.NewFile(config.DataDir)
 
@@ -59,8 +61,9 @@ func NewClient(dataDir string) (*Client, error) {
 	}
 
 	return &Client{
-		client: client,
-		config: config,
+		client:  client,
+		config:  config,
+		timeout: cfg.MetainfoTimeout,
 	}, nil
 }
 
@@ -100,7 +103,7 @@ func (c *Client) GetTorrentHandler(ctx context.Context, url string, isMagnet boo
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
-	case <-time.After(metadataTimeout):
+	case <-time.After(c.timeout):
 		return nil, ErrMetadataTimeout
 	case <-t.GotInfo():
 	}
@@ -182,7 +185,12 @@ func getMetainfo(url string) (*metainfo.MetaInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			logger.Warnf("Failed to close response body: %v", err)
+		}
+	}()
 
 	return metainfo.Load(resp.Body)
 }

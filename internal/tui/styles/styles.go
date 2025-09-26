@@ -24,19 +24,6 @@ var (
 )
 
 var (
-	HeaderStyle = lipgloss.NewStyle().
-			Bold(true).
-			Foreground(Crust).
-			Background(Pink).
-			Padding(1, 2).
-			Align(lipgloss.Center)
-
-	StatsStyle = lipgloss.NewStyle().
-			Foreground(Text).
-			Background(Surface0).
-			Padding(0, 2).
-			Align(lipgloss.Center)
-
 	ErrorStyle = lipgloss.NewStyle().
 			Foreground(Base).
 			Background(Red).
@@ -56,8 +43,7 @@ var (
 				Padding(0, 1).
 				Foreground(Text)
 
-	ProgressBarFilledStyle = lipgloss.NewStyle().Foreground(Green)
-	ProgressBarEmptyStyle  = lipgloss.NewStyle().Foreground(Surface0)
+	ProgressBarEmptyStyle = lipgloss.NewStyle().Foreground(Surface0)
 
 	StatusActive    = lipgloss.NewStyle().Foreground(Teal).Bold(true)
 	StatusQueued    = lipgloss.NewStyle().Foreground(Yellow).Bold(true)

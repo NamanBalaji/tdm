@@ -8,6 +8,8 @@ import (
 
 	"github.com/google/uuid"
 	"go.etcd.io/bbolt"
+
+	"github.com/NamanBalaji/tdm/internal/logger"
 )
 
 const (
@@ -53,7 +55,10 @@ func NewBboltRepository(dbPath string) (*BboltRepository, error) {
 
 	err = repo.initialize()
 	if err != nil {
-		db.Close()
+		if err := db.Close(); err != nil {
+			logger.Errorf("failed to close database: %v", err)
+		}
+
 		return nil, err
 	}
 

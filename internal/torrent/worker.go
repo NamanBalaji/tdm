@@ -51,14 +51,13 @@ type Worker struct {
 }
 
 // New creates a new torrent worker.
-func New(ctx context.Context, downloadData *Download, url string, isMagnet bool, client *torrentPkg.Client, repo *repository.BboltRepository, priority int) (*Worker, error) {
-	var (
-		download *Download
-		err      error
-	)
+func New(ctx context.Context, downloadData *Download, url string, isMagnet bool, dir string, client *torrentPkg.Client, repo *repository.BboltRepository, priority int) (*Worker, error) {
+	download := downloadData
 
-	if downloadData == nil {
-		download, err = NewDownload(ctx, client, url, isMagnet, priority)
+	var err error
+
+	if download == nil {
+		download, err = NewDownload(ctx, client, url, isMagnet, dir, priority)
 		if err != nil {
 			return nil, err
 		}
@@ -68,8 +67,6 @@ func New(ctx context.Context, downloadData *Download, url string, isMagnet bool,
 				return nil, fmt.Errorf("failed to save download: %w", err)
 			}
 		}
-	} else {
-		download = downloadData
 	}
 
 	downloaded, totalSize := download.getDownloaded(), download.getTotalSize()
@@ -376,29 +373,29 @@ func (w *Worker) waitCompletion(ctx context.Context) {
 			}
 
 			if t.Complete().Bool() && t.BytesCompleted() >= t.Length() {
-				if !w.finished.Swap(true) {
-					w.dropTorrent()
-
-					if cf := w.getCancel(); cf != nil {
-						cf()
-					}
-
-					w.download.setStatus(status.Completed)
-					w.download.setEndTime(time.Now())
-
-					if w.repo != nil {
-						_ = w.repo.Save(w.download)
-					}
-
-					w.started.Store(false)
-
-					select {
-					case w.done <- nil:
-					default:
-					}
+				if w.finished.Swap(true) {
+					return
 				}
 
-				return
+				w.dropTorrent()
+
+				if cf := w.getCancel(); cf != nil {
+					cf()
+				}
+
+				w.download.setStatus(status.Completed)
+				w.download.setEndTime(time.Now())
+
+				if w.repo != nil {
+					_ = w.repo.Save(w.download)
+				}
+
+				w.started.Store(false)
+
+				select {
+				case w.done <- nil:
+				default:
+				}
 			}
 		}
 	}

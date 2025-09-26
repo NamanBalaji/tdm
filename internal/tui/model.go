@@ -61,10 +61,10 @@ type listModel struct {
 }
 
 type (
-	clearMsg       struct{}
-	tickMsg        struct{}
-	downloadsMsg   []engine.DownloadInfo
-	downloadErrMsg struct{ error }
+	clearMsg      struct{}
+	tickMsg       struct{}
+	downloadsMsg  []engine.DownloadInfo
+	downloadError struct{ error }
 )
 
 func clearNotifications() tea.Cmd {
@@ -166,7 +166,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		return m, nil
 
-	case downloadErrMsg:
+	case downloadError:
 		m.errMsg = msg.Error()
 		return m, clearNotifications()
 

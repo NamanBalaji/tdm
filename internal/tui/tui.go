@@ -29,7 +29,7 @@ func Run(ctx context.Context, eng *engine.Engine) error {
 					return
 				}
 
-				p.Send(downloadErrMsg{err.Error})
+				p.Send(downloadError{err.Error})
 			}
 		}
 	}()

@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/NamanBalaji/tdm/internal/config"
 	"github.com/adrg/xdg"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
@@ -58,7 +59,7 @@ func TestNewDownload(t *testing.T) {
 		})
 		defer server.Close()
 
-		d, err := NewDownload(context.Background(), server.URL, client, 16, 5)
+		d, err := NewDownload(context.Background(), config.DefaultConfig().Http, server.URL, client, 5)
 		require.NoError(t, err)
 		require.NotNil(t, d)
 
@@ -78,7 +79,7 @@ func TestNewDownload(t *testing.T) {
 		})
 		defer server.Close()
 
-		d, err := NewDownload(context.Background(), server.URL, client, 16, 5)
+		d, err := NewDownload(context.Background(), config.DefaultConfig().Http, server.URL, client, 5)
 		require.NoError(t, err)
 		require.NotNil(t, d)
 
@@ -93,7 +94,7 @@ func TestNewDownload(t *testing.T) {
 		})
 		defer server.Close()
 
-		_, err := NewDownload(context.Background(), server.URL, client, 16, 5)
+		_, err := NewDownload(context.Background(), config.DefaultConfig().Http, server.URL, client, 5)
 		require.Error(t, err)
 		assert.ErrorIs(t, err, httpPkg.ErrResourceNotFound)
 	})
@@ -110,7 +111,7 @@ func TestNewDownload(t *testing.T) {
 		})
 		defer server.Close()
 
-		d, err := NewDownload(context.Background(), server.URL, client, 16, 5)
+		d, err := NewDownload(context.Background(), config.DefaultConfig().Http, server.URL, client, 5)
 		require.NoError(t, err)
 		require.NotNil(t, d)
 		assert.Equal(t, int64(500), d.TotalSize)
@@ -129,7 +130,7 @@ func TestNewDownload(t *testing.T) {
 		})
 		defer server.Close()
 
-		d, err := NewDownload(context.Background(), server.URL, client, 16, 5)
+		d, err := NewDownload(context.Background(), config.DefaultConfig().Http, server.URL, client, 5)
 		require.NoError(t, err)
 		require.NotNil(t, d)
 		assert.Equal(t, int64(1234), d.TotalSize)
@@ -265,7 +266,7 @@ func TestDownload_TempDirCreation(t *testing.T) {
 	})
 	defer server.Close()
 
-	d, err := NewDownload(context.Background(), server.URL, client, 4, 1)
+	d, err := NewDownload(context.Background(), config.DefaultConfig().Http, server.URL, client, 4)
 	require.NoError(t, err)
 
 	// Check that the temp directory was created

@@ -10,8 +10,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/adrg/xdg"
-
+	"github.com/NamanBalaji/tdm/internal/config"
 	"github.com/NamanBalaji/tdm/internal/engine"
 	"github.com/NamanBalaji/tdm/internal/logger"
 	"github.com/NamanBalaji/tdm/internal/repository"
@@ -22,6 +21,11 @@ import (
 func main() {
 	debug := flag.Bool("debug", false, "Enable debug logging")
 	flag.Parse()
+
+	cfg, err := config.GetConfig()
+	if err != nil {
+		log.Fatalf("Error loading config: %v\n", err)
+	}
 
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
@@ -46,7 +50,7 @@ func main() {
 		log.Fatalf("Error creating repository: %v\n", err)
 	}
 
-	torrentClient, err := torrentPkg.NewClient(xdg.UserDirs.Download)
+	torrentClient, err := torrentPkg.NewClient(cfg.Torrent)
 	if err != nil {
 		log.Fatalf("Error creating torrent client: %v\n", err)
 	}
@@ -57,7 +61,7 @@ func main() {
 		}
 	}()
 
-	eng := engine.NewEngine(repo, torrentClient, 2)
+	eng := engine.NewEngine(cfg, repo, torrentClient)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

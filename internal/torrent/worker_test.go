@@ -41,7 +41,7 @@ func TestNew_ExistingDownload_ComputesInitialProgress(t *testing.T) {
 				Priority:   2,
 			}
 
-			w, err := torrent.New(context.Background(), d, "", false, nil, nil, d.Priority)
+			w, err := torrent.New(context.Background(), d, "", false, d.Dir, nil, nil, d.Priority)
 			if err != nil {
 				t.Fatalf("New error: %v", err)
 			}
@@ -71,7 +71,7 @@ func TestWorker_Getters_And_Queue(t *testing.T) {
 		Dir:      "/downloads",
 		Priority: 7,
 	}
-	w, err := torrent.New(context.Background(), d, "", false, nil, nil, d.Priority)
+	w, err := torrent.New(context.Background(), d, "", false, d.Dir, nil, nil, d.Priority)
 	if err != nil {
 		t.Fatalf("New error: %v", err)
 	}
@@ -115,7 +115,7 @@ func TestWorker_Pause_Cancel_Transitions_And_Idempotency(t *testing.T) {
 			Dir:      t.TempDir(),
 			Priority: 1,
 		}
-		w, err := torrent.New(context.Background(), d, "", false, nil, nil, d.Priority)
+		w, err := torrent.New(context.Background(), d, "", false, t.TempDir(), nil, nil, d.Priority)
 		if err != nil {
 			t.Fatalf("New error: %v", err)
 		}
@@ -136,7 +136,7 @@ func TestWorker_Pause_Cancel_Transitions_And_Idempotency(t *testing.T) {
 			Dir:      t.TempDir(),
 			Priority: 1,
 		}
-		w, err := torrent.New(context.Background(), d, "", false, nil, nil, d.Priority)
+		w, err := torrent.New(context.Background(), d, "", false, t.TempDir(), nil, nil, d.Priority)
 		if err != nil {
 			t.Fatalf("New error: %v", err)
 		}
@@ -157,7 +157,7 @@ func TestWorker_Pause_Cancel_Transitions_And_Idempotency(t *testing.T) {
 			Dir:      "/tmp",
 			Priority: 2,
 		}
-		w, err := torrent.New(context.Background(), d, "", false, nil, nil, d.Priority)
+		w, err := torrent.New(context.Background(), d, "", false, "", nil, nil, d.Priority)
 		if err != nil {
 			t.Fatalf("New error: %v", err)
 		}
@@ -180,7 +180,7 @@ func TestWorker_Pause_NoOp_WhenNotActiveOrQueued(t *testing.T) {
 		Dir:      "/x",
 		Priority: 3,
 	}
-	w, err := torrent.New(context.Background(), d, "", false, nil, nil, d.Priority)
+	w, err := torrent.New(context.Background(), d, "", false, "", nil, nil, d.Priority)
 	if err != nil {
 		t.Fatalf("New error: %v", err)
 	}
@@ -203,7 +203,7 @@ func TestWorker_Done_Channel_InitialState(t *testing.T) {
 		Dir:      "/tmp",
 		Priority: 5,
 	}
-	w, err := torrent.New(context.Background(), d, "", false, nil, nil, d.Priority)
+	w, err := torrent.New(context.Background(), d, "", false, "", nil, nil, d.Priority)
 	if err != nil {
 		t.Fatalf("New error: %v", err)
 	}

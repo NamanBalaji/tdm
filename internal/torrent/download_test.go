@@ -1,12 +1,12 @@
 package torrent_test
 
 import (
-	"encoding/json"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/stretchr/testify/assert"
 
 	"github.com/NamanBalaji/tdm/internal/status"
 	torrent "github.com/NamanBalaji/tdm/internal/torrent"
@@ -91,11 +91,7 @@ func Test_JSON_RoundTrip(t *testing.T) {
 		t.Fatalf("UnmarshalJSON err: %v", err)
 	}
 
-	gb, _ := json.Marshal(got)
-	ob, _ := json.Marshal(orig)
-	if string(gb) != string(ob) {
-		t.Fatalf("round-trip mismatch\ngot : %s\nwant: %s", gb, ob)
-	}
+	assert.Equal(t, orig, &got)
 }
 
 func Test_UnmarshalJSON_Error(t *testing.T) {

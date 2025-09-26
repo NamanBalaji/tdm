@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/NamanBalaji/tdm/internal/config"
 	"github.com/NamanBalaji/tdm/internal/http"
 	"github.com/NamanBalaji/tdm/internal/progress"
 	"github.com/NamanBalaji/tdm/internal/repository"
@@ -34,7 +35,7 @@ type Worker interface {
 }
 
 // GetWorker returns a worker based on the URL scheme.
-func GetWorker(ctx context.Context, urlStr string, priority int, torrentClient *torrentPkg.Client, repo *repository.BboltRepository) (Worker, error) {
+func GetWorker(ctx context.Context, cfg *config.Config, urlStr string, priority int, torrentClient *torrentPkg.Client, repo *repository.BboltRepository) (Worker, error) {
 	u, err := url.Parse(urlStr)
 	if err != nil {
 		return nil, err
@@ -43,15 +44,15 @@ func GetWorker(ctx context.Context, urlStr string, priority int, torrentClient *
 	switch u.Scheme {
 	case "http", "https":
 		if torrentPkg.HasTorrentFile(urlStr) {
-			return torrent.New(ctx, nil, urlStr, false, torrentClient, repo, priority)
+			return torrent.New(ctx, nil, urlStr, false, cfg.Torrent.DownloadDir, torrentClient, repo, priority)
 		}
 
 		if http.CanHandle(urlStr) {
-			return http.New(ctx, urlStr, nil, repo, priority)
+			return http.New(ctx, cfg.Http, urlStr, nil, repo, priority)
 		}
 	case "magnet":
 		if torrentPkg.IsValidMagnetLink(urlStr) {
-			return torrent.New(ctx, nil, urlStr, true, torrentClient, repo, priority)
+			return torrent.New(ctx, nil, urlStr, true, cfg.Torrent.DownloadDir, torrentClient, repo, priority)
 		}
 	}
 
@@ -59,7 +60,7 @@ func GetWorker(ctx context.Context, urlStr string, priority int, torrentClient *
 }
 
 // LoadWorker loads a worker from a saved download object.
-func LoadWorker(ctx context.Context, download repository.Object, torrentClient *torrentPkg.Client, repo *repository.BboltRepository) (Worker, error) {
+func LoadWorker(ctx context.Context, cfg *config.Config, download repository.Object, torrentClient *torrentPkg.Client, repo *repository.BboltRepository) (Worker, error) {
 	switch download.Type {
 	case "http":
 		var d http.Download
@@ -73,7 +74,7 @@ func LoadWorker(ctx context.Context, download repository.Object, torrentClient *
 			d.Status = status.Paused
 		}
 
-		return http.New(ctx, d.URL, &d, repo, d.Priority)
+		return http.New(ctx, cfg.Http, d.URL, &d, repo, d.Priority)
 
 	case "torrent":
 		var d torrent.Download
@@ -87,7 +88,7 @@ func LoadWorker(ctx context.Context, download repository.Object, torrentClient *
 			d.Status = status.Paused
 		}
 
-		return torrent.New(ctx, &d, d.Url, d.IsMagnet, torrentClient, repo, d.Priority)
+		return torrent.New(ctx, &d, d.Url, d.IsMagnet, d.Dir, torrentClient, repo, d.Priority)
 
 	default:
 		return nil, ErrUnsupportedScheme

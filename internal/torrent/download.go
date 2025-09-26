@@ -7,7 +7,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/adrg/xdg"
 	"github.com/google/uuid"
 
 	"github.com/NamanBalaji/tdm/internal/status"
@@ -34,14 +33,12 @@ type Download struct {
 }
 
 // NewDownload creates a new download from a URL or magnet link.
-func NewDownload(ctx context.Context, client *torrentPkg.Client, url string, isMagnet bool, priority int) (*Download, error) {
-	dataDir := xdg.UserDirs.Download
-
+func NewDownload(ctx context.Context, client *torrentPkg.Client, url string, isMagnet bool, dir string, priority int) (*Download, error) {
 	download := &Download{
 		Id:       uuid.New(),
 		Url:      url,
 		IsMagnet: isMagnet,
-		Dir:      dataDir,
+		Dir:      dir,
 		Priority: priority,
 		Status:   status.Pending,
 		Protocol: "torrent",

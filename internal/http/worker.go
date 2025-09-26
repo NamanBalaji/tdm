@@ -16,6 +16,7 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/sync/errgroup"
 
+	"github.com/NamanBalaji/tdm/internal/config"
 	"github.com/NamanBalaji/tdm/internal/logger"
 	"github.com/NamanBalaji/tdm/internal/progress"
 	"github.com/NamanBalaji/tdm/internal/repository"
@@ -36,10 +37,10 @@ var (
 )
 
 type Worker struct {
+	cfg      *config.HttpConfig
 	repo     *repository.BboltRepository
 	download *Download
 	client   *httpPkg.Client
-	config   *Config
 
 	// Use atomic for thread-safe state management
 	started  atomic.Bool
@@ -54,72 +55,51 @@ type Worker struct {
 	lastProgress progress.Progress
 }
 
-func New(ctx context.Context, url string, downloadData *Download, repo *repository.BboltRepository, priority int, opts ...ConfigOption) (*Worker, error) {
+func New(ctx context.Context, cfg *config.HttpConfig, url string, downloadData *Download, repo *repository.BboltRepository, priority int) (*Worker, error) {
 	client := httpPkg.NewClient()
 
-	cfg := defaultConfig()
-	for _, opt := range opts {
-		opt(cfg)
+	download, err := getDownload(ctx, cfg, downloadData, url, client, priority)
+	if err != nil {
+		return nil, err
 	}
 
-	var (
-		download     *Download
-		lastProgress progress.Progress
-	)
+	var downloaded int64
 
-	if downloadData == nil {
-		d, err := NewDownload(ctx, url, client, cfg.MaxChunks, priority)
-		if err != nil {
-			return nil, err
-		}
-
-		download = d
-	} else {
-		download = downloadData
-
-		download.mu = sync.RWMutex{}
-		if download.Status == status.Queued || download.Status == status.Pending {
-			download.setStatus(status.Paused)
-		}
-
-		var downloaded int64
-
-		for _, chunk := range download.Chunks {
-			chunk.mu = sync.RWMutex{}
-			downloaded += chunk.Downloaded
-		}
-
-		total := download.TotalSize
-
-		pct := 0.0
-		if total > 0 {
-			pct = float64(downloaded) / float64(total) * 100
-		}
-
-		if download.Status == status.Completed {
-			pct = 100
-		}
-
-		lastProgress = progress.Progress{
-			TotalSize:  total,
-			Downloaded: downloaded,
-			Percentage: pct,
-			SpeedBPS:   0,
-			ETA:        0,
-		}
+	for _, chunk := range download.Chunks {
+		chunk.mu = sync.RWMutex{}
+		downloaded += chunk.Downloaded
 	}
 
-	err := repo.Save(download)
+	total := download.TotalSize
+
+	pct := 0.0
+	if total > 0 {
+		pct = float64(downloaded) / float64(total) * 100
+	}
+
+	if download.Status == status.Completed {
+		pct = 100
+	}
+
+	lastProgress := progress.Progress{
+		TotalSize:  total,
+		Downloaded: downloaded,
+		Percentage: pct,
+		SpeedBPS:   0,
+		ETA:        0,
+	}
+
+	err = repo.Save(download)
 	if err != nil {
 		return nil, fmt.Errorf("failed to save download: %w", err)
 	}
 
 	return &Worker{
+		cfg:          cfg,
 		repo:         repo,
 		download:     download,
 		client:       client,
 		done:         make(chan error, 1),
-		config:       cfg,
 		lastProgress: lastProgress,
 	}, nil
 }
@@ -328,7 +308,7 @@ func (w *Worker) trackProgress(ctx context.Context) {
 // processDownload manages the concurrent downloading of chunks.
 func (w *Worker) processDownload(ctx context.Context, chunks []*Chunk) {
 	g, groupCtx := errgroup.WithContext(ctx)
-	sem := make(chan struct{}, w.config.Connections)
+	sem := make(chan struct{}, w.cfg.Connections)
 
 	for _, currentChunk := range chunks {
 		c := currentChunk
@@ -341,7 +321,7 @@ func (w *Worker) processDownload(ctx context.Context, chunks []*Chunk) {
 				defer func() { <-sem }()
 			}
 
-			return w.downloadChunkWithRetries(groupCtx, c)
+			return w.downloadChunkWithRetries(groupCtx, w.cfg, c)
 		})
 	}
 
@@ -356,10 +336,10 @@ func (w *Worker) processDownload(ctx context.Context, chunks []*Chunk) {
 }
 
 // downloadChunkWithRetries attempts to download a chunk with retries on failure.
-func (w *Worker) downloadChunkWithRetries(ctx context.Context, chunk *Chunk) error {
+func (w *Worker) downloadChunkWithRetries(ctx context.Context, cfg *config.HttpConfig, chunk *Chunk) error {
 	var lastErr error
 
-	for attempt := range w.config.MaxRetries {
+	for attempt := range cfg.MaxRetries {
 		err := w.downloadChunk(ctx, chunk)
 		if err == nil {
 			return nil
@@ -371,7 +351,7 @@ func (w *Worker) downloadChunkWithRetries(ctx context.Context, chunk *Chunk) err
 		}
 
 		chunk.setRetryCount(int32(attempt + 1))
-		backoff := calculateBackoff(attempt, w.config.RetryDelay)
+		backoff := calculateBackoff(attempt, cfg.RetryDelay)
 
 		select {
 		case <-ctx.Done():
@@ -597,4 +577,18 @@ func (w *Worker) cleanupFiles() {
 	if w.repo != nil {
 		_ = w.repo.Delete(w.download.GetID().String())
 	}
+}
+
+// getDownload initializes or resets a Download instance based on existing data.
+func getDownload(ctx context.Context, cfg *config.HttpConfig, downloadData *Download, url string, client *httpPkg.Client, priority int) (*Download, error) {
+	if downloadData == nil {
+		return NewDownload(ctx, cfg, url, client, priority)
+	}
+
+	downloadData.mu = sync.RWMutex{}
+	if downloadData.Status == status.Queued || downloadData.Status == status.Pending {
+		downloadData.setStatus(status.Paused)
+	}
+
+	return downloadData, nil
 }

@@ -42,7 +42,7 @@ func InitLogging(debugMode bool, logPath string) error {
 // Close closes the log file if open.
 func Close() {
 	if logFile != nil {
-		logFile.Close()
+		logFile.Close() //nolint:errcheck
 	}
 }
 

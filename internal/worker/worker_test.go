@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/NamanBalaji/tdm/internal/config"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -28,7 +29,11 @@ func setup(t *testing.T) (*repository.BboltRepository, *torrentPkg.Client, func(
 	repo, err := repository.NewBboltRepository(dbPath)
 	require.NoError(t, err)
 
-	torrentClient, err := torrentPkg.NewClient(t.TempDir())
+	cfg := config.DefaultConfig().Torrent
+	cfg.MetainfoTimeout = 1
+	cfg.DownloadDir = t.TempDir()
+
+	torrentClient, err := torrentPkg.NewClient(cfg)
 	require.NoError(t, err)
 
 	cleanup := func() {
@@ -150,7 +155,9 @@ func TestGetWorker(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx := context.Background()
-			w, err := worker.GetWorker(ctx, tt.url, tt.priority, torrentClient, repo)
+			cfg := config.DefaultConfig()
+
+			w, err := worker.GetWorker(ctx, &cfg, tt.url, tt.priority, torrentClient, repo)
 
 			if tt.wantErr {
 				assert.Error(t, err)
@@ -203,7 +210,9 @@ func TestGetWorker_EdgeCases(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx := context.Background()
-			w, err := worker.GetWorker(ctx, tt.url, 1, nil, repo)
+			cfg := config.DefaultConfig()
+
+			w, err := worker.GetWorker(ctx, &cfg, tt.url, 1, nil, repo)
 
 			if tt.wantErr {
 				assert.Error(t, err)
@@ -307,7 +316,9 @@ func TestLoadWorker(t *testing.T) {
 			}
 
 			ctx := context.Background()
-			w, err := worker.LoadWorker(ctx, repoObj, torrentClient, repo)
+			cfg := config.DefaultConfig()
+
+			w, err := worker.LoadWorker(ctx, &cfg, repoObj, torrentClient, repo)
 
 			if tt.wantErr {
 				assert.Error(t, err)
@@ -362,7 +373,9 @@ func TestLoadWorker_InvalidJSON(t *testing.T) {
 			}
 
 			ctx := context.Background()
-			w, err := worker.LoadWorker(ctx, repoObj, nil, repo)
+			cfg := config.DefaultConfig()
+
+			w, err := worker.LoadWorker(ctx, &cfg, repoObj, nil, repo)
 			assert.Error(t, err)
 			assert.Nil(t, w)
 		})
@@ -377,6 +390,7 @@ func TestGetWorker_NilInputs(t *testing.T) {
 	tests := []struct {
 		name    string
 		ctx     context.Context
+		cfg     *config.Config
 		url     string
 		repo    *repository.BboltRepository
 		wantErr bool
@@ -384,6 +398,7 @@ func TestGetWorker_NilInputs(t *testing.T) {
 		{
 			name:    "nil context",
 			ctx:     nil,
+			cfg:     nil,
 			url:     "http://example.com/file.zip",
 			repo:    nil,
 			wantErr: true, // Will panic or error on nil context
@@ -391,6 +406,7 @@ func TestGetWorker_NilInputs(t *testing.T) {
 		{
 			name:    "nil repo",
 			ctx:     context.Background(),
+			cfg:     nil,
 			url:     "http://example.com/file.zip",
 			repo:    nil,
 			wantErr: true, // Will fail on network request anyway
@@ -406,7 +422,7 @@ func TestGetWorker_NilInputs(t *testing.T) {
 				}
 			}()
 
-			w, err := worker.GetWorker(tt.ctx, tt.url, 1, nil, tt.repo)
+			w, err := worker.GetWorker(tt.ctx, tt.cfg, tt.url, 1, nil, tt.repo)
 			if tt.wantErr {
 				assert.Error(t, err)
 				assert.Nil(t, w)

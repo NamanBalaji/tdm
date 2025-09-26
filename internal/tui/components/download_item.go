@@ -76,7 +76,7 @@ func DownloadItem(info engine.DownloadInfo, width int, selected bool) string {
 		containerStyle = styles.SelectedItemStyle
 	}
 
-	return containerStyle.Copy().Padding(0, 2).Width(width).Render(item)
+	return containerStyle.Padding(0, 2).Width(width).Render(item)
 }
 
 // formatSize converts bytes into a human-readable string.

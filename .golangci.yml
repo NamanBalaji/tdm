@@ -23,9 +23,20 @@ linters:
     - revive
     - noinlineerr
     - ireturn
+    - interfacebloat
+    - gosec
+    - forcetypeassert
+    - gocritic
+    - mnd
+    - noctx
   settings:
     cyclop:
       max-complexity: 25
+    gocognit:
+      min-complexity: 40
+    funlen:
+      lines: 85
+      statements: 60
 
 formatters:
   enable:

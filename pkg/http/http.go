@@ -17,7 +17,13 @@ import (
 const (
 	defaultConnectTimeout = 30 * time.Second
 	defaultIdleTimeout    = 90 * time.Second
-	DefaultUserAgent      = "TDM/1.0"
+	keepAlivePeriod       = 30 * time.Second
+	maxIdleConns          = 100
+	tlsHandshakeTimeout   = 10 * time.Second
+	expectContinueTimeout = 1 * time.Second
+	maxConnsPerHost       = 16
+
+	DefaultUserAgent = "TDM/1.0"
 
 	defaultDownloadName = "download"
 )
@@ -32,14 +38,14 @@ func NewClient() *Client {
 		Proxy: http.ProxyFromEnvironment,
 		DialContext: (&net.Dialer{
 			Timeout:   defaultConnectTimeout,
-			KeepAlive: 30 * time.Second,
+			KeepAlive: keepAlivePeriod,
 		}).DialContext,
-		MaxIdleConns:          100,
+		MaxIdleConns:          maxIdleConns,
 		IdleConnTimeout:       defaultIdleTimeout,
-		TLSHandshakeTimeout:   10 * time.Second,
-		ExpectContinueTimeout: 1 * time.Second,
+		TLSHandshakeTimeout:   tlsHandshakeTimeout,
+		ExpectContinueTimeout: expectContinueTimeout,
 		DisableCompression:    true,
-		MaxConnsPerHost:       16,
+		MaxConnsPerHost:       maxConnsPerHost,
 	}
 
 	return &Client{
@@ -64,7 +70,12 @@ func IsDownloadable(urlStr string) bool {
 			return false
 		}
 	}
-	defer resp.Body.Close()
+
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			logger.Warnf("Failed to close response body: %v", err)
+		}
+	}()
 
 	finalURL := resp.Request.URL
 
@@ -218,17 +229,9 @@ func generateRequest(ctx context.Context, urlStr, method string, headers map[str
 
 // GetFilename tries extracts the filename from the Content-Disposition header or the URL.
 func GetFilename(resp *http.Response) string {
-	contentDisposition := resp.Header.Get("Content-Disposition")
-	if contentDisposition != "" {
-		if _, params, err := mime.ParseMediaType(contentDisposition); err == nil {
-			if fName, ok := params["filename"]; ok {
-				return fName
-			}
-
-			if fName, ok := params["filename*"]; ok {
-				return fName
-			}
-		}
+	fileName, ok := getFileNameFromContentDisposition(resp.Header.Get("Content-Disposition"))
+	if ok {
+		return fileName
 	}
 
 	u := resp.Request.URL
@@ -242,6 +245,24 @@ func GetFilename(resp *http.Response) string {
 	}
 
 	return defaultDownloadName
+}
+
+func getFileNameFromContentDisposition(header string) (string, bool) {
+	if header == "" {
+		return "", false
+	}
+
+	if _, params, err := mime.ParseMediaType(header); err == nil {
+		if fName, ok := params["filename"]; ok {
+			return fName, true
+		}
+
+		if fName, ok := params["filename*"]; ok {
+			return fName, true
+		}
+	}
+
+	return "", false
 }
 
 // ParseLastModified parses the Last-Modified header.

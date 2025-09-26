@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/NamanBalaji/tdm/internal/config"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -80,7 +81,8 @@ func (s *EngineTestSuite) SetupTest() {
 	s.repo, err = repository.NewBboltRepository(tmpFile.Name())
 	require.NoError(s.T(), err)
 
-	s.engine = engine.NewEngine(s.repo, nil, 3)
+	cfg := config.DefaultConfig()
+	s.engine = engine.NewEngine(&cfg, s.repo, nil)
 	require.NotNil(s.T(), s.engine)
 
 	s.ctx, s.cancel = context.WithTimeout(context.Background(), 30*time.Second)
@@ -194,7 +196,9 @@ func (s *EngineTestSuite) TestNewEngine() {
 			require.NoError(s.T(), err)
 			defer assert.NoError(s.T(), repo.Close())
 
-			eng := engine.NewEngine(repo, nil, tc.maxConcurrent)
+			cfg := config.DefaultConfig()
+			cfg.MaxConcurrentDownloads = tc.maxConcurrent
+			eng := engine.NewEngine(&cfg, repo, nil)
 			assert.NotNil(s.T(), eng)
 			assert.NotNil(s.T(), eng.GetErrors(), "error channel should be available")
 		})
@@ -569,7 +573,9 @@ func TestNewEngineEdgeCases(t *testing.T) {
 			require.NoError(t, err)
 			defer assert.NoError(t, repo.Close())
 
-			eng := engine.NewEngine(repo, nil, tt.maxConcurrent)
+			cfg := config.DefaultConfig()
+			cfg.MaxConcurrentDownloads = tt.maxConcurrent
+			eng := engine.NewEngine(&cfg, repo, nil)
 			if tt.expectNil {
 				assert.Nil(t, eng)
 			} else {

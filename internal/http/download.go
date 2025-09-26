@@ -14,9 +14,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/adrg/xdg"
 	"github.com/google/uuid"
 
+	"github.com/NamanBalaji/tdm/internal/config"
 	"github.com/NamanBalaji/tdm/internal/logger"
 	"github.com/NamanBalaji/tdm/internal/status"
 	httpPkg "github.com/NamanBalaji/tdm/pkg/http"
@@ -42,7 +42,7 @@ type Download struct {
 	Priority       int           `json:"priority"`
 }
 
-func NewDownload(ctx context.Context, url string, client *httpPkg.Client, maxChunks int, priority int) (*Download, error) {
+func NewDownload(ctx context.Context, cfg *config.HttpConfig, url string, client *httpPkg.Client, priority int) (*Download, error) {
 	id := uuid.New()
 
 	download := &Download{
@@ -50,8 +50,8 @@ func NewDownload(ctx context.Context, url string, client *httpPkg.Client, maxChu
 		URL:      url,
 		Status:   status.Pending,
 		Protocol: "http",
-		Dir:      xdg.UserDirs.Download,
-		TempDir:  filepath.Join(os.TempDir(), "tdm", id.String()),
+		Dir:      cfg.DownloadDir,
+		TempDir:  filepath.Join(cfg.TempDir, id.String()),
 		Priority: priority,
 	}
 
@@ -60,7 +60,7 @@ func NewDownload(ctx context.Context, url string, client *httpPkg.Client, maxChu
 		return nil, err
 	}
 
-	download.makeChunks(maxChunks)
+	download.makeChunks(cfg.Chunks)
 
 	err = os.MkdirAll(download.TempDir, 0o755)
 	if err != nil {
@@ -193,6 +193,7 @@ func (d *Download) initialize(ctx context.Context, client *httpPkg.Client) error
 	var err error
 
 	err = d.initializeWithHEAD(ctx, client)
+	//nolint:nestif
 	if err != nil {
 		logger.Warnf("HEAD request failed, falling back. Error: %v", err)
 
