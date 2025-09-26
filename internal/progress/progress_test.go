@@ -1,16 +1,15 @@
-package http_test
+package progress_test
 
 import (
 	"testing"
 	"time"
 
+	"github.com/NamanBalaji/tdm/internal/progress"
 	"github.com/stretchr/testify/assert"
-
-	"github.com/NamanBalaji/tdm/internal/http"
 )
 
 func TestProgress_Getters(t *testing.T) {
-	p := http.Progress{
+	p := progress.Progress{
 		TotalSize:  1024,
 		Downloaded: 512,
 		Percentage: 50.0,
@@ -18,8 +17,8 @@ func TestProgress_Getters(t *testing.T) {
 		ETA:        4 * time.Second,
 	}
 
-	assert.Equal(t, int64(1024), p.GetTotalSize(), "GetTotalSize should return the correct total size")
-	assert.Equal(t, int64(512), p.GetDownloaded(), "GetDownloaded should return the correct downloaded size")
+	assert.Equal(t, int64(1024), p.GetTotalSize(), "getTotalSize should return the correct total size")
+	assert.Equal(t, int64(512), p.GetDownloaded(), "getDownloaded should return the correct downloaded size")
 	assert.Equal(t, 50.0, p.GetPercentage(), "GetPercentage should return the correct percentage")
 	assert.Equal(t, int64(128), p.GetSpeedBPS(), "GetSpeedBPS should return the correct speed")
 }
@@ -64,7 +63,7 @@ func TestProgress_GetETA(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			p := http.Progress{ETA: tc.eta}
+			p := progress.Progress{ETA: tc.eta}
 			assert.Equal(t, tc.expected, p.GetETA())
 		})
 	}

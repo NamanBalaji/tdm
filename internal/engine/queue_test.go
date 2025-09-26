@@ -64,7 +64,7 @@ func (m *mockWorker) Cancel() error                  { return nil }
 func (m *mockWorker) Resume(_ context.Context) error { return nil }
 func (m *mockWorker) Remove() error                  { return nil }
 func (m *mockWorker) Done() <-chan error             { return make(chan error) }
-func (m *mockWorker) Progress() progress.Progress    { return nil }
+func (m *mockWorker) Progress() progress.Progress    { return progress.Progress{} }
 func (m *mockWorker) GetStatus() status.Status       { return 0 }
 func (m *mockWorker) GetFilename() string            { return "" }
 

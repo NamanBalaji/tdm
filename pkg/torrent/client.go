@@ -3,6 +3,7 @@ package torrent
 import (
 	"context"
 	"errors"
+	"net/http"
 	"sync"
 	"time"
 
@@ -14,10 +15,12 @@ import (
 )
 
 var (
-	ErrTorrentClosed   = errors.New("torrent handler is closed")
 	ErrNilClient       = errors.New("client is nil")
+	ErrNilMetainfo     = errors.New("metainfo is nil")
 	ErrMetadataTimeout = errors.New("timeout waiting for metadata")
 )
+
+const metadataTimeout = 60 * time.Second
 
 // Client wraps the anacrolix torrent client with thread-safe operations.
 type Client struct {
@@ -63,6 +66,10 @@ func NewClient(dataDir string) (*Client, error) {
 
 // GetTorrentHandler adds a torrent from a URL or magnet link and waits for metadata.
 func (c *Client) GetTorrentHandler(ctx context.Context, url string, isMagnet bool) (*torrent.Torrent, error) {
+	if c == nil {
+		return nil, ErrNilClient
+	}
+
 	client := c.GetClient()
 	if client == nil {
 		return nil, ErrNilClient
@@ -79,7 +86,7 @@ func (c *Client) GetTorrentHandler(ctx context.Context, url string, isMagnet boo
 			return nil, err
 		}
 	} else {
-		mi, err := GetMetainfo(url)
+		mi, err := getMetainfo(url)
 		if err != nil {
 			return nil, err
 		}
@@ -93,7 +100,7 @@ func (c *Client) GetTorrentHandler(ctx context.Context, url string, isMagnet boo
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
-	case <-time.After(60 * time.Second):
+	case <-time.After(metadataTimeout):
 		return nil, ErrMetadataTimeout
 	case <-t.GotInfo():
 	}
@@ -103,6 +110,10 @@ func (c *Client) GetTorrentHandler(ctx context.Context, url string, isMagnet boo
 
 // GetClient returns the underlying torrent client.
 func (c *Client) GetClient() *torrent.Client {
+	if c == nil {
+		return nil
+	}
+
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
@@ -111,6 +122,14 @@ func (c *Client) GetClient() *torrent.Client {
 
 // AddTorrent adds a torrent from metainfo.
 func (c *Client) AddTorrent(mi *metainfo.MetaInfo) (*torrent.Torrent, error) {
+	if c == nil {
+		return nil, ErrNilClient
+	}
+
+	if mi == nil {
+		return nil, ErrNilMetainfo
+	}
+
 	c.mu.RLock()
 	client := c.client
 	c.mu.RUnlock()
@@ -124,6 +143,10 @@ func (c *Client) AddTorrent(mi *metainfo.MetaInfo) (*torrent.Torrent, error) {
 
 // AddMagnet adds a torrent from a magnet link.
 func (c *Client) AddMagnet(magnetURI string) (*torrent.Torrent, error) {
+	if c == nil {
+		return nil, ErrNilClient
+	}
+
 	c.mu.RLock()
 	client := c.client
 	c.mu.RUnlock()
@@ -136,6 +159,10 @@ func (c *Client) AddMagnet(magnetURI string) (*torrent.Torrent, error) {
 }
 
 func (c *Client) Close() error {
+	if c == nil {
+		return ErrNilClient
+	}
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -147,4 +174,15 @@ func (c *Client) Close() error {
 	c.client = nil
 
 	return nil
+}
+
+// getMetainfo fetches and parses the metainfo from a given URL.
+func getMetainfo(url string) (*metainfo.MetaInfo, error) {
+	resp, err := http.Get(url)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	return metainfo.Load(resp.Body)
 }

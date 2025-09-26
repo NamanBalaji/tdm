@@ -51,7 +51,7 @@ type Worker struct {
 	cancelMu sync.Mutex
 
 	progressMu   sync.RWMutex
-	lastProgress Progress
+	lastProgress progress.Progress
 }
 
 func New(ctx context.Context, url string, downloadData *Download, repo *repository.BboltRepository, priority int, opts ...ConfigOption) (*Worker, error) {
@@ -64,7 +64,7 @@ func New(ctx context.Context, url string, downloadData *Download, repo *reposito
 
 	var (
 		download     *Download
-		lastProgress Progress
+		lastProgress progress.Progress
 	)
 
 	if downloadData == nil {
@@ -100,7 +100,7 @@ func New(ctx context.Context, url string, downloadData *Download, repo *reposito
 			pct = 100
 		}
 
-		lastProgress = Progress{
+		lastProgress = progress.Progress{
 			TotalSize:  total,
 			Downloaded: downloaded,
 			Percentage: pct,
@@ -185,16 +185,6 @@ func (w *Worker) Pause() error {
 	return w.stop(status.Paused, false)
 }
 
-func (w *Worker) Resume(ctx context.Context) error {
-	if w.download.getStatus() != status.Paused {
-		return nil
-	}
-
-	w.download.setStatus(status.Pending)
-
-	return w.Start(ctx)
-}
-
 func (w *Worker) Remove() error {
 	return w.stop(status.Cancelled, true)
 }
@@ -209,11 +199,6 @@ func (w *Worker) Progress() progress.Progress {
 	defer w.progressMu.RUnlock()
 
 	return w.lastProgress
-}
-
-// GetDownload returns the download info (for engine use).
-func (w *Worker) GetDownload() *Download {
-	return w.download
 }
 
 // GetFilename returns the filename of the download.
@@ -240,6 +225,7 @@ func (w *Worker) getCancel() context.CancelFunc {
 	return w.cancel
 }
 
+// saveState periodically saves the download state to the repository.
 func (w *Worker) saveState(ctx context.Context) {
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
@@ -327,7 +313,7 @@ func (w *Worker) trackProgress(ctx context.Context) {
 			}
 
 			w.progressMu.Lock()
-			w.lastProgress = Progress{
+			w.lastProgress = progress.Progress{
 				TotalSize:  totalSize,
 				Downloaded: totalDownloaded,
 				Percentage: percentage,
@@ -339,6 +325,7 @@ func (w *Worker) trackProgress(ctx context.Context) {
 	}
 }
 
+// processDownload manages the concurrent downloading of chunks.
 func (w *Worker) processDownload(ctx context.Context, chunks []*Chunk) {
 	g, groupCtx := errgroup.WithContext(ctx)
 	sem := make(chan struct{}, w.config.Connections)
@@ -368,6 +355,7 @@ func (w *Worker) processDownload(ctx context.Context, chunks []*Chunk) {
 	w.finish(err)
 }
 
+// downloadChunkWithRetries attempts to download a chunk with retries on failure.
 func (w *Worker) downloadChunkWithRetries(ctx context.Context, chunk *Chunk) error {
 	var lastErr error
 
@@ -399,6 +387,7 @@ func (w *Worker) downloadChunkWithRetries(ctx context.Context, chunk *Chunk) err
 	return fmt.Errorf("%w: %w", ErrChunkDownloadFailed, lastErr)
 }
 
+// downloadChunk handles the actual downloading of a single chunk.
 func (w *Worker) downloadChunk(ctx context.Context, chunk *Chunk) error {
 	currentStartByte := chunk.getStartByte() + chunk.getDownloaded()
 
@@ -421,6 +410,7 @@ func (w *Worker) downloadChunk(ctx context.Context, chunk *Chunk) error {
 	return chunk.Download(ctx, conn, !w.download.getSupportsRanges())
 }
 
+// finish finalizes the download process, merging chunks and updating statuses.
 func (w *Worker) finish(err error) {
 	if !w.finished.CompareAndSwap(false, true) {
 		return
@@ -479,7 +469,7 @@ func (w *Worker) finish(err error) {
 
 	total := w.download.getTotalSize()
 	w.progressMu.Lock()
-	w.lastProgress = Progress{
+	w.lastProgress = progress.Progress{
 		TotalSize:  total,
 		Downloaded: total,
 		Percentage: 100,
@@ -493,6 +483,7 @@ func (w *Worker) finish(err error) {
 	}
 }
 
+// mergeChunks combines all chunk files into the final output file.
 func (w *Worker) mergeChunks() error {
 	finalDir := w.download.getDir()
 
@@ -557,6 +548,7 @@ func (w *Worker) mergeChunks() error {
 	return nil
 }
 
+// stop halts the download process, updating statuses and optionally removes files.
 func (w *Worker) stop(s status.Status, remove bool) error {
 	currentStatus := w.download.getStatus()
 
@@ -597,6 +589,7 @@ func (w *Worker) stop(s status.Status, remove bool) error {
 	return nil
 }
 
+// cleanupFiles removes the download files and temporary data along with the database entry.
 func (w *Worker) cleanupFiles() {
 	_ = os.RemoveAll(w.download.getTempDir())
 

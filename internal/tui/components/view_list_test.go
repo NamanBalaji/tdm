@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/NamanBalaji/tdm/internal/engine"
+	"github.com/NamanBalaji/tdm/internal/progress"
 	"github.com/NamanBalaji/tdm/internal/status"
 	"github.com/NamanBalaji/tdm/internal/tui/components"
 	"github.com/google/uuid"
@@ -12,11 +13,11 @@ import (
 
 func TestRenderDownloadList(t *testing.T) {
 	downloads := []engine.DownloadInfo{
-		{ID: uuid.New(), Filename: "file-0.txt", Status: status.Active, Progress: &mockProgress{percentage: 10}},
-		{ID: uuid.New(), Filename: "file-1.txt", Status: status.Paused, Progress: &mockProgress{percentage: 20}},
-		{ID: uuid.New(), Filename: "file-2.txt", Status: status.Completed, Progress: &mockProgress{percentage: 100}},
-		{ID: uuid.New(), Filename: "file-3.txt", Status: status.Queued, Progress: &mockProgress{percentage: 0}},
-		{ID: uuid.New(), Filename: "file-4.txt", Status: status.Failed, Progress: &mockProgress{percentage: 50}},
+		{ID: uuid.New(), Filename: "file-0.txt", Status: status.Active, Progress: progress.Progress{Percentage: 10}},
+		{ID: uuid.New(), Filename: "file-1.txt", Status: status.Paused, Progress: progress.Progress{Percentage: 20}},
+		{ID: uuid.New(), Filename: "file-2.txt", Status: status.Completed, Progress: progress.Progress{Percentage: 100}},
+		{ID: uuid.New(), Filename: "file-3.txt", Status: status.Queued, Progress: progress.Progress{Percentage: 0}},
+		{ID: uuid.New(), Filename: "file-4.txt", Status: status.Failed, Progress: progress.Progress{Percentage: 50}},
 	}
 
 	testCases := []struct {

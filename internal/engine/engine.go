@@ -193,7 +193,7 @@ func (e *Engine) GetProgress(id uuid.UUID) (progress.Progress, error) {
 	e.mu.RUnlock()
 
 	if !exists {
-		return nil, ErrWorkerNotFound
+		return progress.Progress{}, ErrWorkerNotFound
 	}
 
 	return w.Progress(), nil

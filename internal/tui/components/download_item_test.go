@@ -1,27 +1,16 @@
 package components_test
 
 import (
+	"strings"
+	"testing"
+	"time"
+
 	"github.com/NamanBalaji/tdm/internal/engine"
+	"github.com/NamanBalaji/tdm/internal/progress"
 	"github.com/NamanBalaji/tdm/internal/status"
 	"github.com/NamanBalaji/tdm/internal/tui/components"
 	"github.com/google/uuid"
-	"strings"
-	"testing"
 )
-
-type mockProgress struct {
-	totalSize  int64
-	downloaded int64
-	percentage float64
-	speedBPS   int64
-	eta        string
-}
-
-func (m *mockProgress) GetTotalSize() int64    { return m.totalSize }
-func (m *mockProgress) GetDownloaded() int64   { return m.downloaded }
-func (m *mockProgress) GetPercentage() float64 { return m.percentage }
-func (m *mockProgress) GetSpeedBPS() int64     { return m.speedBPS }
-func (m *mockProgress) GetETA() string         { return m.eta }
 
 func TestDownloadItem(t *testing.T) {
 	longFilename := "this-is-a-very-long-filename-that-will-definitely-be-truncated.zip"
@@ -40,12 +29,12 @@ func TestDownloadItem(t *testing.T) {
 				ID:       uuid.New(),
 				Filename: shortFilename,
 				Status:   status.Active,
-				Progress: &mockProgress{
-					totalSize:  1000,
-					downloaded: 500,
-					percentage: 50.0,
-					speedBPS:   100,
-					eta:        "5s",
+				Progress: progress.Progress{
+					TotalSize:  1000,
+					Downloaded: 500,
+					Percentage: 50.0,
+					SpeedBPS:   100,
+					ETA:        5 * time.Second,
 				},
 			},
 			width:    80,
@@ -65,7 +54,7 @@ func TestDownloadItem(t *testing.T) {
 				ID:       uuid.New(),
 				Filename: shortFilename,
 				Status:   status.Paused,
-				Progress: &mockProgress{totalSize: 2048, downloaded: 1024, percentage: 50.0},
+				Progress: progress.Progress{TotalSize: 2048, Downloaded: 1024, Percentage: 50.0},
 			},
 			width:    80,
 			selected: true,
@@ -82,7 +71,7 @@ func TestDownloadItem(t *testing.T) {
 				ID:       uuid.New(),
 				Filename: "completed.iso",
 				Status:   status.Completed,
-				Progress: &mockProgress{totalSize: 5000000, downloaded: 5000000, percentage: 100.0},
+				Progress: progress.Progress{TotalSize: 5000000, Downloaded: 5000000, Percentage: 100.0},
 			},
 			width:    100,
 			selected: false,
@@ -100,7 +89,7 @@ func TestDownloadItem(t *testing.T) {
 				ID:       uuid.New(),
 				Filename: "failed_download",
 				Status:   status.Failed,
-				Progress: &mockProgress{totalSize: 1000, downloaded: 100, percentage: 10.0},
+				Progress: progress.Progress{TotalSize: 1000, Downloaded: 100, Percentage: 10.0},
 			},
 			width:          80,
 			selected:       false,
@@ -112,7 +101,7 @@ func TestDownloadItem(t *testing.T) {
 				ID:       uuid.New(),
 				Filename: "cancelled.tar.gz",
 				Status:   status.Cancelled,
-				Progress: &mockProgress{totalSize: 1000, downloaded: 200, percentage: 20.0},
+				Progress: progress.Progress{TotalSize: 1000, Downloaded: 200, Percentage: 20.0},
 			},
 			width:          80,
 			selected:       false,
@@ -124,7 +113,7 @@ func TestDownloadItem(t *testing.T) {
 				ID:       uuid.New(),
 				Filename: "queued_file",
 				Status:   status.Queued,
-				Progress: &mockProgress{totalSize: 5000, downloaded: 0, percentage: 0.0},
+				Progress: progress.Progress{TotalSize: 5000, Downloaded: 0, Percentage: 0.0},
 			},
 			width:          80,
 			selected:       false,
@@ -136,7 +125,7 @@ func TestDownloadItem(t *testing.T) {
 				ID:       uuid.New(),
 				Filename: longFilename,
 				Status:   status.Active,
-				Progress: &mockProgress{totalSize: 1000, downloaded: 10, percentage: 1.0},
+				Progress: progress.Progress{TotalSize: 1000, Downloaded: 10, Percentage: 1.0},
 			},
 			width:          80,
 			selected:       false,

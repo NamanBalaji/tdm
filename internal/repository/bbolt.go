@@ -22,6 +22,7 @@ type Object struct {
 var (
 	// ErrDownloadNotFound is returned when a download cannot be found.
 	ErrDownloadNotFound = errors.New("download not found")
+	ErrBucketNotFound   = errors.New("bucket not found")
 )
 
 type Download interface {
@@ -57,18 +58,6 @@ func NewBboltRepository(dbPath string) (*BboltRepository, error) {
 	}
 
 	return repo, nil
-}
-
-// initialize sets up buckets and schema.
-func (b *BboltRepository) initialize() error {
-	return b.db.Update(func(tx *bbolt.Tx) error {
-		_, err := tx.CreateBucketIfNotExists([]byte(downloadsBucket))
-		if err != nil {
-			return fmt.Errorf("failed to create downloads bucket: %w", err)
-		}
-
-		return nil
-	})
 }
 
 // Save stores a download in the repository.
@@ -121,7 +110,7 @@ func (b *BboltRepository) Delete(id string) error {
 	return b.db.Update(func(tx *bbolt.Tx) error {
 		bucket := tx.Bucket([]byte(downloadsBucket))
 		if bucket == nil {
-			return fmt.Errorf("bucket not found: %s", downloadsBucket)
+			return fmt.Errorf("%w, bucket: %s", ErrBucketNotFound, downloadsBucket)
 		}
 
 		if bucket.Get([]byte(id)) == nil {
@@ -135,4 +124,16 @@ func (b *BboltRepository) Delete(id string) error {
 // Close closes the database.
 func (b *BboltRepository) Close() error {
 	return b.db.Close()
+}
+
+// initialize sets up buckets and schema.
+func (b *BboltRepository) initialize() error {
+	return b.db.Update(func(tx *bbolt.Tx) error {
+		_, err := tx.CreateBucketIfNotExists([]byte(downloadsBucket))
+		if err != nil {
+			return fmt.Errorf("failed to create downloads bucket: %w", err)
+		}
+
+		return nil
+	})
 }

@@ -4,20 +4,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-
-	"github.com/anacrolix/torrent/metainfo"
 )
-
-// GetMetainfo fetches and parses the metainfo from a given URL.
-func GetMetainfo(url string) (*metainfo.MetaInfo, error) {
-	resp, err := http.Get(url)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	return metainfo.Load(resp.Body)
-}
 
 // HasTorrentFile checks if a given URL points to a torrent file by examining its extension and Content-Type header.
 func HasTorrentFile(url string) bool {

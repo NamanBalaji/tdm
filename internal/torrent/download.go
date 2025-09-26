@@ -3,20 +3,16 @@ package torrent
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/adrg/xdg"
-	"github.com/anacrolix/torrent/metainfo"
 	"github.com/google/uuid"
 
 	"github.com/NamanBalaji/tdm/internal/status"
 	torrentPkg "github.com/NamanBalaji/tdm/pkg/torrent"
 )
-
-var ErrNilClient = errors.New("torrent client is nil")
 
 // Download represents a torrent download's persistent data.
 type Download struct {
@@ -51,10 +47,6 @@ func NewDownload(ctx context.Context, client *torrentPkg.Client, url string, isM
 		Protocol: "torrent",
 	}
 
-	if client == nil {
-		return nil, ErrNilClient
-	}
-
 	th, err := client.GetTorrentHandler(ctx, download.Url, download.IsMagnet)
 	if err != nil {
 		return nil, err
@@ -76,121 +68,6 @@ func (d *Download) GetID() uuid.UUID {
 	return d.Id
 }
 
-// GetStatus returns the current status (thread-safe).
-func (d *Download) GetStatus() status.Status {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
-
-	return d.Status
-}
-
-// SetStatus updates the status (thread-safe).
-func (d *Download) SetStatus(s status.Status) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	d.Status = s
-}
-
-// GetPriority returns the priority (thread-safe).
-func (d *Download) GetPriority() int {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
-
-	return d.Priority
-}
-
-// SetStartTime sets the start time (thread-safe).
-func (d *Download) SetStartTime(t time.Time) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	d.StartTime = t
-}
-
-// SetEndTime sets the end time (thread-safe).
-func (d *Download) SetEndTime(t time.Time) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	d.EndTime = t
-}
-
-// UpdateProgress updates download/upload progress (thread-safe).
-func (d *Download) UpdateProgress(downloaded, uploaded int64) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	d.Downloaded = downloaded
-	d.Uploaded = uploaded
-}
-
-func (d *Download) getUrl() string {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
-
-	return d.Url
-}
-
-func (d *Download) isMagnet() bool {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
-
-	return d.IsMagnet
-}
-
-// GetMetainfo returns the metainfo.
-func (d *Download) GetMetainfo(ctx context.Context, client *torrentPkg.Client) (*metainfo.MetaInfo, error) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	return torrentPkg.GetMetainfo(d.Url)
-}
-
-// SetDownloaded atomically sets the downloaded bytes.
-func (d *Download) SetDownloaded(downloaded int64) {
-	atomic.StoreInt64(&d.Downloaded, downloaded)
-}
-
-// SetUploaded atomically sets the uploaded bytes.
-func (d *Download) SetUploaded(uploaded int64) {
-	atomic.StoreInt64(&d.Uploaded, uploaded)
-}
-
-// GetDownloaded atomically gets the downloaded bytes.
-func (d *Download) GetDownloaded() int64 {
-	return atomic.LoadInt64(&d.Downloaded)
-}
-
-// GetTotalSize atomically gets the total size.
-func (d *Download) GetTotalSize() int64 {
-	return atomic.LoadInt64(&d.TotalSize)
-}
-
-// GetName returns the download name.
-func (d *Download) GetName() string {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
-
-	return d.Name
-}
-
-// GetDir returns the download directory (thread-safe).
-func (d *Download) GetDir() string {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
-
-	return d.Dir
-}
-
-// GetInfoHash returns the info hash (thread-safe).
-func (d *Download) GetInfoHash() string {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
-
-	return d.InfoHash
-}
-
 // Type returns the download type.
 func (d *Download) Type() string {
 	return "torrent"
@@ -201,7 +78,6 @@ func (d *Download) MarshalJSON() ([]byte, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
-	// Use an alias to avoid infinite recursion
 	type Alias Download
 
 	return json.Marshal((*Alias)(d))
@@ -223,4 +99,91 @@ func (d *Download) UnmarshalJSON(data []byte) error {
 	}
 
 	return nil
+}
+
+// getUrl returns the download URL.
+func (d *Download) getUrl() string {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	return d.Url
+}
+
+// isMagnet returns true if the download is a magnet link.
+func (d *Download) isMagnet() bool {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	return d.IsMagnet
+}
+
+// getStatus returns the current status (thread-safe).
+func (d *Download) getStatus() status.Status {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	return d.Status
+}
+
+// setStatus updates the status (thread-safe).
+func (d *Download) setStatus(s status.Status) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	d.Status = s
+}
+
+// getPriority returns the priority (thread-safe).
+func (d *Download) getPriority() int {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	return d.Priority
+}
+
+// setStartTime sets the start time (thread-safe).
+func (d *Download) setStartTime(t time.Time) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	d.StartTime = t
+}
+
+// setEndTime sets the end time (thread-safe).
+func (d *Download) setEndTime(t time.Time) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	d.EndTime = t
+}
+
+// setDownloaded atomically sets the downloaded bytes.
+func (d *Download) setDownloaded(downloaded int64) {
+	atomic.StoreInt64(&d.Downloaded, downloaded)
+}
+
+// getDownloaded atomically gets the downloaded bytes.
+func (d *Download) getDownloaded() int64 {
+	return atomic.LoadInt64(&d.Downloaded)
+}
+
+// getTotalSize atomically gets the total size.
+func (d *Download) getTotalSize() int64 {
+	return atomic.LoadInt64(&d.TotalSize)
+}
+
+// getName returns the download name.
+func (d *Download) getName() string {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	return d.Name
+}
+
+// getDir returns the download directory (thread-safe).
+func (d *Download) getDir() string {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	return d.Dir
 }

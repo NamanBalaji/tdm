@@ -3,13 +3,14 @@ package http_test
 import (
 	"context"
 	"fmt"
-	"github.com/stretchr/testify/assert"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
 
 	httpPkg "github.com/NamanBalaji/tdm/internal/http"
 	"github.com/NamanBalaji/tdm/internal/repository"
@@ -133,7 +134,7 @@ func TestNew(t *testing.T) {
 			}
 
 			if worker.GetPriority() != tt.priority {
-				t.Errorf("GetPriority() = %v, want %v", worker.GetPriority(), tt.priority)
+				t.Errorf("getPriority() = %v, want %v", worker.GetPriority(), tt.priority)
 			}
 
 			if worker.GetID().String() == "" {
@@ -174,10 +175,10 @@ func TestWorker_GetMethods(t *testing.T) {
 		t.Fatalf("Failed to create worker: %v", err)
 	}
 
-	t.Run("GetPriority", func(t *testing.T) {
+	t.Run("getPriority", func(t *testing.T) {
 		priority := worker.GetPriority()
 		if priority != 7 {
-			t.Errorf("GetPriority() = %v, want %v", priority, 7)
+			t.Errorf("getPriority() = %v, want %v", priority, 7)
 		}
 	})
 
@@ -188,10 +189,10 @@ func TestWorker_GetMethods(t *testing.T) {
 		}
 	})
 
-	t.Run("GetStatus", func(t *testing.T) {
+	t.Run("getStatus", func(t *testing.T) {
 		status := worker.GetStatus()
 		if status != statusPkg.Pending {
-			t.Errorf("GetStatus() = %v, want %v", status, statusPkg.Pending)
+			t.Errorf("getStatus() = %v, want %v", status, statusPkg.Pending)
 		}
 	})
 
@@ -225,7 +226,7 @@ func TestWorker_Queue(t *testing.T) {
 
 	status := worker.GetStatus()
 	if status != statusPkg.Queued {
-		t.Errorf("After Queue(), GetStatus() = %v, want %v", status, statusPkg.Queued)
+		t.Errorf("After Queue(), getStatus() = %v, want %v", status, statusPkg.Queued)
 	}
 }
 
@@ -280,7 +281,7 @@ func TestWorker_Pause(t *testing.T) {
 
 			status := worker.GetStatus()
 			if status != tt.expectedStatus {
-				t.Errorf("After Pause(), GetStatus() = %v, want %v", status, tt.expectedStatus)
+				t.Errorf("After Pause(), getStatus() = %v, want %v", status, tt.expectedStatus)
 			}
 		})
 	}
@@ -337,7 +338,7 @@ func TestWorker_Cancel(t *testing.T) {
 
 	status := worker.GetStatus()
 	if status != statusPkg.Cancelled {
-		t.Errorf("After Cancel(), GetStatus() = %v, want %v", status, statusPkg.Cancelled)
+		t.Errorf("After Cancel(), getStatus() = %v, want %v", status, statusPkg.Cancelled)
 	}
 }
 
@@ -431,66 +432,6 @@ func TestWorker_StartWithCompletedStatus(t *testing.T) {
 	}
 }
 
-func TestWorker_Resume(t *testing.T) {
-	data := []byte("test data for resume functionality")
-	server := createTestServer(t, data)
-	repo := createTestRepository(t)
-
-	ctx := context.Background()
-	worker, err := httpPkg.New(ctx, server.URL+"/test.txt", nil, repo, 5)
-	if err != nil {
-		t.Fatalf("Failed to create worker: %v", err)
-	}
-
-	worker.Queue()
-	if worker.GetStatus() != statusPkg.Queued {
-		t.Fatalf("Expected status to be Queued, got %v", worker.GetStatus())
-	}
-
-	err = worker.Pause()
-	if err != nil {
-		t.Errorf("Pause() error = %v", err)
-	}
-
-	if worker.GetStatus() != statusPkg.Paused {
-		t.Fatalf("Expected status to be Paused after pause, got %v", worker.GetStatus())
-	}
-
-	err = worker.Resume(ctx)
-	if err != nil {
-		t.Errorf("Resume() error = %v", err)
-	}
-
-	status := worker.GetStatus()
-	if status != statusPkg.Active {
-		t.Errorf("After Resume(), status = %v, want %v", status, statusPkg.Active)
-	}
-
-	<-worker.Done()
-
-	finalStatus := worker.GetStatus()
-	if finalStatus != statusPkg.Completed {
-		t.Errorf("Final status = %v, want %v", finalStatus, statusPkg.Completed)
-	}
-}
-
-func TestWorker_ResumeNotPaused(t *testing.T) {
-	data := []byte("test")
-	server := createTestServer(t, data)
-	repo := createTestRepository(t)
-
-	ctx := context.Background()
-	worker, err := httpPkg.New(ctx, server.URL+"/test.txt", nil, repo, 5)
-	if err != nil {
-		t.Fatalf("Failed to create worker: %v", err)
-	}
-
-	err = worker.Resume(ctx)
-	if err != nil {
-		t.Errorf("Resume() on non-paused download should not error, got: %v", err)
-	}
-}
-
 func TestWorker_PauseAndResume(t *testing.T) {
 	data := make([]byte, 1024)
 	server := createTestServerWithDelay(t, data, 50*time.Millisecond)
@@ -522,7 +463,7 @@ func TestWorker_PauseAndResume(t *testing.T) {
 		t.Fatalf("Expected status to be Paused after pause, got %v", worker.GetStatus())
 	}
 
-	err = worker.Resume(ctx)
+	err = worker.Start(ctx)
 	if err != nil {
 		t.Errorf("Resume() error = %v", err)
 	}
@@ -770,7 +711,7 @@ func TestWorker_StatusTransitions(t *testing.T) {
 		t.Errorf("After Pause(), status = %v, want %v", worker.GetStatus(), statusPkg.Paused)
 	}
 
-	assert.NoError(t, worker.Resume(ctx))
+	assert.NoError(t, worker.Start(ctx))
 	if worker.GetStatus() != statusPkg.Active {
 		t.Errorf("After Resume(), status = %v, want %v", worker.GetStatus(), statusPkg.Active)
 	}

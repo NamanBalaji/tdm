@@ -23,6 +23,8 @@ var (
 	ErrAlreadyStarted = errors.New("download already started")
 )
 
+const partFileExt = ".part"
+
 // Worker implements the worker.Worker interface for torrents.
 type Worker struct {
 	download *Download
@@ -43,7 +45,7 @@ type Worker struct {
 
 	// Progress tracking
 	progressMu   sync.RWMutex
-	lastProgress Progress
+	lastProgress progress.Progress
 
 	wg sync.WaitGroup
 }
@@ -70,18 +72,18 @@ func New(ctx context.Context, downloadData *Download, url string, isMagnet bool,
 		download = downloadData
 	}
 
-	downloaded, totalSize := download.GetDownloaded(), download.GetTotalSize()
+	downloaded, totalSize := download.getDownloaded(), download.getTotalSize()
 
 	var pct float64
 	if totalSize > 0 {
 		pct = float64(downloaded) / float64(totalSize) * 100
 	}
 
-	if download.GetStatus() == status.Completed {
+	if download.getStatus() == status.Completed {
 		pct = 100.0
 	}
 
-	prog := Progress{
+	prog := progress.Progress{
 		TotalSize:  totalSize,
 		Downloaded: downloaded,
 		Percentage: pct,
@@ -100,7 +102,7 @@ func New(ctx context.Context, downloadData *Download, url string, isMagnet bool,
 
 // GetPriority returns the download priority.
 func (w *Worker) GetPriority() int {
-	return w.download.GetPriority()
+	return w.download.getPriority()
 }
 
 // GetID returns the download ID.
@@ -110,17 +112,17 @@ func (w *Worker) GetID() uuid.UUID {
 
 // GetStatus returns the current status.
 func (w *Worker) GetStatus() status.Status {
-	return w.download.GetStatus()
+	return w.download.getStatus()
 }
 
 // GetFilename returns the torrent name.
 func (w *Worker) GetFilename() string {
-	return w.download.GetName()
+	return w.download.getName()
 }
 
 // Queue marks the download as queued.
 func (w *Worker) Queue() {
-	w.download.SetStatus(status.Queued)
+	w.download.setStatus(status.Queued)
 }
 
 // Start begins downloading the torrent.
@@ -129,7 +131,7 @@ func (w *Worker) Start(ctx context.Context) error {
 		return ErrAlreadyStarted
 	}
 
-	currentStatus := w.download.GetStatus()
+	currentStatus := w.download.getStatus()
 	if currentStatus == status.Completed || currentStatus == status.Cancelled {
 		w.started.Store(false)
 		return nil
@@ -159,8 +161,8 @@ func (w *Worker) Start(ctx context.Context) error {
 	t.DownloadAll()
 
 	// Update status
-	w.download.SetStatus(status.Active)
-	w.download.SetStartTime(time.Now())
+	w.download.setStatus(status.Active)
+	w.download.setStartTime(time.Now())
 
 	runCtx, cancel := context.WithCancel(ctx)
 	w.setCancel(cancel)
@@ -176,7 +178,7 @@ func (w *Worker) Start(ctx context.Context) error {
 
 // Pause suspends the download.
 func (w *Worker) Pause() error {
-	currentStatus := w.download.GetStatus()
+	currentStatus := w.download.getStatus()
 	if currentStatus != status.Active && currentStatus != status.Queued {
 		return nil
 	}
@@ -301,7 +303,7 @@ func (w *Worker) trackProgress(ctx context.Context) {
 				downloaded = t.BytesCompleted()
 			}
 
-			w.download.SetDownloaded(downloaded)
+			w.download.setDownloaded(downloaded)
 
 			samples = append(samples, speedSample{
 				time:  now,
@@ -328,7 +330,7 @@ func (w *Worker) trackProgress(ctx context.Context) {
 				}
 			}
 
-			total := w.download.GetTotalSize()
+			total := w.download.getTotalSize()
 
 			var pct float64
 			if total > 0 {
@@ -344,7 +346,7 @@ func (w *Worker) trackProgress(ctx context.Context) {
 			}
 
 			w.progressMu.Lock()
-			w.lastProgress = Progress{
+			w.lastProgress = progress.Progress{
 				TotalSize:  total,
 				Downloaded: downloaded,
 				Percentage: pct,
@@ -381,8 +383,8 @@ func (w *Worker) waitCompletion(ctx context.Context) {
 						cf()
 					}
 
-					w.download.SetStatus(status.Completed)
-					w.download.SetEndTime(time.Now())
+					w.download.setStatus(status.Completed)
+					w.download.setEndTime(time.Now())
 
 					if w.repo != nil {
 						_ = w.repo.Save(w.download)
@@ -404,7 +406,7 @@ func (w *Worker) waitCompletion(ctx context.Context) {
 
 // stop halts the download and optionally removes files.
 func (w *Worker) stop(targetStatus status.Status, remove bool) error {
-	current := w.download.GetStatus()
+	current := w.download.getStatus()
 	if current == status.Completed || current == status.Failed || current == status.Cancelled {
 		if remove {
 			return w.cleanup()
@@ -419,7 +421,7 @@ func (w *Worker) stop(targetStatus status.Status, remove bool) error {
 
 	w.dropTorrent()
 
-	w.download.SetStatus(targetStatus)
+	w.download.setStatus(targetStatus)
 
 	done := make(chan struct{})
 
@@ -448,8 +450,11 @@ func (w *Worker) stop(targetStatus status.Status, remove bool) error {
 
 // cleanup removes downloaded files and deletes the record from the repository.
 func (w *Worker) cleanup() error {
-	downloadPath := filepath.Join(w.download.GetDir(), w.download.GetName())
+	downloadPath := filepath.Join(w.download.getDir(), w.download.getName())
 	_ = os.RemoveAll(downloadPath)
+
+	downloadPathIncomplete := downloadPath + partFileExt
+	_ = os.RemoveAll(downloadPathIncomplete)
 
 	return w.repo.Delete(w.download.GetID().String())
 }
