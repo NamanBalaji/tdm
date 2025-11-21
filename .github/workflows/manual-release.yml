@@ -62,7 +62,6 @@ jobs:
 
       - name: Build for Linux AMD64
         env:
-          CGO_ENABLED: 0
           GOOS: linux
           GOARCH: amd64
         run: |
@@ -75,7 +74,6 @@ jobs:
 
       - name: Build for macOS AMD64 (Intel)
         env:
-          CGO_ENABLED: 0
           GOOS: darwin
           GOARCH: amd64
         run: |
@@ -88,7 +86,6 @@ jobs:
 
       - name: Build for macOS ARM64 (Apple Silicon)
         env:
-          CGO_ENABLED: 0
           GOOS: darwin
           GOARCH: arm64
         run: |
@@ -101,7 +98,6 @@ jobs:
 
       - name: Build for Windows AMD64
         env:
-          CGO_ENABLED: 0
           GOOS: windows
           GOARCH: amd64
         run: |

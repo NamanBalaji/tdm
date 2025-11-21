@@ -48,7 +48,7 @@ func GetWorker(ctx context.Context, cfg *config.Config, urlStr string, priority 
 		}
 
 		if http.CanHandle(urlStr) {
-			return http.New(ctx, cfg.Http, urlStr, nil, repo, priority)
+			return http.New(ctx, cfg.HTTP, urlStr, nil, repo, priority)
 		}
 	case "magnet":
 		if torrentPkg.IsValidMagnetLink(urlStr) {
@@ -74,7 +74,7 @@ func LoadWorker(ctx context.Context, cfg *config.Config, download repository.Obj
 			d.Status = status.Paused
 		}
 
-		return http.New(ctx, cfg.Http, d.URL, &d, repo, d.Priority)
+		return http.New(ctx, cfg.HTTP, d.URL, &d, repo, d.Priority)
 
 	case "torrent":
 		var d torrent.Download
