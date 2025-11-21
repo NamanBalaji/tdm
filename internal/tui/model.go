@@ -213,10 +213,7 @@ func (m *Model) View() string {
 	footer := styles.FooterStyle.Width(m.width).Render(m.help.View(m.keys))
 	notification := m.renderNotification()
 
-	remainingHeight := m.height - lipgloss.Height(header) - lipgloss.Height(notification) - lipgloss.Height(footer)
-	if remainingHeight < 0 {
-		remainingHeight = 0
-	}
+	remainingHeight := max(m.height-lipgloss.Height(header)-lipgloss.Height(notification)-lipgloss.Height(footer), 0)
 
 	var mainContent string
 

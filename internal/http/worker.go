@@ -37,7 +37,7 @@ var (
 )
 
 type Worker struct {
-	cfg      *config.HttpConfig
+	cfg      *config.HTTPConfig
 	repo     *repository.BboltRepository
 	download *Download
 	client   *httpPkg.Client
@@ -55,7 +55,7 @@ type Worker struct {
 	lastProgress progress.Progress
 }
 
-func New(ctx context.Context, cfg *config.HttpConfig, url string, downloadData *Download, repo *repository.BboltRepository, priority int) (*Worker, error) {
+func New(ctx context.Context, cfg *config.HTTPConfig, url string, downloadData *Download, repo *repository.BboltRepository, priority int) (*Worker, error) {
 	client := httpPkg.NewClient()
 
 	download, err := getDownload(ctx, cfg, downloadData, url, client, priority)
@@ -336,7 +336,7 @@ func (w *Worker) processDownload(ctx context.Context, chunks []*Chunk) {
 }
 
 // downloadChunkWithRetries attempts to download a chunk with retries on failure.
-func (w *Worker) downloadChunkWithRetries(ctx context.Context, cfg *config.HttpConfig, chunk *Chunk) error {
+func (w *Worker) downloadChunkWithRetries(ctx context.Context, cfg *config.HTTPConfig, chunk *Chunk) error {
 	var lastErr error
 
 	for attempt := range cfg.MaxRetries {
@@ -467,7 +467,7 @@ func (w *Worker) finish(err error) {
 func (w *Worker) mergeChunks() error {
 	finalDir := w.download.getDir()
 
-	err := os.MkdirAll(finalDir, 0755)
+	err := os.MkdirAll(finalDir, 0o755)
 	if err != nil {
 		return fmt.Errorf("%w: %w", ErrDirectoryCreateFailed, err)
 	}
@@ -580,7 +580,7 @@ func (w *Worker) cleanupFiles() {
 }
 
 // getDownload initializes or resets a Download instance based on existing data.
-func getDownload(ctx context.Context, cfg *config.HttpConfig, downloadData *Download, url string, client *httpPkg.Client, priority int) (*Download, error) {
+func getDownload(ctx context.Context, cfg *config.HTTPConfig, downloadData *Download, url string, client *httpPkg.Client, priority int) (*Download, error) {
 	if downloadData == nil {
 		return NewDownload(ctx, cfg, url, client, priority)
 	}

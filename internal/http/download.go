@@ -42,7 +42,7 @@ type Download struct {
 	Priority       int           `json:"priority"`
 }
 
-func NewDownload(ctx context.Context, cfg *config.HttpConfig, url string, client *httpPkg.Client, priority int) (*Download, error) {
+func NewDownload(ctx context.Context, cfg *config.HTTPConfig, url string, client *httpPkg.Client, priority int) (*Download, error) {
 	id := uuid.New()
 
 	download := &Download{

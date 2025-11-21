@@ -46,26 +46,26 @@ func Close() {
 	}
 }
 
-func Infof(format string, v ...interface{}) {
+func Infof(format string, v ...any) {
 	if DebugEnabled && debugLogger != nil {
 		debugLogger.Printf("[INFO] "+format, v...)
 	}
 }
 
 // Errorf logs an error message to the file if debug mode is enabled.
-func Errorf(format string, v ...interface{}) {
+func Errorf(format string, v ...any) {
 	if DebugEnabled && debugLogger != nil {
 		debugLogger.Printf("[ERROR] "+format, v...)
 	}
 }
 
-func Debugf(format string, v ...interface{}) {
+func Debugf(format string, v ...any) {
 	if DebugEnabled && debugLogger != nil {
 		debugLogger.Printf("[DEBUG] "+format, v...)
 	}
 }
 
-func Warnf(format string, v ...interface{}) {
+func Warnf(format string, v ...any) {
 	if DebugEnabled && debugLogger != nil {
 		debugLogger.Printf("[WARNING] "+format, v...)
 	}

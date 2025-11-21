@@ -115,7 +115,7 @@ func TestNew(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx := context.Background()
-			worker, err := httpPkg.New(ctx, config.DefaultConfig().Http, tt.url, nil, repo, tt.priority)
+			worker, err := httpPkg.New(ctx, config.DefaultConfig().HTTP, tt.url, nil, repo, tt.priority)
 
 			if tt.wantErr {
 				if err == nil {
@@ -159,7 +159,7 @@ func TestNew_WithInvalidURL(t *testing.T) {
 	ctx := context.Background()
 
 	errorServer := createTestServerWithError(t, http.StatusNotFound)
-	_, err := httpPkg.New(ctx, config.DefaultConfig().Http, errorServer.URL+"/notfound.txt", nil, repo, 5)
+	_, err := httpPkg.New(ctx, config.DefaultConfig().HTTP, errorServer.URL+"/notfound.txt", nil, repo, 5)
 	if err == nil {
 		t.Errorf("New() with 404 URL should return error but got none")
 	}
@@ -171,7 +171,7 @@ func TestWorker_GetMethods(t *testing.T) {
 	repo := createTestRepository(t)
 
 	ctx := context.Background()
-	worker, err := httpPkg.New(ctx, config.DefaultConfig().Http, server.URL+"/test.txt", nil, repo, 7)
+	worker, err := httpPkg.New(ctx, config.DefaultConfig().HTTP, server.URL+"/test.txt", nil, repo, 7)
 	if err != nil {
 		t.Fatalf("Failed to create worker: %v", err)
 	}
@@ -218,7 +218,7 @@ func TestWorker_Queue(t *testing.T) {
 	repo := createTestRepository(t)
 
 	ctx := context.Background()
-	worker, err := httpPkg.New(ctx, config.DefaultConfig().Http, server.URL+"/test.txt", nil, repo, 5)
+	worker, err := httpPkg.New(ctx, config.DefaultConfig().HTTP, server.URL+"/test.txt", nil, repo, 5)
 	if err != nil {
 		t.Fatalf("Failed to create worker: %v", err)
 	}
@@ -262,7 +262,7 @@ func TestWorker_Pause(t *testing.T) {
 			repo := createTestRepository(t)
 
 			ctx := context.Background()
-			worker, err := httpPkg.New(ctx, config.DefaultConfig().Http, server.URL+"/test.txt", nil, repo, 5)
+			worker, err := httpPkg.New(ctx, config.DefaultConfig().HTTP, server.URL+"/test.txt", nil, repo, 5)
 			if err != nil {
 				t.Fatalf("Failed to create worker: %v", err)
 			}
@@ -294,7 +294,7 @@ func TestWorker_PauseActiveDownload(t *testing.T) {
 	repo := createTestRepository(t)
 
 	ctx := context.Background()
-	worker, err := httpPkg.New(ctx, config.DefaultConfig().Http, server.URL+"/test.txt", nil, repo, 5)
+	worker, err := httpPkg.New(ctx, config.DefaultConfig().HTTP, server.URL+"/test.txt", nil, repo, 5)
 	if err != nil {
 		t.Fatalf("Failed to create worker: %v", err)
 	}
@@ -327,7 +327,7 @@ func TestWorker_Cancel(t *testing.T) {
 	repo := createTestRepository(t)
 
 	ctx := context.Background()
-	cfg := config.DefaultConfig().Http
+	cfg := config.DefaultConfig().HTTP
 
 	worker, err := httpPkg.New(ctx, cfg, server.URL+"/test.txt", nil, repo, 5)
 	if err != nil {
@@ -351,7 +351,7 @@ func TestWorker_Start(t *testing.T) {
 	repo := createTestRepository(t)
 
 	ctx := context.Background()
-	cfg := config.DefaultConfig().Http
+	cfg := config.DefaultConfig().HTTP
 
 	worker, err := httpPkg.New(ctx, cfg, server.URL+"/test.txt", nil, repo, 5)
 	if err != nil {
@@ -398,7 +398,7 @@ func TestWorker_StartAlreadyStarted(t *testing.T) {
 	repo := createTestRepository(t)
 
 	ctx := context.Background()
-	cfg := config.DefaultConfig().Http
+	cfg := config.DefaultConfig().HTTP
 
 	worker, err := httpPkg.New(ctx, cfg, server.URL+"/test.txt", nil, repo, 5)
 	if err != nil {
@@ -425,7 +425,7 @@ func TestWorker_StartWithCompletedStatus(t *testing.T) {
 	repo := createTestRepository(t)
 
 	ctx := context.Background()
-	cfg := config.DefaultConfig().Http
+	cfg := config.DefaultConfig().HTTP
 
 	worker, err := httpPkg.New(ctx, cfg, server.URL+"/test.txt", nil, repo, 5)
 	if err != nil {
@@ -447,7 +447,7 @@ func TestWorker_PauseAndResume(t *testing.T) {
 	repo := createTestRepository(t)
 
 	ctx := context.Background()
-	cfg := config.DefaultConfig().Http
+	cfg := config.DefaultConfig().HTTP
 
 	worker, err := httpPkg.New(ctx, cfg, server.URL+"/test.txt", nil, repo, 5)
 	if err != nil {
@@ -496,7 +496,7 @@ func TestWorker_Remove(t *testing.T) {
 	repo := createTestRepository(t)
 
 	ctx := context.Background()
-	cfg := config.DefaultConfig().Http
+	cfg := config.DefaultConfig().HTTP
 
 	worker, err := httpPkg.New(ctx, cfg, server.URL+"/test.txt", nil, repo, 5)
 	if err != nil {
@@ -517,7 +517,7 @@ func TestWorker_Progress(t *testing.T) {
 	repo := createTestRepository(t)
 
 	ctx := context.Background()
-	cfg := config.DefaultConfig().Http
+	cfg := config.DefaultConfig().HTTP
 
 	worker, err := httpPkg.New(ctx, cfg, server.URL+"/test.txt", nil, repo, 5)
 	if err != nil {
@@ -557,7 +557,7 @@ func TestWorker_CancelDuringDownload(t *testing.T) {
 	repo := createTestRepository(t)
 
 	ctx := context.Background()
-	cfg := config.DefaultConfig().Http
+	cfg := config.DefaultConfig().HTTP
 	worker, err := httpPkg.New(ctx, cfg, server.URL+"/large.txt", nil, repo, 5)
 	if err != nil {
 		t.Fatalf("Failed to create worker: %v", err)
@@ -587,7 +587,7 @@ func TestWorker_PauseDuringDownload(t *testing.T) {
 	repo := createTestRepository(t)
 
 	ctx := context.Background()
-	cfg := config.DefaultConfig().Http
+	cfg := config.DefaultConfig().HTTP
 
 	worker, err := httpPkg.New(ctx, cfg, server.URL+"/large.txt", nil, repo, 5)
 	if err != nil {
@@ -626,7 +626,7 @@ func TestWorker_ConcurrentOperations(t *testing.T) {
 	repo := createTestRepository(t)
 
 	ctx := context.Background()
-	cfg := config.DefaultConfig().Http
+	cfg := config.DefaultConfig().HTTP
 
 	worker, err := httpPkg.New(ctx, cfg, server.URL+"/test.txt", nil, repo, 5)
 	if err != nil {
@@ -693,7 +693,7 @@ func TestWorker_ErrorHandling(t *testing.T) {
 			repo := createTestRepository(t)
 
 			ctx := context.Background()
-			cfg := config.DefaultConfig().Http
+			cfg := config.DefaultConfig().HTTP
 
 			_, err := httpPkg.New(ctx, cfg, server.URL+"/test.txt", nil, repo, 5)
 
@@ -714,7 +714,7 @@ func TestWorker_StatusTransitions(t *testing.T) {
 	repo := createTestRepository(t)
 
 	ctx := context.Background()
-	cfg := config.DefaultConfig().Http
+	cfg := config.DefaultConfig().HTTP
 
 	worker, err := httpPkg.New(ctx, cfg, server.URL+"/test.txt", nil, repo, 5)
 	if err != nil {

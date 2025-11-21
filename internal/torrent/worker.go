@@ -19,9 +19,7 @@ import (
 	torrentPkg "github.com/NamanBalaji/tdm/pkg/torrent"
 )
 
-var (
-	ErrAlreadyStarted = errors.New("download already started")
-)
+var ErrAlreadyStarted = errors.New("download already started")
 
 const partFileExt = ".part"
 

@@ -20,6 +20,7 @@ import (
 
 func main() {
 	debug := flag.Bool("debug", false, "Enable debug logging")
+
 	flag.Parse()
 
 	cfg, err := config.GetConfig()
@@ -43,6 +44,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("Warning: Failed to initialize logging: %v\n", err)
 	}
+
 	defer logger.Close()
 
 	repo, err := repository.NewBboltRepository(filepath.Join(configDir, "tdm.db"))

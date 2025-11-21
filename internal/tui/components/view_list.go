@@ -22,19 +22,13 @@ func RenderDownloadList(downloads []engine.DownloadInfo, selected int, width, he
 
 	visibleCount := height / itemHeight
 
-	start := selected - (visibleCount / 2)
-	if start < 0 {
-		start = 0
-	}
+	start := max(selected-(visibleCount/2), 0)
 
 	end := start + visibleCount
 	if end > len(downloads) {
 		end = len(downloads)
 
-		start = end - visibleCount
-		if start < 0 {
-			start = 0
-		}
+		start = max(end-visibleCount, 0)
 	}
 
 	for i := start; i < end; i++ {

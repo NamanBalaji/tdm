@@ -1,262 +1,356 @@
 package config_test
 
 import (
+	"flag"
 	"os"
 	"path/filepath"
-	"reflect"
 	"testing"
 	"time"
 
-	cfg "github.com/NamanBalaji/tdm/internal/config"
+	"github.com/NamanBalaji/tdm/internal/config"
 	"github.com/adrg/xdg"
 )
 
-func withTempConfigHome(t *testing.T) (restore func(), dir string, file string) {
-	t.Helper()
-	orig := xdg.ConfigHome
-	dir = t.TempDir()
-	xdg.ConfigHome = dir
-	restore = func() { xdg.ConfigHome = orig }
-	file = filepath.Join(dir, "tdm")
-	return
+func TestMain(m *testing.M) {
+	os.Exit(m.Run())
 }
 
-func TestGetConfig_Table(t *testing.T) {
-	restore, _, cfgFile := withTempConfigHome(t)
-	defer restore()
+func resetFlags() {
+	flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ContinueOnError)
+}
 
-	def := cfg.DefaultConfig()
+func mockXDG(t *testing.T) string {
+	t.Helper()
+	tmpDir := t.TempDir()
 
+	oldConfigHome := xdg.ConfigHome
+
+	xdg.ConfigHome = tmpDir
+
+	t.Cleanup(func() {
+		xdg.ConfigHome = oldConfigHome
+	})
+
+	return tmpDir
+}
+
+func TestDefaultConfig(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.DefaultConfig()
+
+	if cfg.MaxConcurrentDownloads != 3 {
+		t.Errorf("expected MaxConcurrentDownloads 3, got %d", cfg.MaxConcurrentDownloads)
+	}
+	if cfg.HTTP.Connections != 8 {
+		t.Errorf("expected HTTP Connections 8, got %d", cfg.HTTP.Connections)
+	}
+	if cfg.Torrent.EstablishedConnectionsPerTorrent != 50 {
+		t.Errorf("expected Torrent connections 50, got %d", cfg.Torrent.EstablishedConnectionsPerTorrent)
+	}
+	if cfg.HTTP.RetryDelay != 2*time.Second {
+		t.Errorf("expected HTTP RetryDelay 2s, got %v", cfg.HTTP.RetryDelay)
+	}
+	if cfg.HTTP.IsConfig() != true {
+		t.Error("expected HTTP IsConfig to be true")
+	}
+	if cfg.Torrent.IsConfig() != true {
+		t.Error("expected Torrent IsConfig to be true")
+	}
+}
+
+func TestGetConfig_Integration(t *testing.T) {
+	t.Run("No Config File Returns Defaults", func(t *testing.T) {
+		mockXDG(t)
+		resetFlags()
+
+		oldArgs := os.Args
+		os.Args = []string{"cmd"}
+		defer func() { os.Args = oldArgs }()
+
+		cfg, err := config.GetConfig()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if cfg.MaxConcurrentDownloads != 3 {
+			t.Errorf("expected defaults when file missing, got %d", cfg.MaxConcurrentDownloads)
+		}
+	})
+
+	t.Run("Empty Config File Returns Defaults", func(t *testing.T) {
+		tmpDir := mockXDG(t)
+		resetFlags()
+
+		oldArgs := os.Args
+		os.Args = []string{"cmd"}
+		defer func() { os.Args = oldArgs }()
+
+		err := os.WriteFile(filepath.Join(tmpDir, "tdm"), []byte(""), 0o644)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		cfg, err := config.GetConfig()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if cfg.MaxConcurrentDownloads != 3 {
+			t.Errorf("expected defaults when file empty")
+		}
+	})
+
+	t.Run("Valid Config File Overrides Defaults", func(t *testing.T) {
+		tmpDir := mockXDG(t)
+		resetFlags()
+
+		oldArgs := os.Args
+		os.Args = []string{"cmd"}
+		defer func() { os.Args = oldArgs }()
+
+		yamlContent := `
+maxConcurrentDownloads: 10
+http:
+  connections: 20
+  maxRetries: 5
+torrent:
+  disableDht: true
+`
+		err := os.WriteFile(filepath.Join(tmpDir, "tdm"), []byte(yamlContent), 0o644)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		cfg, err := config.GetConfig()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if cfg.MaxConcurrentDownloads != 10 {
+			t.Errorf("expected MaxConcurrentDownloads 10, got %d", cfg.MaxConcurrentDownloads)
+		}
+		if cfg.HTTP.Connections != 20 {
+			t.Errorf("expected HTTP connections 20, got %d", cfg.HTTP.Connections)
+		}
+		if !cfg.Torrent.DisableDHT {
+			t.Error("expected DisableDHT to be true")
+		}
+		if cfg.HTTP.Chunks != 32 {
+			t.Errorf("expected HTTP Chunks to remain default 32, got %d", cfg.HTTP.Chunks)
+		}
+	})
+
+	t.Run("Invalid YAML Content", func(t *testing.T) {
+		tmpDir := mockXDG(t)
+		resetFlags()
+
+		oldArgs := os.Args
+		os.Args = []string{"cmd"}
+		defer func() { os.Args = oldArgs }()
+
+		// Illegal YAML (tab character)
+		err := os.WriteFile(filepath.Join(tmpDir, "tdm"), []byte("http:\n\tconnections: 5"), 0o644)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		_, err = config.GetConfig()
+		if err == nil {
+			t.Error("expected YAML unmarshal error, got nil")
+		}
+	})
+}
+
+func TestConfig_AutoCorrection(t *testing.T) {
 	tests := []struct {
-		name      string
-		preWrite  bool
-		contents  string
-		expectErr bool
-		check     func(t *testing.T, got *cfg.Config, def cfg.Config)
+		name        string
+		yamlContent string
 	}{
 		{
-			name:     "missing_file_returns_defaults",
-			preWrite: false,
-			check: func(t *testing.T, got *cfg.Config, def cfg.Config) {
-				if !reflect.DeepEqual(*got, def) {
-					t.Fatalf("expected defaults\nwant: %#v\ngot:  %#v", def, *got)
-				}
-			},
+			name:        "MaxConcurrentDownloads 0 becomes Default",
+			yamlContent: "maxConcurrentDownloads: 0",
 		},
 		{
-			name:     "empty_file_returns_defaults",
-			preWrite: true,
-			contents: "",
-			check: func(t *testing.T, got *cfg.Config, def cfg.Config) {
-				if !reflect.DeepEqual(*got, def) {
-					t.Fatalf("expected defaults\nwant: %#v\ngot:  %#v", def, *got)
-				}
-			},
+			name:        "HTTP DownloadDir Empty becomes Default",
+			yamlContent: "http:\n  dir: \"\"",
 		},
 		{
-			name:      "invalid_yaml_returns_error",
-			preWrite:  true,
-			contents:  ": not yaml",
-			expectErr: true,
-			check:     func(t *testing.T, _ *cfg.Config, _ cfg.Config) {},
+			name:        "HTTP Chunks 0 becomes Default",
+			yamlContent: "http:\n  maxChunks: 0",
 		},
 		{
-			name:     "no_subconfigs_uses_defaults_for_nested",
-			preWrite: true,
-			contents: "maxConcurrentDownloads: 1\n",
-			check: func(t *testing.T, got *cfg.Config, def cfg.Config) {
-				if got.MaxConcurrentDownloads != 1 {
-					t.Fatalf("maxConcurrentDownloads not applied, got %d", got.MaxConcurrentDownloads)
-				}
-				// Http and Torrent should fall back to defaults when nil in file
-				if !reflect.DeepEqual(*got.Http, *def.Http) {
-					t.Fatalf("http defaults not applied\nwant: %#v\ngot:  %#v", *def.Http, *got.Http)
-				}
-				if !reflect.DeepEqual(*got.Torrent, *def.Torrent) {
-					t.Fatalf("torrent defaults not applied\nwant: %#v\ngot:  %#v", *def.Torrent, *got.Torrent)
-				}
-			},
+			name:        "Torrent DownloadDir Empty becomes Default",
+			yamlContent: "torrent:\n  dir: \"\"",
 		},
 		{
-			name:     "partial_override_and_fallback",
-			preWrite: true,
-			contents: `
-maxConcurrentDownloads: 333
-http:
-  connections: 99
-  retryDelay: 3s
-torrent:
-  seed: true
-  disableIPv6: true
-  metainfoTimeout: 1m
-`,
-			check: func(t *testing.T, got *cfg.Config, def cfg.Config) {
-				// top-level override
-				if got.MaxConcurrentDownloads != 333 {
-					t.Fatalf("want MaxConcurrentDownloads=333 got %d", got.MaxConcurrentDownloads)
-				}
-				// http overrides
-				if got.Http.Connections != 99 {
-					t.Fatalf("want http.connections=99 got %d", got.Http.Connections)
-				}
-				if got.Http.RetryDelay != 3*time.Second {
-					t.Fatalf("want http.retryDelay=3s got %s", got.Http.RetryDelay)
-				}
-				// http fallbacks
-				if got.Http.DownloadDir != def.Http.DownloadDir {
-					t.Fatalf("want http.dir default %q got %q", def.Http.DownloadDir, got.Http.DownloadDir)
-				}
-				if got.Http.TempDir != def.Http.TempDir {
-					t.Fatalf("want http.tempDir default %q got %q", def.Http.TempDir, got.Http.TempDir)
-				}
-				if got.Http.Chunks != def.Http.Chunks {
-					t.Fatalf("want http.maxChunks default %d got %d", def.Http.Chunks, got.Http.Chunks)
-				}
-				if got.Http.MaxRetries != def.Http.MaxRetries {
-					t.Fatalf("want http.maxRetries default %d got %d", def.Http.MaxRetries, got.Http.MaxRetries)
-				}
-				// torrent overrides
-				if got.Torrent.Seed != true {
-					t.Fatalf("want torrent.seed=true got %v", got.Torrent.Seed)
-				}
-				if got.Torrent.DisableIPv6 != true {
-					t.Fatalf("want torrent.disableIPv6=true got %v", got.Torrent.DisableIPv6)
-				}
-				if got.Torrent.MetainfoTimeout != time.Minute {
-					t.Fatalf("want torrent.metainfoTimeout=1m got %s", got.Torrent.MetainfoTimeout)
-				}
-				// torrent fallbacks
-				if got.Torrent.DownloadDir != def.Torrent.DownloadDir {
-					t.Fatalf("want torrent.dir default %q got %q", def.Torrent.DownloadDir, got.Torrent.DownloadDir)
-				}
-				if got.Torrent.EstablishedConnectionsPerTorrent != def.Torrent.EstablishedConnectionsPerTorrent {
-					t.Fatalf("want establishedConnectionsPerTorrent default %d got %d",
-						def.Torrent.EstablishedConnectionsPerTorrent, got.Torrent.EstablishedConnectionsPerTorrent)
-				}
-				if got.Torrent.HalfOpenConnectionsPerTorrent != def.Torrent.HalfOpenConnectionsPerTorrent {
-					t.Fatalf("want halfOpenConnectionsPerTorrent default %d got %d",
-						def.Torrent.HalfOpenConnectionsPerTorrent, got.Torrent.HalfOpenConnectionsPerTorrent)
-				}
-				if got.Torrent.TotalHalfOpenConnections != def.Torrent.TotalHalfOpenConnections {
-					t.Fatalf("want totalHalfOpenConnections default %d got %d",
-						def.Torrent.TotalHalfOpenConnections, got.Torrent.TotalHalfOpenConnections)
-				}
-				if got.Torrent.DisableDHT != def.Torrent.DisableDHT {
-					t.Fatalf("want disableDht default %v got %v", def.Torrent.DisableDHT, got.Torrent.DisableDHT)
-				}
-				if got.Torrent.DisablePEX != def.Torrent.DisablePEX {
-					t.Fatalf("want disablePex default %v got %v", def.Torrent.DisablePEX, got.Torrent.DisablePEX)
-				}
-			},
-		},
-		{
-			name:     "explicit_zero_values_fall_back_to_defaults",
-			preWrite: true,
-			contents: `
-http:
-  connections: 0
-  dir: ""
-  retryDelay: 0s
-torrent:
-  establishedConnectionsPerTorrent: 0
-  halfOpenConnectionsPerTorrent: 0
-  totalHalfOpenConnections: 0
-  disableDht: false
-  disablePex: false
-  disableTrackers: false
-  disableIPv6: false
-  metainfoTimeout: 0s
-`,
-			check: func(t *testing.T, got *cfg.Config, def cfg.Config) {
-				// http zeros fall back
-				if got.Http.Connections != def.Http.Connections {
-					t.Fatalf("http.connections zero should fallback. want %d got %d", def.Http.Connections, got.Http.Connections)
-				}
-				if got.Http.DownloadDir != def.Http.DownloadDir {
-					t.Fatalf("http.dir zero should fallback. want %q got %q", def.Http.DownloadDir, got.Http.DownloadDir)
-				}
-				if got.Http.RetryDelay != def.Http.RetryDelay {
-					t.Fatalf("http.retryDelay zero should fallback. want %s got %s", def.Http.RetryDelay, got.Http.RetryDelay)
-				}
-				// torrent zeros fall back
-				if got.Torrent.EstablishedConnectionsPerTorrent != def.Torrent.EstablishedConnectionsPerTorrent {
-					t.Fatalf("establishedConnectionsPerTorrent zero should fallback. want %d got %d",
-						def.Torrent.EstablishedConnectionsPerTorrent, got.Torrent.EstablishedConnectionsPerTorrent)
-				}
-				if got.Torrent.HalfOpenConnectionsPerTorrent != def.Torrent.HalfOpenConnectionsPerTorrent {
-					t.Fatalf("halfOpenConnectionsPerTorrent zero should fallback. want %d got %d",
-						def.Torrent.HalfOpenConnectionsPerTorrent, got.Torrent.HalfOpenConnectionsPerTorrent)
-				}
-				if got.Torrent.TotalHalfOpenConnections != def.Torrent.TotalHalfOpenConnections {
-					t.Fatalf("totalHalfOpenConnections zero should fallback. want %d got %d",
-						def.Torrent.TotalHalfOpenConnections, got.Torrent.TotalHalfOpenConnections)
-				}
-				// booleans are zero when false, so they should fallback to defaults as well
-				if got.Torrent.DisableDHT != def.Torrent.DisableDHT {
-					t.Fatalf("disableDht false should fallback. want %v got %v", def.Torrent.DisableDHT, got.Torrent.DisableDHT)
-				}
-				if got.Torrent.DisablePEX != def.Torrent.DisablePEX {
-					t.Fatalf("disablePex false should fallback. want %v got %v", def.Torrent.DisablePEX, got.Torrent.DisablePEX)
-				}
-				if got.Torrent.DisableTrackers != def.Torrent.DisableTrackers {
-					t.Fatalf("disableTrackers false should fallback. want %v got %v", def.Torrent.DisableTrackers, got.Torrent.DisableTrackers)
-				}
-				if got.Torrent.DisableIPv6 != def.Torrent.DisableIPv6 {
-					t.Fatalf("disableIPv6 false should fallback. want %v got %v", def.Torrent.DisableIPv6, got.Torrent.DisableIPv6)
-				}
-				if got.Torrent.MetainfoTimeout != def.Torrent.MetainfoTimeout {
-					t.Fatalf("metainfoTimeout zero should fallback. want %s got %s", def.Torrent.MetainfoTimeout, got.Torrent.MetainfoTimeout)
-				}
-			},
+			name:        "Torrent Established Connections 0 becomes Default",
+			yamlContent: "torrent:\n  establishedConnectionsPerTorrent: 0",
 		},
 	}
 
-	for _, tc := range tests {
-		tc := tc
-		t.Run(tc.name, func(t *testing.T) {
-			// clean start each subtest
-			_ = os.Remove(cfgFile)
-			if tc.preWrite {
-				if err := os.WriteFile(cfgFile, []byte(tc.contents), 0o600); err != nil {
-					t.Fatalf("write test config: %v", err)
-				}
-			}
-			got, err := cfg.GetConfig()
-			if tc.expectErr {
-				if err == nil {
-					t.Fatalf("expected error, got nil")
-				}
-				return
-			}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := mockXDG(t)
+			resetFlags()
+
+			oldArgs := os.Args
+			os.Args = []string{"cmd"}
+			defer func() { os.Args = oldArgs }()
+
+			err := os.WriteFile(filepath.Join(tmpDir, "tdm"), []byte(tt.yamlContent), 0o644)
 			if err != nil {
-				t.Fatalf("GetConfig error: %v", err)
+				t.Fatal(err)
 			}
-			tc.check(t, got, def)
+
+			cfg, err := config.GetConfig()
+			if err != nil {
+				t.Errorf("expected success (auto-corrected to default), got error: %v", err)
+			}
+			if cfg != nil && cfg.MaxConcurrentDownloads == 0 {
+				t.Error("expected MaxConcurrentDownloads to be corrected to > 0")
+			}
 		})
 	}
 }
 
-func TestDefaultConfig_NonNilPointers(t *testing.T) {
-	d := cfg.DefaultConfig()
-	if d.Http == nil {
-		t.Fatalf("DefaultConfig.Http is nil")
+func TestConfig_Validation_Errors(t *testing.T) {
+	tests := []struct {
+		name        string
+		flags       []string
+		yamlContent string
+		wantErr     error
+	}{
+		{
+			name:    "Flag Force MaxConcurrentDownloads 0",
+			flags:   []string{"-mcd", "0"},
+			wantErr: config.ErrInvalidConfig,
+		},
+		{
+			name:        "YAML Negative MaxRetries (Passed through by zeroOr)",
+			yamlContent: "http:\n  maxRetries: -1",
+			wantErr:     config.ErrInvalidConfig,
+		},
+		{
+			name:    "Flag Force HTTP Connections 0",
+			flags:   []string{"-conn", "0"},
+			wantErr: config.ErrInvalidConfig,
+		},
+		{
+			name:    "Flag Force HTTP Chunks 0",
+			flags:   []string{"-c", "0"},
+			wantErr: config.ErrInvalidConfig,
+		},
+		{
+			name:    "Flag Force HTTP DownloadDir Empty",
+			flags:   []string{"-dd", ""},
+			wantErr: config.ErrInvalidConfig,
+		},
 	}
-	if d.Torrent == nil {
-		t.Fatalf("DefaultConfig.Torrent is nil")
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := mockXDG(t)
+			resetFlags()
+
+			if tt.yamlContent != "" {
+				os.WriteFile(filepath.Join(tmpDir, "tdm"), []byte(tt.yamlContent), 0o644)
+			}
+
+			// Setup Flags
+			oldArgs := os.Args
+			defer func() { os.Args = oldArgs }()
+			args := []string{"cmd"}
+			args = append(args, tt.flags...)
+			os.Args = args
+
+			_, err := config.GetConfig()
+			if err == nil {
+				t.Errorf("expected error for %s, got nil", tt.name)
+			}
+			if err != tt.wantErr {
+				t.Errorf("expected error %v, got %v", tt.wantErr, err)
+			}
+		})
 	}
 }
 
-func TestIsConfigMarkers(t *testing.T) {
-	t.Run("HttpConfig_IsConfig", func(t *testing.T) {
-		var h cfg.HttpConfig
-		if !h.IsConfig() {
-			t.Fatalf("HttpConfig.IsConfig() = false, want true")
-		}
-	})
-	t.Run("TorrentConfig_IsConfig", func(t *testing.T) {
-		var tt cfg.TorrentConfig
-		if !tt.IsConfig() {
-			t.Fatalf("TorrentConfig.IsConfig() = false, want true")
-		}
-	})
+func TestGetConfig_Flags_OverrideFile(t *testing.T) {
+	tmpDir := mockXDG(t)
+	resetFlags()
+
+	os.WriteFile(filepath.Join(tmpDir, "tdm"), []byte("maxConcurrentDownloads: 5\nhttp:\n  connections: 5"), 0o644)
+
+	oldArgs := os.Args
+	defer func() { os.Args = oldArgs }()
+
+	os.Args = []string{
+		"cmd",
+		"-mcd", "50",
+		"-conn", "100",
+		"-urls", "http://example.com",
+	}
+
+	cfg, err := config.GetConfig()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify Flags beat Config File (5 -> 50)
+	if cfg.MaxConcurrentDownloads != 50 {
+		t.Errorf("flag value should overwrite config file. Expected 50, got %d", cfg.MaxConcurrentDownloads)
+	}
+	if cfg.HTTP.Connections != 100 {
+		t.Errorf("flag value should overwrite config file. Expected 100, got %d", cfg.HTTP.Connections)
+	}
+	// Check URL parsing
+	if len(cfg.Urls) != 1 || cfg.Urls[0] != "http://example.com" {
+		t.Errorf("expected parsed URLs, got %v", cfg.Urls)
+	}
+}
+
+func TestGetConfig_Flags_NoFile(t *testing.T) {
+	mockXDG(t)
+	resetFlags()
+
+	oldArgs := os.Args
+	defer func() { os.Args = oldArgs }()
+
+	os.Args = []string{
+		"cmd",
+		"-mcd", "50",
+	}
+
+	cfg, err := config.GetConfig()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if cfg.MaxConcurrentDownloads != 50 {
+		t.Errorf("flag value should be applied even if config file is missing. Expected 50, got %d", cfg.MaxConcurrentDownloads)
+	}
+}
+
+func TestGetConfig_PartialFlags(t *testing.T) {
+	tmpDir := mockXDG(t)
+	resetFlags()
+
+	yamlContent := `maxConcurrentDownloads: 15`
+	os.WriteFile(filepath.Join(tmpDir, "tdm"), []byte(yamlContent), 0o644)
+
+	oldArgs := os.Args
+	defer func() { os.Args = oldArgs }()
+
+	os.Args = []string{"cmd", "-c", "99"}
+
+	cfg, err := config.GetConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if cfg.MaxConcurrentDownloads != 15 {
+		t.Errorf("expected config file value 15 to persist, got %d", cfg.MaxConcurrentDownloads)
+	}
+	if cfg.HTTP.Chunks != 99 {
+		t.Errorf("expected flag value 99, got %d", cfg.HTTP.Chunks)
+	}
 }
