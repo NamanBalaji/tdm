@@ -53,9 +53,9 @@ func TestProgressTracker(t *testing.T) {
 
 	t.Run("speed", func(t *testing.T) {
 		testCases := []struct {
-			name      string
-			setup     func(*download.ProgressTracker)
-			wantZero  bool
+			name     string
+			setup    func(*download.ProgressTracker)
+			wantZero bool
 		}{
 			{
 				name: "zero with single sample",
