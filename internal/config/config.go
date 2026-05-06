@@ -3,10 +3,9 @@ package config
 import (
 	"errors"
 	"flag"
+	"fmt"
 	"os"
 	"path/filepath"
-	"reflect"
-	"strings"
 	"time"
 
 	"github.com/adrg/xdg"
@@ -17,21 +16,19 @@ var ErrInvalidConfig = errors.New("invalid config")
 
 const configFileName = "tdm"
 
-// flagConfig stores the parsed values from the cli flags.
-type flagConfig struct {
-	urls                   *string
-	maxConcurrentDownloads *int
-	tempDir                *string
-	connections            *int
-	chunks                 *int
-	maxRetries             *int
-	downloadDir            *string
-	seedDisable            *bool
-	dhtDisable             *bool
-	pexDisable             *bool
+type ValidationError struct {
+	Field   string
+	Message string
 }
 
-// Config holds the configuration options for the application.
+func (e *ValidationError) Error() string {
+	return fmt.Sprintf("config: %s: %s", e.Field, e.Message)
+}
+
+func (e *ValidationError) Unwrap() error {
+	return ErrInvalidConfig
+}
+
 type Config struct {
 	Urls                   []string
 	MaxConcurrentDownloads int            `yaml:"maxConcurrentDownloads,omitempty"`
@@ -39,17 +36,15 @@ type Config struct {
 	Torrent                *TorrentConfig `yaml:"torrent,omitempty"`
 }
 
-// HTTPConfig holds configuration options for HTTP downloads.
 type HTTPConfig struct {
 	DownloadDir string        `yaml:"dir,omitempty"`
 	TempDir     string        `yaml:"tempDir,omitempty"`
 	Connections int           `yaml:"connections,omitempty"`
 	Chunks      int           `yaml:"maxChunks,omitempty"`
 	MaxRetries  int           `yaml:"maxRetries,omitempty"`
-	RetryDelay  time.Duration `yaml:"retryDelay,omitempty,omitempty"`
+	RetryDelay  time.Duration `yaml:"retryDelay,omitempty"`
 }
 
-// TorrentConfig holds configuration options for torrent downloads.
 type TorrentConfig struct {
 	DownloadDir                      string        `yaml:"dir,omitempty"`
 	Seed                             bool          `yaml:"seed,omitempty"`
@@ -63,24 +58,48 @@ type TorrentConfig struct {
 	MetainfoTimeout                  time.Duration `yaml:"metainfoTimeout,omitempty"`
 }
 
-func (t *TorrentConfig) IsConfig() bool {
-	return true
-}
-
-func (h *HTTPConfig) IsConfig() bool {
-	return true
-}
-
-// GetConfig reads the configuration file and returns a Config struct.
-// If the configuration file does not exist, it uses default configuration
-// but STILL applies CLI flags.
+// GetConfig reads the configuration file, applies defaults, overlays CLI flags,
+// and validates the result. It expects flag.Parse() to have already been called.
 func GetConfig() (*Config, error) {
-	configFilePath := filepath.Join(xdg.ConfigHome, configFileName)
+	path := filepath.Join(xdg.ConfigHome, configFileName)
+
+	cfg, err := loadConfig(path)
+	if err != nil {
+		return nil, err
+	}
+
+	applyFlags(cfg)
+
+	if err := cfg.validate(); err != nil {
+		return nil, err
+	}
+
+	return cfg, nil
+}
+
+// LoadConfigWithFlags loads config from the given path and applies the provided FlagSet.
+// Used for testing without touching global flag.CommandLine.
+func LoadConfigWithFlags(path string, fs *flag.FlagSet) (*Config, error) {
+	cfg, err := loadConfig(path)
+	if err != nil {
+		return nil, err
+	}
+
+	applyFlagsFromFlagSet(cfg, fs)
+
+	if err := cfg.validate(); err != nil {
+		return nil, err
+	}
+
+	return cfg, nil
+}
+
+func loadConfig(path string) (*Config, error) {
 	defaults := DefaultConfig()
 
-	var cfg Config // Empty by default
+	var raw rawConfig
 
-	b, err := os.ReadFile(configFilePath)
+	b, err := os.ReadFile(path)
 	if err != nil {
 		if !os.IsNotExist(err) {
 			return nil, err
@@ -88,46 +107,14 @@ func GetConfig() (*Config, error) {
 	}
 
 	if len(b) > 0 {
-		err = yaml.Unmarshal(b, &cfg)
-		if err != nil {
+		if err := yaml.Unmarshal(b, &raw); err != nil {
 			return nil, err
 		}
 	}
 
-	httpCfg := zeroOr(cfg.HTTP, defaults.HTTP)
-	torrentCfg := zeroOr(cfg.Torrent, defaults.Torrent)
+	cfg := raw.resolve(defaults)
 
-	conf := Config{
-		MaxConcurrentDownloads: zeroOr(cfg.MaxConcurrentDownloads, defaults.MaxConcurrentDownloads),
-		HTTP: &HTTPConfig{
-			TempDir:     zeroOr(httpCfg.TempDir, defaults.HTTP.TempDir),
-			DownloadDir: zeroOr(httpCfg.DownloadDir, defaults.HTTP.DownloadDir),
-			Connections: zeroOr(httpCfg.Connections, defaults.HTTP.Connections),
-			Chunks:      zeroOr(httpCfg.Chunks, defaults.HTTP.Chunks),
-			MaxRetries:  zeroOr(httpCfg.MaxRetries, defaults.HTTP.MaxRetries),
-			RetryDelay:  zeroOr(httpCfg.RetryDelay, defaults.HTTP.RetryDelay),
-		},
-		Torrent: &TorrentConfig{
-			DownloadDir:                      zeroOr(torrentCfg.DownloadDir, defaults.Torrent.DownloadDir),
-			Seed:                             zeroOr(torrentCfg.Seed, defaults.Torrent.Seed),
-			EstablishedConnectionsPerTorrent: zeroOr(torrentCfg.EstablishedConnectionsPerTorrent, defaults.Torrent.EstablishedConnectionsPerTorrent),
-			HalfOpenConnectionsPerTorrent:    zeroOr(torrentCfg.HalfOpenConnectionsPerTorrent, defaults.Torrent.HalfOpenConnectionsPerTorrent),
-			TotalHalfOpenConnections:         zeroOr(torrentCfg.TotalHalfOpenConnections, defaults.Torrent.TotalHalfOpenConnections),
-			DisableDHT:                       zeroOr(torrentCfg.DisableDHT, defaults.Torrent.DisableDHT),
-			DisablePEX:                       zeroOr(torrentCfg.DisablePEX, defaults.Torrent.DisablePEX),
-			DisableTrackers:                  zeroOr(torrentCfg.DisableTrackers, defaults.Torrent.DisableTrackers),
-			DisableIPv6:                      zeroOr(torrentCfg.DisableIPv6, defaults.Torrent.DisableIPv6),
-			MetainfoTimeout:                  zeroOr(torrentCfg.MetainfoTimeout, defaults.Torrent.MetainfoTimeout),
-		},
-	}
-
-	conf.applyFlagsToConfig()
-
-	if err := conf.validate(); err != nil {
-		return nil, err
-	}
-
-	return &conf, nil
+	return &cfg, nil
 }
 
 func DefaultConfig() Config {
@@ -147,59 +134,14 @@ func DefaultConfig() Config {
 			EstablishedConnectionsPerTorrent: establishedConnectionsPerTorrent,
 			HalfOpenConnectionsPerTorrent:    halfOpenConnectionsPerTorrent,
 			TotalHalfOpenConnections:         totalHalfOpenConnections,
-			DisableDHT:                       disableDHT,
-			DisablePEX:                       disablePEX,
-			DisableTrackers:                  disableTrackers,
-			DisableIPv6:                      disableIPv6,
 			MetainfoTimeout:                  metainfoTimeout,
 		},
 	}
 }
 
-// zeroOr returns def if v is the zero value for its type.
-func zeroOr[T any](v, def T) T {
-	if reflect.ValueOf(v).IsZero() {
-		return def
-	}
-
-	return v
-}
-
-// applyFlagsToConfig takes the value of the cli flags applied at the start and plugs them into the config.
-func (c *Config) applyFlagsToConfig() {
-	fc := flagConfig{
-		urls:                   flag.String("urls", "", "path to the file continoing urls separated by space"),
-		maxConcurrentDownloads: flag.Int("mcd", c.MaxConcurrentDownloads, "max number of downloads that run together"),
-		tempDir:                flag.String("td", c.HTTP.TempDir, "path to temporary directory for storing HTTP hunks"),
-		connections:            flag.Int("conn", c.HTTP.Connections, "number of parallel connections the will be used to download from the server at a time"),
-		chunks:                 flag.Int("c", c.HTTP.Chunks, "number to chunks a HTTP download will be split into"),
-		maxRetries:             flag.Int("mr", c.HTTP.MaxRetries, "maximum number of retries before the chunk fails"),
-		downloadDir:            flag.String("dd", c.HTTP.DownloadDir, "path to the directory that will be used to store new downloads"),
-		seedDisable:            flag.Bool("ns", c.Torrent.Seed, "no seed disable seeding for torrents"),
-		pexDisable:             flag.Bool("np", c.Torrent.DisablePEX, "no pex will disable peer exchange for torrents"),
-		dhtDisable:             flag.Bool("nd", c.Torrent.DisableDHT, "no DHT will diabale DHT for torrents"),
-	}
-
-	flag.Parse()
-
-	if fc.urls != nil {
-		c.Urls = strings.Split(*fc.urls, " ")
-	}
-
-	c.MaxConcurrentDownloads = *fc.maxConcurrentDownloads
-	c.HTTP.TempDir = *fc.tempDir
-	c.HTTP.Connections = *fc.connections
-	c.HTTP.Chunks = *fc.chunks
-	c.HTTP.MaxRetries = *fc.maxRetries
-	c.HTTP.DownloadDir, c.Torrent.DownloadDir = *fc.downloadDir, *fc.downloadDir
-	c.Torrent.Seed = *fc.seedDisable
-	c.Torrent.DisablePEX = *fc.pexDisable
-	c.Torrent.DisableDHT = *fc.dhtDisable
-}
-
 func (c *Config) validate() error {
 	if c.MaxConcurrentDownloads <= 0 {
-		return ErrInvalidConfig
+		return &ValidationError{Field: "maxConcurrentDownloads", Message: "must be positive"}
 	}
 
 	if err := c.HTTP.validate(); err != nil {
@@ -210,16 +152,44 @@ func (c *Config) validate() error {
 }
 
 func (h *HTTPConfig) validate() error {
-	if h.DownloadDir == "" || h.MaxRetries < 0 || h.Chunks <= 0 || h.Connections <= 0 || h.TempDir == "" {
-		return ErrInvalidConfig
+	if h.DownloadDir == "" {
+		return &ValidationError{Field: "http.dir", Message: "must not be empty"}
+	}
+
+	if h.TempDir == "" {
+		return &ValidationError{Field: "http.tempDir", Message: "must not be empty"}
+	}
+
+	if h.Connections <= 0 {
+		return &ValidationError{Field: "http.connections", Message: "must be positive"}
+	}
+
+	if h.Chunks <= 0 {
+		return &ValidationError{Field: "http.maxChunks", Message: "must be positive"}
+	}
+
+	if h.MaxRetries < 0 {
+		return &ValidationError{Field: "http.maxRetries", Message: "must not be negative"}
 	}
 
 	return nil
 }
 
 func (t *TorrentConfig) validate() error {
-	if t.DownloadDir == "" || t.EstablishedConnectionsPerTorrent <= 0 || t.TotalHalfOpenConnections <= 0 || t.HalfOpenConnectionsPerTorrent <= 0 {
-		return ErrInvalidConfig
+	if t.DownloadDir == "" {
+		return &ValidationError{Field: "torrent.dir", Message: "must not be empty"}
+	}
+
+	if t.EstablishedConnectionsPerTorrent <= 0 {
+		return &ValidationError{Field: "torrent.establishedConnectionsPerTorrent", Message: "must be positive"}
+	}
+
+	if t.HalfOpenConnectionsPerTorrent <= 0 {
+		return &ValidationError{Field: "torrent.halfOpenConnectionsPerTorrent", Message: "must be positive"}
+	}
+
+	if t.TotalHalfOpenConnections <= 0 {
+		return &ValidationError{Field: "torrent.totalHalfOpenConnections", Message: "must be positive"}
 	}
 
 	return nil

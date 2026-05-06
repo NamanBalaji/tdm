@@ -3,11 +3,11 @@ package components
 import (
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/NamanBalaji/tdm/internal/engine"
+	"github.com/NamanBalaji/tdm/internal/download"
 	"github.com/NamanBalaji/tdm/internal/tui/styles"
 )
 
-func RenderDownloadList(downloads []engine.DownloadInfo, selected int, width, height int) string {
+func RenderDownloadList(downloads []download.DownloadInfo, selected int, width, height int) string {
 	if len(downloads) == 0 {
 		return renderEmptyView(width, height)
 	}

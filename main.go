@@ -11,9 +11,11 @@ import (
 	"time"
 
 	"github.com/NamanBalaji/tdm/internal/config"
-	"github.com/NamanBalaji/tdm/internal/engine"
+	httpdl "github.com/NamanBalaji/tdm/internal/downloaders/http"
+	torrentdl "github.com/NamanBalaji/tdm/internal/downloaders/torrent"
 	"github.com/NamanBalaji/tdm/internal/logger"
-	"github.com/NamanBalaji/tdm/internal/repository"
+	"github.com/NamanBalaji/tdm/internal/manager"
+	"github.com/NamanBalaji/tdm/internal/store/boltdb"
 	"github.com/NamanBalaji/tdm/internal/tui"
 	torrentPkg "github.com/NamanBalaji/tdm/pkg/torrent"
 )
@@ -28,29 +30,29 @@ func main() {
 		log.Fatalf("Error loading config: %v\n", err)
 	}
 
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		log.Fatalf("Error getting home directory: %v\n", err)
-	}
-
+	homeDir, _ := os.UserHomeDir()
 	configDir := filepath.Join(homeDir, ".tdm")
 
-	err = os.MkdirAll(configDir, 0o755)
-	if err != nil {
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
 		log.Fatalf("Error creating config directory: %v\n", err)
 	}
 
-	err = logger.InitLogging(*debug, filepath.Join(configDir, "tdm.log"))
-	if err != nil {
-		log.Fatalf("Warning: Failed to initialize logging: %v\n", err)
+	if err := logger.InitLogging(*debug, filepath.Join(configDir, "tdm.log")); err != nil {
+		log.Fatalf("Error initializing logging: %v\n", err)
 	}
 
 	defer logger.Close()
 
-	repo, err := repository.NewBboltRepository(filepath.Join(configDir, "tdm.db"))
+	store, err := boltdb.New(filepath.Join(configDir, "tdm.db"))
 	if err != nil {
-		log.Fatalf("Error creating repository: %v\n", err)
+		log.Fatalf("Error creating store: %v\n", err)
 	}
+
+	defer func() {
+		if err := store.Close(); err != nil {
+			log.Printf("Error closing store: %v\n", err)
+		}
+	}()
 
 	torrentClient, err := torrentPkg.NewClient(cfg.Torrent)
 	if err != nil {
@@ -63,14 +65,17 @@ func main() {
 		}
 	}()
 
-	eng := engine.NewEngine(cfg, repo, torrentClient)
-
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	err = eng.Start(ctx)
-	if err != nil {
-		log.Fatalf("Error starting engine: %v\n", err)
+	mgr := manager.New(store, cfg.MaxConcurrentDownloads)
+
+	// Register downloaders (order matters — first match wins)
+	mgr.Register(torrentdl.New(torrentClient, cfg.Torrent.DownloadDir))
+	mgr.Register(httpdl.New(cfg.HTTP))
+
+	if err := mgr.Start(ctx); err != nil {
+		log.Fatalf("Error starting manager: %v\n", err)
 	}
 
 	sigChan := make(chan os.Signal, 1)
@@ -81,21 +86,18 @@ func main() {
 		cancel()
 	}()
 
-	err = tui.Run(ctx, eng)
-	if err != nil {
-		logger.Errorf("TUI Error: %v\n", err)
+	if err := tui.Run(ctx, mgr); err != nil {
+		logger.Errorf("TUI error: %v", err)
 	}
 
-	logger.Infof("TUI has exited. Shutting down engine...")
+	cancel()
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
 
-	err = eng.Shutdown(shutdownCtx)
-	if err != nil {
-		log.Fatalf("Error during engine shutdown: %v", err)
+	if err := mgr.Shutdown(shutdownCtx); err != nil {
+		log.Fatalf("Error during shutdown: %v", err)
 	}
 
-	eng.Wait()
-	logger.Infof("Shutdown complete.")
+	mgr.Wait()
 }
