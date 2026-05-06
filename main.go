@@ -32,9 +32,14 @@ func main() {
 
 	homeDir, _ := os.UserHomeDir()
 	configDir := filepath.Join(homeDir, ".tdm")
-	os.MkdirAll(configDir, 0o755)
 
-	logger.InitLogging(*debug, filepath.Join(configDir, "tdm.log"))
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		log.Fatalf("Error creating config directory: %v\n", err)
+	}
+
+	if err := logger.InitLogging(*debug, filepath.Join(configDir, "tdm.log")); err != nil {
+		log.Fatalf("Error initializing logging: %v\n", err)
+	}
 
 	defer logger.Close()
 
@@ -42,13 +47,23 @@ func main() {
 	if err != nil {
 		log.Fatalf("Error creating store: %v\n", err)
 	}
-	defer store.Close()
+
+	defer func() {
+		if err := store.Close(); err != nil {
+			log.Printf("Error closing store: %v\n", err)
+		}
+	}()
 
 	torrentClient, err := torrentPkg.NewClient(cfg.Torrent)
 	if err != nil {
 		log.Fatalf("Error creating torrent client: %v\n", err)
 	}
-	defer torrentClient.Close()
+
+	defer func() {
+		if err := torrentClient.Close(); err != nil {
+			log.Printf("Error closing torrent client: %v\n", err)
+		}
+	}()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

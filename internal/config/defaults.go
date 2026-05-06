@@ -18,10 +18,6 @@ const (
 	establishedConnectionsPerTorrent = 50
 	halfOpenConnectionsPerTorrent    = 25
 	totalHalfOpenConnections         = 100
-	disableDHT                       = false
-	disablePEX                       = false
-	disableTrackers                  = false
-	disableIPv6                      = false
 	metainfoTimeout                  = 60 * time.Second
 )
 

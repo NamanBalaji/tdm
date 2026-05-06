@@ -36,7 +36,7 @@ func DownloadItem(info download.DownloadInfo, width int, selected bool) string {
 		statusLabel = styles.StatusCancelled.Render("⊘ cancelled")
 	case download.Failed:
 		statusLabel = styles.StatusFailed.Render("✖ failed")
-	default: // Queued
+	case download.Pending, download.Queued:
 		statusLabel = styles.StatusQueued.Render("○ queued")
 	}
 

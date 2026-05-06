@@ -316,6 +316,7 @@ func renderHeader(m *Model) string {
 			failed++
 		case download.Queued:
 			queued++
+		case download.Pending, download.Cancelled:
 		}
 	}
 
@@ -431,6 +432,7 @@ func (m *Model) updateAddView(msg tea.Msg) tea.Cmd {
 						if err := m.actions.Add(url, priority); err != nil {
 							return downloadError{err}
 						}
+
 						return nil
 					},
 					clearNotifications(),
@@ -465,6 +467,7 @@ func (m *Model) updateConfirmView(msg tea.Msg) tea.Cmd {
 			if id, ok := m.getSelectedDownloadID(); ok {
 				action := m.pendingConfirm
 				m.view = viewList
+
 				return func() tea.Msg {
 					switch action {
 					case confirmRemove:
@@ -472,9 +475,11 @@ func (m *Model) updateConfirmView(msg tea.Msg) tea.Cmd {
 					case confirmCancel:
 						m.actions.Cancel(id)
 					}
+
 					return nil
 				}
 			}
+
 			m.view = viewList
 		case "n", "N", "esc":
 			m.view = viewList

@@ -128,8 +128,14 @@ func (d *Downloader) Start(ctx context.Context, dl *download.Download, onProgres
 
 func (d *Downloader) Remove(dl *download.Download) error {
 	downloadPath := filepath.Join(dl.Dir, dl.Filename)
-	os.RemoveAll(downloadPath)
-	os.RemoveAll(downloadPath + partFileExt)
+
+	if err := os.RemoveAll(downloadPath); err != nil {
+		return fmt.Errorf("remove download: %w", err)
+	}
+
+	if err := os.RemoveAll(downloadPath + partFileExt); err != nil {
+		return fmt.Errorf("remove part file: %w", err)
+	}
 
 	logger.Debugf("removed torrent files for %s", dl.Filename)
 

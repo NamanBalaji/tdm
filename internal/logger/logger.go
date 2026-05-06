@@ -43,7 +43,7 @@ func InitLogging(debugMode bool, logPath string) error {
 
 func Close() {
 	if logFile != nil {
-		logFile.Close()
+		_ = logFile.Close()
 	}
 }
 
