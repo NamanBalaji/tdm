@@ -439,9 +439,10 @@ func (m *Manager) handleCompletion(ctx context.Context, md *managedDownload, err
 	}
 
 	md.cancel = nil
+	dlCopy := *md.download
 	m.mu.Unlock()
 
-	if saveErr := m.store.Save(ctx, md.download); saveErr != nil {
+	if saveErr := m.store.Save(ctx, &dlCopy); saveErr != nil {
 		logger.Errorf("failed to save download after completion: %v", saveErr)
 	}
 
