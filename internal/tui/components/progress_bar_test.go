@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/NamanBalaji/tdm/internal/status"
+	"github.com/NamanBalaji/tdm/internal/download"
 	"github.com/NamanBalaji/tdm/internal/tui/components"
 )
 
@@ -13,7 +13,7 @@ func TestProgressBar(t *testing.T) {
 		name           string
 		width          int
 		percent        float64
-		status         status.Status
+		status         download.Status
 		expectedFilled int
 		expectedEmpty  int
 	}{
@@ -21,7 +21,7 @@ func TestProgressBar(t *testing.T) {
 			name:           "0 percent",
 			width:          20,
 			percent:        0.0,
-			status:         status.Active,
+			status:         download.Active,
 			expectedFilled: 0,
 			expectedEmpty:  20,
 		},
@@ -29,7 +29,7 @@ func TestProgressBar(t *testing.T) {
 			name:           "50 percent",
 			width:          20,
 			percent:        0.5,
-			status:         status.Paused,
+			status:         download.Paused,
 			expectedFilled: 10,
 			expectedEmpty:  10,
 		},
@@ -37,7 +37,7 @@ func TestProgressBar(t *testing.T) {
 			name:           "100 percent",
 			width:          20,
 			percent:        1.0,
-			status:         status.Completed,
+			status:         download.Completed,
 			expectedFilled: 20,
 			expectedEmpty:  0,
 		},
@@ -45,7 +45,7 @@ func TestProgressBar(t *testing.T) {
 			name:           "Negative percent (clamps to 0)",
 			width:          10,
 			percent:        -0.5,
-			status:         status.Failed,
+			status:         download.Failed,
 			expectedFilled: 0,
 			expectedEmpty:  10,
 		},
@@ -53,7 +53,7 @@ func TestProgressBar(t *testing.T) {
 			name:           "Over 100 percent (clamps to 1.0)",
 			width:          10,
 			percent:        1.5,
-			status:         status.Cancelled,
+			status:         download.Cancelled,
 			expectedFilled: 10,
 			expectedEmpty:  0,
 		},
@@ -61,7 +61,7 @@ func TestProgressBar(t *testing.T) {
 			name:           "Zero width",
 			width:          0,
 			percent:        0.5,
-			status:         status.Queued,
+			status:         download.Queued,
 			expectedFilled: 0,
 			expectedEmpty:  0,
 		},
@@ -69,7 +69,7 @@ func TestProgressBar(t *testing.T) {
 			name:           "Odd width, 33 percent",
 			width:          15,
 			percent:        0.33,
-			status:         status.Active,
+			status:         download.Active,
 			expectedFilled: 4,
 			expectedEmpty:  11,
 		},

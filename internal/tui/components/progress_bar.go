@@ -5,12 +5,12 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/NamanBalaji/tdm/internal/status"
+	"github.com/NamanBalaji/tdm/internal/download"
 	"github.com/NamanBalaji/tdm/internal/tui/styles"
 )
 
 // ProgressBar returns a styled progress bar.
-func ProgressBar(width int, percent float64, s status.Status) string {
+func ProgressBar(width int, percent float64, s download.Status) string {
 	if width <= 0 {
 		return ""
 	}
@@ -32,15 +32,15 @@ func ProgressBar(width int, percent float64, s status.Status) string {
 	var filledStyle lipgloss.Style
 
 	switch s {
-	case status.Active:
+	case download.Active:
 		filledStyle = lipgloss.NewStyle().Foreground(styles.Teal)
-	case status.Paused:
+	case download.Paused:
 		filledStyle = lipgloss.NewStyle().Foreground(styles.Peach)
-	case status.Completed:
+	case download.Completed:
 		filledStyle = lipgloss.NewStyle().Foreground(styles.Green)
-	case status.Cancelled:
+	case download.Cancelled:
 		filledStyle = lipgloss.NewStyle().Foreground(styles.Mauve)
-	case status.Failed:
+	case download.Failed:
 		filledStyle = lipgloss.NewStyle().Foreground(styles.Red)
 	default: // Queued or Pending
 		filledStyle = lipgloss.NewStyle().Foreground(styles.Yellow)

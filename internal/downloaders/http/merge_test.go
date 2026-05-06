@@ -1,4 +1,4 @@
-package httpdl_test
+package http_test
 
 import (
 	"fmt"
@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/NamanBalaji/tdm/internal/config"
-	"github.com/NamanBalaji/tdm/internal/httpdl"
+	httpdl "github.com/NamanBalaji/tdm/internal/downloaders/http"
 )
 
 func TestMerge(t *testing.T) {

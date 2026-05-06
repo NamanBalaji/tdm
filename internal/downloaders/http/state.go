@@ -1,4 +1,4 @@
-package httpdl
+package http
 
 import "github.com/google/uuid"
 

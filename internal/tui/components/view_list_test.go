@@ -4,25 +4,23 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/NamanBalaji/tdm/internal/engine"
-	"github.com/NamanBalaji/tdm/internal/progress"
-	"github.com/NamanBalaji/tdm/internal/status"
+	"github.com/NamanBalaji/tdm/internal/download"
 	"github.com/NamanBalaji/tdm/internal/tui/components"
 	"github.com/google/uuid"
 )
 
 func TestRenderDownloadList(t *testing.T) {
-	downloads := []engine.DownloadInfo{
-		{ID: uuid.New(), Filename: "file-0.txt", Status: status.Active, Progress: progress.Progress{Percentage: 10}},
-		{ID: uuid.New(), Filename: "file-1.txt", Status: status.Paused, Progress: progress.Progress{Percentage: 20}},
-		{ID: uuid.New(), Filename: "file-2.txt", Status: status.Completed, Progress: progress.Progress{Percentage: 100}},
-		{ID: uuid.New(), Filename: "file-3.txt", Status: status.Queued, Progress: progress.Progress{Percentage: 0}},
-		{ID: uuid.New(), Filename: "file-4.txt", Status: status.Failed, Progress: progress.Progress{Percentage: 50}},
+	downloads := []download.DownloadInfo{
+		{ID: uuid.New(), Filename: "file-0.txt", Status: download.Active, Progress: download.Progress{Percentage: 10}},
+		{ID: uuid.New(), Filename: "file-1.txt", Status: download.Paused, Progress: download.Progress{Percentage: 20}},
+		{ID: uuid.New(), Filename: "file-2.txt", Status: download.Completed, Progress: download.Progress{Percentage: 100}},
+		{ID: uuid.New(), Filename: "file-3.txt", Status: download.Queued, Progress: download.Progress{Percentage: 0}},
+		{ID: uuid.New(), Filename: "file-4.txt", Status: download.Failed, Progress: download.Progress{Percentage: 50}},
 	}
 
 	testCases := []struct {
 		name             string
-		downloads        []engine.DownloadInfo
+		downloads        []download.DownloadInfo
 		selected         int
 		width            int
 		height           int
@@ -31,7 +29,7 @@ func TestRenderDownloadList(t *testing.T) {
 	}{
 		{
 			name:          "Empty list",
-			downloads:     []engine.DownloadInfo{},
+			downloads:     []download.DownloadInfo{},
 			selected:      0,
 			width:         80,
 			height:        20,

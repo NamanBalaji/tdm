@@ -5,12 +5,11 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/NamanBalaji/tdm/internal/engine"
-	"github.com/NamanBalaji/tdm/internal/status"
+	"github.com/NamanBalaji/tdm/internal/download"
 	"github.com/NamanBalaji/tdm/internal/tui/styles"
 )
 
-func DownloadItem(info engine.DownloadInfo, width int, selected bool) string {
+func DownloadItem(info download.DownloadInfo, width int, selected bool) string {
 	const horizontalPadding = 4
 
 	innerWidth := width - horizontalPadding
@@ -27,15 +26,15 @@ func DownloadItem(info engine.DownloadInfo, width int, selected bool) string {
 	var statusLabel string
 
 	switch info.Status {
-	case status.Active:
+	case download.Active:
 		statusLabel = styles.StatusActive.Render("● active")
-	case status.Paused:
+	case download.Paused:
 		statusLabel = styles.StatusPaused.Render("❚❚ paused")
-	case status.Completed:
+	case download.Completed:
 		statusLabel = styles.StatusCompleted.Render("✔ completed")
-	case status.Cancelled:
+	case download.Cancelled:
 		statusLabel = styles.StatusCancelled.Render("⊘ cancelled")
-	case status.Failed:
+	case download.Failed:
 		statusLabel = styles.StatusFailed.Render("✖ failed")
 	default: // Queued
 		statusLabel = styles.StatusQueued.Render("○ queued")
@@ -43,26 +42,25 @@ func DownloadItem(info engine.DownloadInfo, width int, selected bool) string {
 
 	statusBlock := lipgloss.NewStyle().Width(12).Render(statusLabel)
 
-	percentVal := info.Progress.GetPercentage()
-	percent := fmt.Sprintf("%.1f%%", percentVal)
+	percent := fmt.Sprintf("%.1f%%", info.Progress.Percentage)
 
-	spacer := lipgloss.NewStyle().Width(innerWidth - nameWidth - lipgloss.Width(statusBlock) - lipgloss.Width(percent)).Render("")
+	spacer := lipgloss.NewStyle().Width(max(innerWidth-nameWidth-lipgloss.Width(statusBlock)-lipgloss.Width(percent), 0)).Render("")
 	line1 := lipgloss.JoinHorizontal(lipgloss.Bottom, nameBlock, statusBlock, spacer, percent)
 
-	bar := ProgressBar(innerWidth, info.Progress.GetPercentage()/100.0, info.Status)
+	bar := ProgressBar(innerWidth, info.Progress.Percentage/100.0, info.Status)
 	line2 := styles.ListItemStyle.Render(bar)
 
-	sizeInfo := fmt.Sprintf("%s / %s", formatSize(info.Progress.GetDownloaded()), formatSize(info.Progress.GetTotalSize()))
+	sizeInfo := fmt.Sprintf("%s / %s", formatSize(info.Progress.Downloaded), formatSize(info.Progress.TotalSize))
 
 	speedInfo := "--/s"
-	if info.Status == status.Active {
-		speedInfo = formatSize(info.Progress.GetSpeedBPS()) + "/s"
+	if info.Status == download.Active {
+		speedInfo = formatSize(info.Progress.SpeedBPS) + "/s"
 	}
 
 	eta := "--"
-	if info.Status == status.Active && info.Progress.GetETA() != "unknown" {
-		eta = info.Progress.GetETA()
-	} else if info.Status == status.Completed {
+	if info.Status == download.Active && info.Progress.ETA > 0 {
+		eta = info.Progress.ETA.String()
+	} else if info.Status == download.Completed {
 		eta = "Done"
 	}
 

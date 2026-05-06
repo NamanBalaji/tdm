@@ -1,4 +1,4 @@
-package httpdl_test
+package http_test
 
 import (
 	"context"
@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/NamanBalaji/tdm/internal/config"
-	"github.com/NamanBalaji/tdm/internal/httpdl"
+	httpdl "github.com/NamanBalaji/tdm/internal/downloaders/http"
 	httpPkg "github.com/NamanBalaji/tdm/pkg/http"
 )
 

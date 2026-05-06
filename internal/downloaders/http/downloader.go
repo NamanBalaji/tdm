@@ -1,4 +1,4 @@
-package httpdl
+package http
 
 import (
 	"context"

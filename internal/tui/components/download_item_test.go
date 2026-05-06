@@ -5,9 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NamanBalaji/tdm/internal/engine"
-	"github.com/NamanBalaji/tdm/internal/progress"
-	"github.com/NamanBalaji/tdm/internal/status"
+	"github.com/NamanBalaji/tdm/internal/download"
 	"github.com/NamanBalaji/tdm/internal/tui/components"
 	"github.com/google/uuid"
 )
@@ -18,18 +16,18 @@ func TestDownloadItem(t *testing.T) {
 
 	testCases := []struct {
 		name           string
-		info           engine.DownloadInfo
+		info           download.DownloadInfo
 		width          int
 		selected       bool
 		expectedChecks []string
 	}{
 		{
 			name: "Active Download",
-			info: engine.DownloadInfo{
+			info: download.DownloadInfo{
 				ID:       uuid.New(),
 				Filename: shortFilename,
-				Status:   status.Active,
-				Progress: progress.Progress{
+				Status:   download.Active,
+				Progress: download.Progress{
 					TotalSize:  1000,
 					Downloaded: 500,
 					Percentage: 50.0,
@@ -50,11 +48,11 @@ func TestDownloadItem(t *testing.T) {
 		},
 		{
 			name: "Selected Paused Download",
-			info: engine.DownloadInfo{
+			info: download.DownloadInfo{
 				ID:       uuid.New(),
 				Filename: shortFilename,
-				Status:   status.Paused,
-				Progress: progress.Progress{TotalSize: 2048, Downloaded: 1024, Percentage: 50.0},
+				Status:   download.Paused,
+				Progress: download.Progress{TotalSize: 2048, Downloaded: 1024, Percentage: 50.0},
 			},
 			width:    80,
 			selected: true,
@@ -67,11 +65,11 @@ func TestDownloadItem(t *testing.T) {
 		},
 		{
 			name: "completed Download",
-			info: engine.DownloadInfo{
+			info: download.DownloadInfo{
 				ID:       uuid.New(),
 				Filename: "completed.iso",
-				Status:   status.Completed,
-				Progress: progress.Progress{TotalSize: 5000000, Downloaded: 5000000, Percentage: 100.0},
+				Status:   download.Completed,
+				Progress: download.Progress{TotalSize: 5000000, Downloaded: 5000000, Percentage: 100.0},
 			},
 			width:    100,
 			selected: false,
@@ -85,11 +83,11 @@ func TestDownloadItem(t *testing.T) {
 		},
 		{
 			name: "Failed Download",
-			info: engine.DownloadInfo{
+			info: download.DownloadInfo{
 				ID:       uuid.New(),
 				Filename: "failed_download",
-				Status:   status.Failed,
-				Progress: progress.Progress{TotalSize: 1000, Downloaded: 100, Percentage: 10.0},
+				Status:   download.Failed,
+				Progress: download.Progress{TotalSize: 1000, Downloaded: 100, Percentage: 10.0},
 			},
 			width:          80,
 			selected:       false,
@@ -97,11 +95,11 @@ func TestDownloadItem(t *testing.T) {
 		},
 		{
 			name: "Cancelled Download",
-			info: engine.DownloadInfo{
+			info: download.DownloadInfo{
 				ID:       uuid.New(),
 				Filename: "cancelled.tar.gz",
-				Status:   status.Cancelled,
-				Progress: progress.Progress{TotalSize: 1000, Downloaded: 200, Percentage: 20.0},
+				Status:   download.Cancelled,
+				Progress: download.Progress{TotalSize: 1000, Downloaded: 200, Percentage: 20.0},
 			},
 			width:          80,
 			selected:       false,
@@ -109,11 +107,11 @@ func TestDownloadItem(t *testing.T) {
 		},
 		{
 			name: "Queued Download",
-			info: engine.DownloadInfo{
+			info: download.DownloadInfo{
 				ID:       uuid.New(),
 				Filename: "queued_file",
-				Status:   status.Queued,
-				Progress: progress.Progress{TotalSize: 5000, Downloaded: 0, Percentage: 0.0},
+				Status:   download.Queued,
+				Progress: download.Progress{TotalSize: 5000, Downloaded: 0, Percentage: 0.0},
 			},
 			width:          80,
 			selected:       false,
@@ -121,11 +119,11 @@ func TestDownloadItem(t *testing.T) {
 		},
 		{
 			name: "Long Filename Truncation",
-			info: engine.DownloadInfo{
+			info: download.DownloadInfo{
 				ID:       uuid.New(),
 				Filename: longFilename,
-				Status:   status.Active,
-				Progress: progress.Progress{TotalSize: 1000, Downloaded: 10, Percentage: 1.0},
+				Status:   download.Active,
+				Progress: download.Progress{TotalSize: 1000, Downloaded: 10, Percentage: 1.0},
 			},
 			width:          80,
 			selected:       false,
