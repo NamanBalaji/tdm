@@ -385,11 +385,22 @@ func (m *Manager) doSchedule(ctx context.Context) {
 		}
 	}
 
-	for _, md := range decision.toStart {
+	running := 0
+
+	for _, md := range m.downloads {
+		if md.cancel != nil {
+			running++
+		}
+	}
+
+	available := m.maxConc - running
+
+	for i := range min(available, len(decision.toStart)) {
+		md := decision.toStart[i]
 		md.download.Status = download.Active
 		md.download.StartTime = time.Now()
 
-		runCtx, cancel := context.WithCancel(ctx) // child of the run loop's ctx
+		runCtx, cancel := context.WithCancel(ctx)
 		md.cancel = cancel
 
 		m.wg.Add(1)
