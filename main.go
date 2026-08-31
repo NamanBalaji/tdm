@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log"
 	"log/slog"
 	"os"
@@ -21,10 +22,22 @@ import (
 	torrentPkg "github.com/NamanBalaji/tdm/pkg/torrent"
 )
 
+// Set at build time via -ldflags "-X main.version=... -X main.buildTime=...".
+var (
+	version   = "dev"
+	buildTime = "unknown"
+)
+
 func main() {
 	debug := flag.Bool("debug", false, "Enable debug logging")
+	showVersion := flag.Bool("version", false, "Print version and exit")
 
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Printf("tdm %s (built %s)\n", version, buildTime)
+		return
+	}
 
 	cfg, err := config.GetConfig()
 	if err != nil {
