@@ -1,4 +1,9 @@
-<img src="./assets/icon/png/tdm-128.png" align="right" width="96" alt="TDM icon">
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="./assets/logo/tdm-wordmark.svg">
+    <img src="./assets/logo/tdm-wordmark-light-bg.svg" alt="TDM" width="380">
+  </picture>
+</p>
 
 # 🚀 TDM (Terminal Download Manager)
 
