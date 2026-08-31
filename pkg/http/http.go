@@ -1,8 +1,10 @@
 package http
 
 import (
+	"cmp"
 	"context"
 	"fmt"
+	"log/slog"
 	"mime"
 	"net"
 	"net/http"
@@ -10,8 +12,6 @@ import (
 	"path"
 	"strings"
 	"time"
-
-	"github.com/NamanBalaji/tdm/internal/logger"
 )
 
 const (
@@ -73,7 +73,7 @@ func IsDownloadable(urlStr string) bool {
 
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
-			logger.Warnf("Failed to close response body: %v", err)
+			slog.Warn("failed to close response body", "err", err)
 		}
 	}()
 
@@ -107,29 +107,29 @@ func isDownloadableContent(resp *http.Response) bool {
 
 // Head performs a HEAD request to the specified URL with optional headers.
 func (c *Client) Head(ctx context.Context, urlStr string, headers map[string]string) (*http.Response, error) {
-	logger.Debugf("Initializing with HEAD request: %s", urlStr)
+	slog.Debug("initializing with HEAD request", "url", urlStr)
 
 	ctx, cancel := context.WithTimeout(ctx, defaultConnectTimeout)
 	defer cancel()
 
 	req, err := generateRequest(ctx, urlStr, http.MethodHead, headers)
 	if err != nil {
-		logger.Errorf("Failed to create HEAD request for %s: %v", urlStr, err)
+		slog.Error("failed to create HEAD request", "url", urlStr, "err", err)
 		return nil, err
 	}
 
-	logger.Debugf("Sending HEAD request to %s", urlStr)
+	slog.Debug("sending HEAD request", "url", urlStr)
 
 	resp, err := c.Do(req)
 	if err != nil {
-		logger.Errorf("HEAD request failed for %s: %v", urlStr, err)
+		slog.Error("HEAD request failed", "url", urlStr, "err", err)
 		return nil, ClassifyError(err)
 	}
 
-	logger.Debugf("HEAD response for %s: status=%d", urlStr, resp.StatusCode)
+	slog.Debug("HEAD response", "url", urlStr, "status", resp.StatusCode)
 
 	if resp.StatusCode >= http.StatusBadRequest {
-		logger.Errorf("HEAD request returned error status %d for %s", resp.StatusCode, urlStr)
+		slog.Error("HEAD request returned error status", "status", resp.StatusCode, "url", urlStr)
 		return nil, ClassifyHTTPError(resp.StatusCode)
 	}
 
@@ -138,38 +138,38 @@ func (c *Client) Head(ctx context.Context, urlStr string, headers map[string]str
 
 // Range performs a Range GET request to the specified URL. It takes in the start byte and the end byte.
 func (c *Client) Range(ctx context.Context, urlStr string, start, end int64, headers map[string]string) (*http.Response, error) {
-	logger.Debugf("Initializing with Range GET request: %s", urlStr)
+	slog.Debug("initializing with Range GET request", "url", urlStr)
 
 	ctx, cancel := context.WithTimeout(ctx, defaultConnectTimeout)
 	defer cancel()
 
 	req, err := generateRequest(ctx, urlStr, http.MethodGet, headers)
 	if err != nil {
-		logger.Errorf("Failed to create Range GET request for %s: %v", urlStr, err)
+		slog.Error("failed to create Range GET request", "url", urlStr, "err", err)
 		return nil, err
 	}
 
 	rangeVal := fmt.Sprintf("bytes=%d-%d", start, end)
 	req.Header.Set("Range", rangeVal)
-	logger.Debugf("Set Range header: bytes=0-0 for %s", urlStr)
+	slog.Debug("set Range header", "range", rangeVal, "url", urlStr)
 
-	logger.Debugf("Sending Range GET request to %s", urlStr)
+	slog.Debug("sending Range GET request", "url", urlStr)
 
 	resp, err := c.Do(req)
 	if err != nil {
-		logger.Errorf("Range GET request failed for %s: %v", urlStr, err)
+		slog.Error("Range GET request failed", "url", urlStr, "err", err)
 		return nil, ClassifyError(err)
 	}
 
-	logger.Debugf("Range GET response for %s: status=%d", urlStr, resp.StatusCode)
+	slog.Debug("Range GET response", "url", urlStr, "status", resp.StatusCode)
 
 	if resp.StatusCode >= http.StatusBadRequest {
-		logger.Errorf("Range GET request returned error status %d for %s", resp.StatusCode, urlStr)
+		slog.Error("Range GET request returned error status", "status", resp.StatusCode, "url", urlStr)
 		return nil, ClassifyHTTPError(resp.StatusCode)
 	}
 
 	if resp.StatusCode != http.StatusPartialContent {
-		logger.Warnf("Server doesn't support ranges for %s (status: %d)", urlStr, resp.StatusCode)
+		slog.Warn("server doesn't support ranges", "url", urlStr, "status", resp.StatusCode)
 		return nil, ErrRangesNotSupported
 	}
 
@@ -183,24 +183,24 @@ func (c *Client) Get(ctx context.Context, urlStr string) (*http.Response, error)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, urlStr, http.NoBody)
 	if err != nil {
-		logger.Errorf("Failed to create fallback GET request: %v", err)
+		slog.Error("failed to create fallback GET request", "err", err)
 		return nil, ErrRequestCreation
 	}
 
-	logger.Debugf("Sending fallback GET request to %s", urlStr)
+	slog.Debug("sending fallback GET request", "url", urlStr)
 
 	resp, err := c.Do(req)
 	if err != nil {
-		logger.Errorf("Fallback GET request failed: %v", err)
+		slog.Error("fallback GET request failed", "err", err)
 		return nil, ClassifyError(err)
 	}
 
-	logger.Debugf("Closing body immediately for fallback GET request")
+	slog.Debug("closing body immediately for fallback GET request")
 
-	logger.Debugf("GET response for %s: status=%d", urlStr, resp.StatusCode)
+	slog.Debug("GET response", "url", urlStr, "status", resp.StatusCode)
 
 	if resp.StatusCode >= http.StatusBadRequest {
-		logger.Errorf("GET request returned error status %d for %s", resp.StatusCode, urlStr)
+		slog.Error("GET request returned error status", "status", resp.StatusCode, "url", urlStr)
 		return nil, ClassifyHTTPError(resp.StatusCode)
 	}
 
@@ -209,11 +209,11 @@ func (c *Client) Get(ctx context.Context, urlStr string) (*http.Response, error)
 
 // generateRequest creates a new HTTP request with the specified method and URL.
 func generateRequest(ctx context.Context, urlStr, method string, headers map[string]string) (*http.Request, error) {
-	logger.Debugf("Creating %s request for URL: %s", method, urlStr)
+	slog.Debug("creating request", "method", method, "url", urlStr)
 
 	req, err := http.NewRequestWithContext(ctx, method, urlStr, http.NoBody)
 	if err != nil {
-		logger.Errorf("Failed to create %s request for %s: %v", method, urlStr, err)
+		slog.Error("failed to create request", "method", method, "url", urlStr, "err", err)
 		return nil, ErrRequestCreation
 	}
 
@@ -221,7 +221,7 @@ func generateRequest(ctx context.Context, urlStr, method string, headers map[str
 
 	for key, value := range headers {
 		req.Header.Set(key, value)
-		logger.Debugf("Set custom header: %s", key)
+		slog.Debug("set custom header", "key", key)
 	}
 
 	return req, nil
@@ -253,11 +253,7 @@ func getFileNameFromContentDisposition(header string) (string, bool) {
 	}
 
 	if _, params, err := mime.ParseMediaType(header); err == nil {
-		if fName, ok := params["filename"]; ok {
-			return fName, true
-		}
-
-		if fName, ok := params["filename*"]; ok {
+		if fName := cmp.Or(params["filename"], params["filename*"]); fName != "" {
 			return fName, true
 		}
 	}
@@ -274,11 +270,11 @@ func ParseLastModified(header string) time.Time {
 	// Try to parse the header (RFC1123 format)
 	t, err := time.Parse(time.RFC1123, header)
 	if err != nil {
-		logger.Debugf("Failed to parse Last-Modified header: %s, error: %v", header, err)
+		slog.Debug("failed to parse Last-Modified header", "header", header, "err", err)
 		return time.Time{}
 	}
 
-	logger.Debugf("Parsed Last-Modified: %v", t)
+	slog.Debug("parsed Last-Modified", "time", t)
 
 	return t
 }

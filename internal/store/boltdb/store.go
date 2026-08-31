@@ -3,15 +3,16 @@ package boltdb
 
 import (
 	"context"
-	"encoding/json"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"time"
+	"uuid"
 
-	"github.com/google/uuid"
 	"go.etcd.io/bbolt"
 
 	"github.com/NamanBalaji/tdm/internal/download"
+	"github.com/NamanBalaji/tdm/internal/store"
 )
 
 var (
@@ -22,6 +23,8 @@ var (
 type Store struct {
 	db *bbolt.DB
 }
+
+var _ store.Store = (*Store)(nil)
 
 func New(path string) (*Store, error) {
 	db, err := bbolt.Open(path, 0o600, &bbolt.Options{Timeout: 1 * time.Second})

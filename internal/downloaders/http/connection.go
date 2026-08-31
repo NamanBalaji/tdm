@@ -4,9 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math"
 	"math/rand"
 	"net/http"
+	"slices"
 	"time"
 
 	httpPkg "github.com/NamanBalaji/tdm/pkg/http"
@@ -76,35 +76,25 @@ func (c *connection) close() error {
 	return nil
 }
 
-var retryableErrors = map[error]struct{}{
-	httpPkg.ErrNetworkProblem:  {},
-	httpPkg.ErrServerProblem:   {},
-	httpPkg.ErrTooManyRequests: {},
-	httpPkg.ErrTimeout:         {},
+var retryableErrors = []error{
+	httpPkg.ErrNetworkProblem,
+	httpPkg.ErrServerProblem,
+	httpPkg.ErrTooManyRequests,
+	httpPkg.ErrTimeout,
 }
 
 func isRetryableError(err error) bool {
-	for sentinel := range retryableErrors {
-		if errors.Is(err, sentinel) {
-			return true
-		}
-	}
-
-	return false
+	return slices.ContainsFunc(retryableErrors, func(sentinel error) bool {
+		return errors.Is(err, sentinel)
+	})
 }
 
 func calculateBackoff(attempt int, baseDelay time.Duration) time.Duration {
-	backoff := baseDelay * time.Duration(1<<uint(attempt))
-
-	maxBackoff := 2 * time.Minute
-	if backoff > maxBackoff {
-		backoff = maxBackoff
-	}
+	backoff := min(baseDelay*time.Duration(1<<uint(attempt)), 2*time.Minute)
 
 	// Add ±10% jitter
 	jitter := float64(backoff) * 0.1
 	delta := (rand.Float64()*2 - 1) * jitter
-	backoff = time.Duration(math.Max(float64(backoff)+delta, float64(time.Millisecond)))
 
-	return backoff
+	return max(backoff+time.Duration(delta), time.Millisecond)
 }

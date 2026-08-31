@@ -1,25 +1,24 @@
+// Package logger configures the process-wide slog default logger.
 package logger
 
 import (
-	"io"
-	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
 )
 
 var (
-	once     sync.Once
-	instance = log.New(io.Discard, "", 0)
-	logFile  *os.File
+	once    sync.Once
+	logFile *os.File
 )
 
-func InitLogging(debugMode bool, logPath string) error {
+func Init(debugMode bool, logPath string) error {
 	var initErr error
 
 	once.Do(func() {
 		if !debugMode || logPath == "" {
-			instance = log.New(io.Discard, "", 0)
+			slog.SetDefault(slog.New(slog.DiscardHandler))
 			return
 		}
 
@@ -35,7 +34,10 @@ func InitLogging(debugMode bool, logPath string) error {
 		}
 
 		logFile = f
-		instance = log.New(f, "", log.Ldate|log.Ltime|log.Lshortfile)
+		slog.SetDefault(slog.New(slog.NewTextHandler(f, &slog.HandlerOptions{
+			Level:     slog.LevelDebug,
+			AddSource: true,
+		})))
 	})
 
 	return initErr
@@ -46,8 +48,3 @@ func Close() {
 		_ = logFile.Close()
 	}
 }
-
-func Infof(format string, v ...any)  { instance.Printf("[INFO] "+format, v...) }
-func Errorf(format string, v ...any) { instance.Printf("[ERROR] "+format, v...) }
-func Debugf(format string, v ...any) { instance.Printf("[DEBUG] "+format, v...) }
-func Warnf(format string, v ...any)  { instance.Printf("[WARN] "+format, v...) }

@@ -8,6 +8,7 @@ linters:
   disable:
     - depguard
     - exhaustruct
+    - exhaustruct_v5
     - ginkgolinter
     - musttag
     - nlreturn
@@ -17,6 +18,8 @@ linters:
     - gochecknoglobals
     - wrapcheck
     - wsl
+    - wsl_v5
+    - gomodguard
     - godox
     - protogetter
     - lll

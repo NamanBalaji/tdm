@@ -2,8 +2,7 @@ package manager
 
 import (
 	"time"
-
-	"github.com/google/uuid"
+	"uuid"
 
 	"github.com/NamanBalaji/tdm/internal/download"
 )

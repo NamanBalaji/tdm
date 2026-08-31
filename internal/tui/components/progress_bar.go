@@ -15,13 +15,7 @@ func ProgressBar(width int, percent float64, s download.Status) string {
 		return ""
 	}
 
-	if percent < 0 {
-		percent = 0
-	}
-
-	if percent > 1.0 {
-		percent = 1.0
-	}
+	percent = min(max(percent, 0), 1.0)
 
 	filledWidth := int(float64(width) * percent)
 	emptyWidth := width - filledWidth

@@ -1,9 +1,9 @@
 package manager
 
 import (
-	"sort"
-
-	"github.com/google/uuid"
+	"cmp"
+	"slices"
+	"uuid"
 
 	"github.com/NamanBalaji/tdm/internal/download"
 )
@@ -26,12 +26,11 @@ func schedule(downloads map[uuid.UUID]*managedDownload, maxConcurrent int) sched
 		}
 	}
 
-	sort.Slice(candidates, func(i, j int) bool {
-		if candidates[i].download.Priority != candidates[j].download.Priority {
-			return candidates[i].download.Priority > candidates[j].download.Priority
-		}
-
-		return candidates[i].download.CreatedAt.Before(candidates[j].download.CreatedAt)
+	slices.SortFunc(candidates, func(a, b *managedDownload) int {
+		return cmp.Or(
+			cmp.Compare(b.download.Priority, a.download.Priority),
+			a.download.CreatedAt.Compare(b.download.CreatedAt),
+		)
 	})
 
 	limit := min(maxConcurrent, len(candidates))

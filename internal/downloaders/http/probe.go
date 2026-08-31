@@ -2,10 +2,10 @@ package http
 
 import (
 	"context"
+	"log/slog"
 	"strconv"
 	"strings"
 
-	"github.com/NamanBalaji/tdm/internal/logger"
 	httpPkg "github.com/NamanBalaji/tdm/pkg/http"
 )
 
@@ -15,7 +15,7 @@ func (d *Downloader) probe(ctx context.Context, url string) (*probeResult, error
 		return result, nil
 	}
 
-	logger.Warnf("HEAD probe failed, falling back: %v", err)
+	slog.Warn("HEAD probe failed, falling back", "err", err)
 
 	if !httpPkg.IsFallbackError(err) {
 		return nil, err
@@ -26,7 +26,7 @@ func (d *Downloader) probe(ctx context.Context, url string) (*probeResult, error
 		return result, nil
 	}
 
-	logger.Warnf("Range GET probe failed, falling back: %v", err)
+	slog.Warn("Range GET probe failed, falling back", "err", err)
 
 	if !httpPkg.IsFallbackError(err) {
 		return nil, err
@@ -61,9 +61,8 @@ func (d *Downloader) probeWithRangeGET(ctx context.Context, url string) (*probeR
 	var totalSize int64
 
 	if cr := resp.Header.Get("Content-Range"); cr != "" {
-		parts := strings.Split(cr, "/")
-		if len(parts) == 2 {
-			if size, err := strconv.ParseInt(parts[1], 10, 64); err == nil {
+		if _, sizeStr, ok := strings.CutLast(cr, "/"); ok {
+			if size, err := strconv.ParseInt(sizeStr, 10, 64); err == nil {
 				totalSize = size
 			}
 		}

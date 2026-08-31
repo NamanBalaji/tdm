@@ -2,8 +2,7 @@ package tui
 
 import (
 	"context"
-
-	"github.com/google/uuid"
+	"uuid"
 
 	tea "github.com/charmbracelet/bubbletea"
 

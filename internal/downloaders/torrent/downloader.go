@@ -2,22 +2,21 @@ package torrent
 
 import (
 	"context"
-	"encoding/json"
+	"encoding/json/v2"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"time"
-
-	"github.com/google/uuid"
+	"uuid"
 
 	"github.com/NamanBalaji/tdm/internal/download"
-	"github.com/NamanBalaji/tdm/internal/logger"
 	torrentPkg "github.com/NamanBalaji/tdm/pkg/torrent"
 )
 
 const partFileExt = ".part"
 
-// torrentState is the protocol-specific state persisted in Download.BackendState.
+// torrentState is the protocol-specific state persisted in Download.State.
 type torrentState struct {
 	InfoHash string `json:"infoHash"`
 	IsMagnet bool   `json:"isMagnet"`
@@ -137,7 +136,7 @@ func (d *Downloader) Remove(dl *download.Download) error {
 		return fmt.Errorf("remove part file: %w", err)
 	}
 
-	logger.Debugf("removed torrent files for %s", dl.Filename)
+	slog.Debug("removed torrent files", "filename", dl.Filename)
 
 	return nil
 }

@@ -12,6 +12,7 @@ var (
 	ErrHeadNotSupported    = errors.New("HEAD method not supported by server")
 	ErrRangesNotSupported  = errors.New("byte ranges not supported by server")
 	ErrInvalidContentRange = errors.New("invalid Content-Range header")
+	ErrUnknownSize         = errors.New("content length unknown")
 
 	ErrTimeout         = errors.New("operation timed out")
 	ErrNetworkProblem  = errors.New("network-related error")
@@ -81,8 +82,7 @@ func ClassifyError(err error) error {
 		return ErrUnexpectedEOF
 	}
 
-	var netErr net.Error
-	if errors.As(err, &netErr) {
+	if _, ok := errors.AsType[net.Error](err); ok {
 		return ErrNetworkProblem
 	}
 

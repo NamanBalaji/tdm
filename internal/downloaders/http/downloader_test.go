@@ -2,7 +2,7 @@ package http_test
 
 import (
 	"context"
-	"encoding/json"
+	"encoding/json/v2"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -11,8 +11,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"uuid"
 
-	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -127,8 +127,8 @@ func TestDownloadChunk(t *testing.T) {
 		chunkFile := filepath.Join(tmpDir, "chunk0")
 
 		cfg := &config.HTTPConfig{
-			MaxRetries: 3,
-			RetryDelay: 10 * time.Millisecond,
+			MaxRetries:  3,
+			RetryDelay:  10 * time.Millisecond,
 			Connections: 1,
 		}
 		client := httpPkg.NewClient()
@@ -378,11 +378,11 @@ func TestStart(t *testing.T) {
 		st := httpdl.HttpState{
 			Chunks: []httpdl.ChunkState{
 				{
-					ID:        uuid.New(),
-					StartByte: 0,
-					EndByte:   99,
+					ID:         uuid.New(),
+					StartByte:  0,
+					EndByte:    99,
 					Downloaded: 100,
-					Completed: true,
+					Completed:  true,
 				},
 			},
 			SupportsRanges: true,

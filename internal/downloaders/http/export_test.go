@@ -28,27 +28,11 @@ func NewDownloaderWithClient(cfg *config.HTTPConfig, client *httpPkg.Client) *Do
 }
 
 func (d *Downloader) TestMerge(st *HttpState, dir, filename string) error {
-	internal := &httpState{
-		Chunks:         st.Chunks,
-		SupportsRanges: st.SupportsRanges,
-		TempDir:        st.TempDir,
-	}
-	return d.merge(internal, dir, filename)
+	return d.merge(st, dir, filename)
 }
 
 func (d *Downloader) TestDownloadChunk(ctx context.Context, chunk *ChunkState, url string, supportsRanges bool, downloaded *atomic.Int64) error {
-	internal := &chunkState{
-		ID:           chunk.ID,
-		StartByte:    chunk.StartByte,
-		EndByte:      chunk.EndByte,
-		Downloaded:   chunk.Downloaded,
-		Completed:    chunk.Completed,
-		TempFilePath: chunk.TempFilePath,
-	}
-	err := d.downloadChunk(ctx, internal, url, supportsRanges, downloaded)
-	chunk.Downloaded = internal.Downloaded
-	chunk.Completed = internal.Completed
-	return err
+	return d.downloadChunk(ctx, chunk, url, supportsRanges, downloaded)
 }
 
 type HttpState = httpState
