@@ -111,6 +111,10 @@ scoops:
 # yay -S tdm-bin
 aurs:
   - name: tdm-bin
+    # Publishing is disabled until the AUR_KEY secret exists (AUR account
+    # registration was paused when this was set up). As soon as the secret
+    # is added, the next release publishes to AUR — no config change needed.
+    disable: '{{ if index .Env "AUR_KEY" }}false{{ else }}true{{ end }}'
     homepage: https://github.com/NamanBalaji/tdm
     description: Fast, multi-protocol terminal download manager (HTTP + BitTorrent)
     license: MIT

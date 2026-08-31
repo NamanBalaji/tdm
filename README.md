@@ -41,7 +41,7 @@ TDM is a cross-platform, multi protocol fast and lightweight download manager th
 brew install NamanBalaji/tap/tdm
 ```
 
-### AUR (Arch Linux)
+### AUR (Arch Linux) — coming soon
 
 ```bash
 yay -S tdm-bin
