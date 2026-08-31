@@ -1,0 +1,149 @@
+version: 2
+
+project_name: tdm
+
+before:
+  hooks:
+    - go mod tidy
+    # Embed the app icon + version info into the Windows .exe (generates .syso files).
+    - go-winres make --product-version=git-tag --file-version=git-tag --arch=amd64,arm64
+
+builds:
+  - env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    tags:
+      - netgo
+      - osusergo
+    ldflags:
+      - -s -w -X main.version={{.Version}} -X main.buildTime={{.Date}}
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files:
+      - README.md
+      - LICENSE
+      - packaging/tdm.desktop
+      - assets/icon/tdm.svg
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+
+# .deb / .rpm / .apk / .pkg.tar.zst attached to the GitHub release
+nfpms:
+  - package_name: tdm
+    vendor: Naman Balaji
+    homepage: https://github.com/NamanBalaji/tdm
+    maintainer: Naman Balaji <namanb487@gmail.com>
+    description: Fast, multi-protocol terminal download manager (HTTP + BitTorrent).
+    license: MIT
+    section: net
+    formats:
+      - deb
+      - rpm
+      - apk
+      - archlinux
+    contents:
+      - src: packaging/tdm.desktop
+        dst: /usr/share/applications/tdm.desktop
+      - src: assets/icon/tdm.svg
+        dst: /usr/share/icons/hicolor/scalable/apps/tdm.svg
+      - src: assets/icon/png/tdm-256.png
+        dst: /usr/share/icons/hicolor/256x256/apps/tdm.png
+      - src: LICENSE
+        dst: /usr/share/licenses/tdm/LICENSE
+
+# brew install NamanBalaji/tap/tdm (macOS)
+homebrew_casks:
+  - repository:
+      owner: NamanBalaji
+      name: homebrew-tap
+      token: "{{ .Env.GH_PAT }}"
+    directory: Casks
+    homepage: https://github.com/NamanBalaji/tdm
+    description: Fast, multi-protocol terminal download manager (HTTP + BitTorrent)
+    commit_author:
+      name: goreleaser-bot
+      email: bot@goreleaser.com
+    # Binaries are unsigned; drop the quarantine attribute so Gatekeeper
+    # doesn't block the first run.
+    hooks:
+      post:
+        install: |
+          if system_command("/usr/bin/xattr", args: ["-h"]).exit_status == 0
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/tdm"]
+          end
+
+# scoop bucket add tdm https://github.com/NamanBalaji/scoop-bucket && scoop install tdm
+scoops:
+  - repository:
+      owner: NamanBalaji
+      name: scoop-bucket
+      token: "{{ .Env.GH_PAT }}"
+    directory: bucket
+    homepage: https://github.com/NamanBalaji/tdm
+    description: Fast, multi-protocol terminal download manager (HTTP + BitTorrent)
+    license: MIT
+    commit_author:
+      name: goreleaser-bot
+      email: bot@goreleaser.com
+
+# yay -S tdm-bin
+aurs:
+  - name: tdm-bin
+    homepage: https://github.com/NamanBalaji/tdm
+    description: Fast, multi-protocol terminal download manager (HTTP + BitTorrent)
+    license: MIT
+    maintainers:
+      - Naman Balaji <namanb487@gmail.com>
+    private_key: "{{ .Env.AUR_KEY }}"
+    git_url: ssh://aur@aur.archlinux.org/tdm-bin.git
+    provides:
+      - tdm
+    conflicts:
+      - tdm
+    package: |-
+      install -Dm755 "./tdm" "${pkgdir}/usr/bin/tdm"
+      install -Dm644 "./LICENSE" "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+      install -Dm644 "./packaging/tdm.desktop" "${pkgdir}/usr/share/applications/tdm.desktop"
+      install -Dm644 "./assets/icon/tdm.svg" "${pkgdir}/usr/share/icons/hicolor/scalable/apps/tdm.svg"
+    commit_author:
+      name: goreleaser-bot
+      email: bot@goreleaser.com
+
+release:
+  draft: false
+  footer: |
+    ## Installation
+
+    **Homebrew (macOS/Linux):** `brew install NamanBalaji/tap/tdm`
+
+    **AUR (Arch):** `yay -S tdm-bin`
+
+    **Scoop (Windows):**
+    ```
+    scoop bucket add tdm https://github.com/NamanBalaji/scoop-bucket
+    scoop install tdm
+    ```
+
+    **deb/rpm/apk:** download the package for your platform below.

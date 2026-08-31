@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=TDM
+GenericName=Download Manager
+Comment=Fast, multi-protocol terminal download manager
+Exec=tdm
+Terminal=true
+Type=Application
+Icon=tdm
+Categories=Network;FileTransfer;
+Keywords=download;torrent;magnet;http;terminal;

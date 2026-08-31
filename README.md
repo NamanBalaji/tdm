@@ -1,3 +1,5 @@
+<img src="./assets/icon/png/tdm-128.png" align="right" width="96" alt="TDM icon">
+
 # 🚀 TDM (Terminal Download Manager)
 
 ![Build Status](https://github.com/NamanBalaji/tdm/actions/workflows/ci.yml/badge.svg)
@@ -28,23 +30,47 @@ TDM is a cross-platform, multi protocol fast and lightweight download manager th
 
 ## 🛠️ Installation
 
-### Pre-built Binaries
-
-- Download the binary from the release page
-- For macOS/Linux replace $SRC with your downloaded artifact path and run:
+### Homebrew (macOS / Linux)
 
 ```bash
-sudo mv "$SRC" /usr/local/bin/tdm
-chmod +x /usr/local/bin/tdm || true
+brew install NamanBalaji/tap/tdm
 ```
 
-- Make sure it's added to your path
-- Then simply run tdm from your shell
+### AUR (Arch Linux)
 
-#### Go Installation
+```bash
+yay -S tdm-bin
+```
+
+### Scoop (Windows)
+
+```bash
+scoop bucket add tdm https://github.com/NamanBalaji/scoop-bucket
+scoop install tdm
+```
+
+### deb / rpm / apk
+
+Download the package for your platform from the [releases page](https://github.com/NamanBalaji/tdm/releases), then e.g.:
+
+```bash
+sudo dpkg -i tdm_*_linux_amd64.deb   # Debian/Ubuntu
+sudo rpm -i tdm_*_linux_amd64.rpm    # Fedora/RHEL
+```
+
+### Go
 
 ```bash
 go install github.com/NamanBalaji/tdm@latest
+```
+
+### Pre-built Binaries
+
+Download the archive for your platform from the [releases page](https://github.com/NamanBalaji/tdm/releases), extract it, and move the binary onto your `PATH`:
+
+```bash
+tar xzf tdm_*_linux_amd64.tar.gz
+sudo mv tdm /usr/local/bin/tdm
 ```
 
 ### Install from Source
