@@ -4,10 +4,10 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"uuid"
 
 	"github.com/NamanBalaji/tdm/internal/download"
 	"github.com/NamanBalaji/tdm/internal/tui/components"
-	"github.com/google/uuid"
 )
 
 func TestDownloadItem(t *testing.T) {

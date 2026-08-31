@@ -6,13 +6,13 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"uuid"
 
 	"github.com/charmbracelet/bubbles/help"
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/google/uuid"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -155,13 +155,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.loaded = true
 		}
 
-		if m.list.selected >= len(m.list.downloads) {
-			m.list.selected = len(m.list.downloads) - 1
-		}
-
-		if m.list.selected < 0 {
-			m.list.selected = 0
-		}
+		m.list.selected = max(min(m.list.selected, len(m.list.downloads)-1), 0)
 
 		return m, nil
 
@@ -347,7 +341,7 @@ func (m *Model) getSelectedDownloadID() (uuid.UUID, bool) {
 		return m.list.downloads[m.list.selected].ID, true
 	}
 
-	return uuid.Nil, false
+	return uuid.Nil(), false
 }
 
 func (m *Model) updateListView(msg tea.Msg) tea.Cmd {

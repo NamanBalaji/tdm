@@ -3,7 +3,6 @@ package http_test
 import (
 	"context"
 	"errors"
-
 	"net/http"
 	"net/http/httptest"
 	"net/url"

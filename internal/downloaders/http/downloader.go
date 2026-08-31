@@ -2,21 +2,21 @@ package http
 
 import (
 	"context"
-	"encoding/json"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync/atomic"
 	"time"
+	"uuid"
 
-	"github.com/google/uuid"
 	"golang.org/x/sync/errgroup"
 
 	"github.com/NamanBalaji/tdm/internal/config"
 	"github.com/NamanBalaji/tdm/internal/download"
-	"github.com/NamanBalaji/tdm/internal/logger"
 	httpPkg "github.com/NamanBalaji/tdm/pkg/http"
 )
 
@@ -45,6 +45,10 @@ func (d *Downloader) Init(ctx context.Context, url string, priority int) (*downl
 	meta, err := d.probe(ctx, url)
 	if err != nil {
 		return nil, fmt.Errorf("failed to probe URL: %w", err)
+	}
+
+	if meta.totalSize <= 0 {
+		return nil, fmt.Errorf("%w: %s", httpPkg.ErrUnknownSize, url)
 	}
 
 	chunks := makeChunks(meta, tempDir, d.cfg.Chunks)
@@ -81,6 +85,10 @@ func (d *Downloader) Start(ctx context.Context, dl *download.Download, onProgres
 	var st httpState
 	if err := json.Unmarshal(dl.State, &st); err != nil {
 		return fmt.Errorf("failed to unmarshal state: %w", err)
+	}
+
+	if len(st.Chunks) == 0 {
+		return fmt.Errorf("%w: no chunks in download state", httpPkg.ErrUnknownSize)
 	}
 
 	// Find incomplete chunks
@@ -127,8 +135,6 @@ func (d *Downloader) Start(ctx context.Context, dl *download.Download, onProgres
 	sem := make(chan struct{}, d.cfg.Connections)
 
 	for _, idx := range pending {
-		chunkIdx := idx
-
 		g.Go(func() error {
 			select {
 			case <-gCtx.Done():
@@ -137,7 +143,7 @@ func (d *Downloader) Start(ctx context.Context, dl *download.Download, onProgres
 				defer func() { <-sem }()
 			}
 
-			return d.downloadChunk(gCtx, &st.Chunks[chunkIdx], dl.URL, st.SupportsRanges, &totalDownloaded)
+			return d.downloadChunk(gCtx, &st.Chunks[idx], dl.URL, st.SupportsRanges, &totalDownloaded)
 		})
 	}
 
@@ -198,7 +204,7 @@ func (d *Downloader) downloadChunk(ctx context.Context, chunk *chunkState, url s
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-time.After(backoff):
-			logger.Debugf("retrying chunk %s, attempt %d", chunk.ID, attempt+2)
+			slog.Debug("retrying chunk", "chunk", chunk.ID, "attempt", attempt+2)
 		}
 	}
 
@@ -278,7 +284,7 @@ func (d *Downloader) transferChunk(ctx context.Context, chunk *chunkState, url s
 	return nil
 }
 
-// saveState serializes the current chunk progress back to dl.BackendState.
+// saveState serializes the current chunk progress back to dl.State.
 func (d *Downloader) saveState(dl *download.Download, st *httpState) {
 	if data, err := json.Marshal(st); err == nil {
 		dl.State = data

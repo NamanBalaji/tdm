@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"log"
+	"log/slog"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -37,7 +38,7 @@ func main() {
 		log.Fatalf("Error creating config directory: %v\n", err)
 	}
 
-	if err := logger.InitLogging(*debug, filepath.Join(configDir, "tdm.log")); err != nil {
+	if err := logger.Init(*debug, filepath.Join(configDir, "tdm.log")); err != nil {
 		log.Fatalf("Error initializing logging: %v\n", err)
 	}
 
@@ -87,7 +88,7 @@ func main() {
 	}()
 
 	if err := tui.Run(ctx, mgr); err != nil {
-		logger.Errorf("TUI error: %v", err)
+		slog.Error("TUI error", "err", err)
 	}
 
 	cancel()

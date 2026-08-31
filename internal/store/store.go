@@ -3,8 +3,7 @@ package store
 
 import (
 	"context"
-
-	"github.com/google/uuid"
+	"uuid"
 
 	"github.com/NamanBalaji/tdm/internal/download"
 )

@@ -2,10 +2,9 @@
 package download
 
 import (
-	"encoding/json"
+	"encoding/json/jsontext"
 	"time"
-
-	"github.com/google/uuid"
+	"uuid"
 )
 
 // Download is the central, protocol-agnostic data model for a download.
@@ -24,7 +23,7 @@ type Download struct {
 	CreatedAt  time.Time `json:"createdAt"`
 
 	// State holds protocol-specific state (chunks for HTTP, infohash for torrent, etc.) as opaque JSON.
-	State json.RawMessage `json:"backendState,omitempty"`
+	State jsontext.Value `json:"backendState,omitempty"`
 }
 
 // DownloadInfo is the read-only view returned to the TUI.

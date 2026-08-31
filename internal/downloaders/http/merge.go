@@ -2,13 +2,13 @@ package http
 
 import (
 	"bufio"
+	"cmp"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
-	"sort"
-
-	"github.com/NamanBalaji/tdm/internal/logger"
+	"slices"
 )
 
 func (d *Downloader) merge(st *httpState, dir, filename string) error {
@@ -28,10 +28,9 @@ func (d *Downloader) merge(st *httpState, dir, filename string) error {
 	bufWriter := bufio.NewWriterSize(outFile, 4*1024*1024) // 4MB buffer
 
 	// Sort chunks by start byte
-	sorted := make([]chunkState, len(st.Chunks))
-	copy(sorted, st.Chunks)
-	sort.Slice(sorted, func(i, j int) bool {
-		return sorted[i].StartByte < sorted[j].StartByte
+	sorted := slices.Clone(st.Chunks)
+	slices.SortFunc(sorted, func(a, b chunkState) int {
+		return cmp.Compare(a.StartByte, b.StartByte)
 	})
 
 	for _, c := range sorted {
@@ -52,7 +51,7 @@ func (d *Downloader) merge(st *httpState, dir, filename string) error {
 		return fmt.Errorf("failed to flush output: %w", err)
 	}
 
-	logger.Debugf("merged %d chunks to %s", len(sorted), targetPath)
+	slog.Debug("merged chunks", "count", len(sorted), "path", targetPath)
 
 	return nil
 }

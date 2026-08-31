@@ -3,8 +3,9 @@ package torrent
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
-	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/anacrolix/torrent"
@@ -14,7 +15,6 @@ import (
 	analog "github.com/anacrolix/log"
 
 	"github.com/NamanBalaji/tdm/internal/config"
-	"github.com/NamanBalaji/tdm/internal/logger"
 )
 
 var (
@@ -25,9 +25,8 @@ var (
 
 // Client wraps the anacrolix torrent client with thread-safe operations.
 type Client struct {
-	mu      sync.RWMutex
 	timeout time.Duration
-	client  *torrent.Client
+	client  atomic.Pointer[torrent.Client]
 	config  *torrent.ClientConfig
 }
 
@@ -60,11 +59,13 @@ func NewClient(cfg *config.TorrentConfig) (*Client, error) {
 		return nil, err
 	}
 
-	return &Client{
-		client:  client,
+	c := &Client{
 		config:  config,
 		timeout: cfg.MetainfoTimeout,
-	}, nil
+	}
+	c.client.Store(client)
+
+	return c, nil
 }
 
 // GetTorrentHandler adds a torrent from a URL or magnet link and waits for metadata.
@@ -117,10 +118,7 @@ func (c *Client) GetClient() *torrent.Client {
 		return nil
 	}
 
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	return c.client
+	return c.client.Load()
 }
 
 // AddTorrent adds a torrent from metainfo.
@@ -133,10 +131,7 @@ func (c *Client) AddTorrent(mi *metainfo.MetaInfo) (*torrent.Torrent, error) {
 		return nil, ErrNilMetainfo
 	}
 
-	c.mu.RLock()
-	client := c.client
-	c.mu.RUnlock()
-
+	client := c.client.Load()
 	if client == nil {
 		return nil, ErrNilClient
 	}
@@ -150,10 +145,7 @@ func (c *Client) AddMagnet(magnetURI string) (*torrent.Torrent, error) {
 		return nil, ErrNilClient
 	}
 
-	c.mu.RLock()
-	client := c.client
-	c.mu.RUnlock()
-
+	client := c.client.Load()
 	if client == nil {
 		return nil, ErrNilClient
 	}
@@ -166,15 +158,12 @@ func (c *Client) Close() error {
 		return ErrNilClient
 	}
 
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if c.client == nil {
+	old := c.client.Swap(nil)
+	if old == nil {
 		return ErrNilClient
 	}
 
-	c.client.Close()
-	c.client = nil
+	old.Close()
 
 	return nil
 }
@@ -188,7 +177,7 @@ func getMetainfo(url string) (*metainfo.MetaInfo, error) {
 
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
-			logger.Warnf("Failed to close response body: %v", err)
+			slog.Warn("failed to close response body", "err", err)
 		}
 	}()
 

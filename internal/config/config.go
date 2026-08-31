@@ -14,7 +14,12 @@ import (
 
 var ErrInvalidConfig = errors.New("invalid config")
 
-const configFileName = "tdm"
+const (
+	configFileName = "tdm"
+
+	msgMustBePositive = "must be positive"
+	msgMustNotBeEmpty = "must not be empty"
+)
 
 type ValidationError struct {
 	Field   string
@@ -141,7 +146,7 @@ func DefaultConfig() Config {
 
 func (c *Config) validate() error {
 	if c.MaxConcurrentDownloads <= 0 {
-		return &ValidationError{Field: "maxConcurrentDownloads", Message: "must be positive"}
+		return &ValidationError{Field: "maxConcurrentDownloads", Message: msgMustBePositive}
 	}
 
 	if err := c.HTTP.validate(); err != nil {
@@ -153,19 +158,19 @@ func (c *Config) validate() error {
 
 func (h *HTTPConfig) validate() error {
 	if h.DownloadDir == "" {
-		return &ValidationError{Field: "http.dir", Message: "must not be empty"}
+		return &ValidationError{Field: "http.dir", Message: msgMustNotBeEmpty}
 	}
 
 	if h.TempDir == "" {
-		return &ValidationError{Field: "http.tempDir", Message: "must not be empty"}
+		return &ValidationError{Field: "http.tempDir", Message: msgMustNotBeEmpty}
 	}
 
 	if h.Connections <= 0 {
-		return &ValidationError{Field: "http.connections", Message: "must be positive"}
+		return &ValidationError{Field: "http.connections", Message: msgMustBePositive}
 	}
 
 	if h.Chunks <= 0 {
-		return &ValidationError{Field: "http.maxChunks", Message: "must be positive"}
+		return &ValidationError{Field: "http.maxChunks", Message: msgMustBePositive}
 	}
 
 	if h.MaxRetries < 0 {
@@ -177,19 +182,19 @@ func (h *HTTPConfig) validate() error {
 
 func (t *TorrentConfig) validate() error {
 	if t.DownloadDir == "" {
-		return &ValidationError{Field: "torrent.dir", Message: "must not be empty"}
+		return &ValidationError{Field: "torrent.dir", Message: msgMustNotBeEmpty}
 	}
 
 	if t.EstablishedConnectionsPerTorrent <= 0 {
-		return &ValidationError{Field: "torrent.establishedConnectionsPerTorrent", Message: "must be positive"}
+		return &ValidationError{Field: "torrent.establishedConnectionsPerTorrent", Message: msgMustBePositive}
 	}
 
 	if t.HalfOpenConnectionsPerTorrent <= 0 {
-		return &ValidationError{Field: "torrent.halfOpenConnectionsPerTorrent", Message: "must be positive"}
+		return &ValidationError{Field: "torrent.halfOpenConnectionsPerTorrent", Message: msgMustBePositive}
 	}
 
 	if t.TotalHalfOpenConnections <= 0 {
-		return &ValidationError{Field: "torrent.totalHalfOpenConnections", Message: "must be positive"}
+		return &ValidationError{Field: "torrent.totalHalfOpenConnections", Message: msgMustBePositive}
 	}
 
 	return nil

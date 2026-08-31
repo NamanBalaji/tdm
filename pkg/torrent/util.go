@@ -1,11 +1,10 @@
 package torrent
 
 import (
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
-
-	"github.com/NamanBalaji/tdm/internal/logger"
 )
 
 // HasTorrentFile checks if a given URL points to a torrent file by examining its extension and Content-Type header.
@@ -21,7 +20,7 @@ func HasTorrentFile(url string) bool {
 
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
-			logger.Warnf("Failed to close response body: %v", err)
+			slog.Warn("failed to close response body", "err", err)
 		}
 	}()
 

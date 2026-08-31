@@ -1,6 +1,7 @@
 package download
 
 import (
+	"slices"
 	"sync"
 	"time"
 )
@@ -48,16 +49,9 @@ func (pt *ProgressTracker) Update(downloaded, totalSize int64) {
 	pt.samples = append(pt.samples, sample{time: now, bytes: downloaded})
 
 	cutoff := now.Add(-pt.smoothingWindow)
-
-	i := 0
-	for i < len(pt.samples) && pt.samples[i].time.Before(cutoff) {
-		i++
-	}
-
-	if i > 0 {
-		copy(pt.samples, pt.samples[i:])
-		pt.samples = pt.samples[:len(pt.samples)-i]
-	}
+	pt.samples = slices.DeleteFunc(pt.samples, func(s sample) bool {
+		return s.time.Before(cutoff)
+	})
 }
 
 // Snapshot returns a point-in-time Progress value.
@@ -79,10 +73,7 @@ func (pt *ProgressTracker) Snapshot() Progress {
 
 	pct := 0.0
 	if pt.totalSize > 0 {
-		pct = float64(pt.downloaded) / float64(pt.totalSize) * 100
-		if pct > 100 {
-			pct = 100
-		}
+		pct = min(float64(pt.downloaded)/float64(pt.totalSize)*100, 100)
 	}
 
 	var eta time.Duration

@@ -1,6 +1,6 @@
 package http
 
-import "github.com/google/uuid"
+import "uuid"
 
 // httpState is the protocol-specific state persisted in Download.State.
 type httpState struct {

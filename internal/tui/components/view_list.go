@@ -24,12 +24,8 @@ func RenderDownloadList(downloads []download.DownloadInfo, selected int, width, 
 
 	start := max(selected-(visibleCount/2), 0)
 
-	end := start + visibleCount
-	if end > len(downloads) {
-		end = len(downloads)
-
-		start = max(end-visibleCount, 0)
-	}
+	end := min(start+visibleCount, len(downloads))
+	start = max(end-visibleCount, 0)
 
 	for i := start; i < end; i++ {
 		item := DownloadItem(downloads[i], width, i == selected)

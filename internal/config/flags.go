@@ -62,15 +62,23 @@ func applyFlagsFromFlagSet(cfg *Config, fs *flag.FlagSet) {
 				cfg.Urls = strings.Fields(s)
 			}
 		case "mcd":
-			cfg.MaxConcurrentDownloads = mustInt(f)
+			if v, ok := flagValue[int](f); ok {
+				cfg.MaxConcurrentDownloads = v
+			}
 		case "td":
 			cfg.HTTP.TempDir = f.Value.String()
 		case "conn":
-			cfg.HTTP.Connections = mustInt(f)
+			if v, ok := flagValue[int](f); ok {
+				cfg.HTTP.Connections = v
+			}
 		case "c":
-			cfg.HTTP.Chunks = mustInt(f)
+			if v, ok := flagValue[int](f); ok {
+				cfg.HTTP.Chunks = v
+			}
 		case "mr":
-			cfg.HTTP.MaxRetries = mustInt(f)
+			if v, ok := flagValue[int](f); ok {
+				cfg.HTTP.MaxRetries = v
+			}
 		case "http-dir":
 			cfg.HTTP.DownloadDir = f.Value.String()
 		case "torrent-dir":
@@ -80,21 +88,29 @@ func applyFlagsFromFlagSet(cfg *Config, fs *flag.FlagSet) {
 			cfg.HTTP.DownloadDir = dir
 			cfg.Torrent.DownloadDir = dir
 		case "ns":
-			cfg.Torrent.Seed = !mustBool(f)
+			if v, ok := flagValue[bool](f); ok {
+				cfg.Torrent.Seed = !v
+			}
 		case "np":
-			cfg.Torrent.DisablePEX = mustBool(f)
+			if v, ok := flagValue[bool](f); ok {
+				cfg.Torrent.DisablePEX = v
+			}
 		case "nd":
-			cfg.Torrent.DisableDHT = mustBool(f)
+			if v, ok := flagValue[bool](f); ok {
+				cfg.Torrent.DisableDHT = v
+			}
 		}
 	})
 }
 
-func mustInt(f *flag.Flag) int {
-	v, _ := f.Value.(flag.Getter)
-	return v.Get().(int)
-}
+func flagValue[T any](f *flag.Flag) (T, bool) {
+	g, ok := f.Value.(flag.Getter)
+	if !ok {
+		var zero T
+		return zero, false
+	}
 
-func mustBool(f *flag.Flag) bool {
-	v, _ := f.Value.(flag.Getter)
-	return v.Get().(bool)
+	v, ok := g.Get().(T)
+
+	return v, ok
 }

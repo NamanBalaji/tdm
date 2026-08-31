@@ -2,17 +2,18 @@
 package manager
 
 import (
+	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
-	"sort"
+	"log/slog"
+	"slices"
 	"sync"
 	"time"
-
-	"github.com/google/uuid"
+	"uuid"
 
 	"github.com/NamanBalaji/tdm/internal/download"
-	"github.com/NamanBalaji/tdm/internal/logger"
 	"github.com/NamanBalaji/tdm/internal/store"
 )
 
@@ -102,7 +103,7 @@ func (m *Manager) Start(ctx context.Context) error {
 // AddDownload adds a new download from a URL.
 func (m *Manager) AddDownload(ctx context.Context, url string, priority int) (uuid.UUID, error) {
 	if priority < 1 || priority > 10 {
-		return uuid.Nil, ErrInvalidPriority
+		return uuid.Nil(), ErrInvalidPriority
 	}
 
 	// Find a Downloader that can handle this URL
@@ -116,18 +117,18 @@ func (m *Manager) AddDownload(ctx context.Context, url string, priority int) (uu
 	}
 
 	if dlr == nil {
-		return uuid.Nil, ErrNoDownloader
+		return uuid.Nil(), ErrNoDownloader
 	}
 
 	dl, err := dlr.Init(ctx, url, priority)
 	if err != nil {
-		return uuid.Nil, fmt.Errorf("failed to initialize download: %w", err)
+		return uuid.Nil(), fmt.Errorf("failed to initialize download: %w", err)
 	}
 
 	dl.CreatedAt = time.Now()
 
 	if err := m.store.Save(ctx, dl); err != nil {
-		return uuid.Nil, fmt.Errorf("failed to persist download: %w", err)
+		return uuid.Nil(), fmt.Errorf("failed to persist download: %w", err)
 	}
 
 	m.mu.Lock()
@@ -230,17 +231,18 @@ func (m *Manager) RemoveDownload(ctx context.Context, id uuid.UUID) {
 	}
 
 	delete(m.downloads, id)
+	dlCopy := *md.download
 	m.mu.Unlock()
 
-	dlr := m.findDownloader(md.download.Type)
+	dlr := m.findDownloader(dlCopy.Type)
 	if dlr != nil {
-		if err := dlr.Remove(md.download); err != nil {
-			logger.Errorf("failed to remove download files: %v", err)
+		if err := dlr.Remove(&dlCopy); err != nil {
+			slog.Error("failed to remove download files", "err", err)
 		}
 	}
 
 	if err := m.store.Delete(ctx, id); err != nil {
-		logger.Errorf("failed to delete download from store: %v", err)
+		slog.Error("failed to delete download from store", "id", id, "err", err)
 	}
 
 	m.requestReschedule()
@@ -284,12 +286,11 @@ func (m *Manager) GetAllDownloads() []download.DownloadInfo {
 		result = append(result, info)
 	}
 
-	sort.Slice(result, func(i, j int) bool {
-		if result[i].Priority != result[j].Priority {
-			return result[i].Priority > result[j].Priority
-		}
-
-		return result[i].ID.String() < result[j].ID.String()
+	slices.SortFunc(result, func(a, b download.DownloadInfo) int {
+		return cmp.Or(
+			cmp.Compare(b.Priority, a.Priority),
+			bytes.Compare(a.ID[:], b.ID[:]),
+		)
 	})
 
 	return result
@@ -326,13 +327,13 @@ func (m *Manager) Shutdown(ctx context.Context) error {
 
 		select {
 		case <-done:
+			close(m.errors)
 		case <-ctx.Done():
 			err = ErrShutdownTimeout
 		}
 
-		m.saveAll(ctx)
+		m.saveAll(context.WithoutCancel(ctx))
 
-		close(m.errors)
 		close(m.shutdownDone)
 	})
 
@@ -414,26 +415,34 @@ func (m *Manager) doSchedule(ctx context.Context) {
 func (m *Manager) runDownload(managerCtx, dlCtx context.Context, md *managedDownload) {
 	defer m.wg.Done()
 
-	dlr := m.findDownloader(md.download.Type)
+	m.mu.RLock()
+	dl := *md.download
+	m.mu.RUnlock()
+
+	dlr := m.findDownloader(dl.Type)
 	if dlr == nil {
 		m.mu.Lock()
 		md.download.Status = download.Failed
 		m.mu.Unlock()
 
-		m.sendError(md.download.ID, fmt.Errorf("%w: %q", ErrDownloaderNotFound, md.download.Type))
+		m.sendError(dl.ID, fmt.Errorf("%w: %q", ErrDownloaderNotFound, dl.Type))
 
 		return
 	}
 
-	err := dlr.Start(dlCtx, md.download, func(downloaded, totalSize int64) {
+	err := dlr.Start(dlCtx, &dl, func(downloaded, totalSize int64) {
 		md.tracker.Update(downloaded, totalSize)
 	})
 
-	m.handleCompletion(managerCtx, md, err)
+	m.handleCompletion(managerCtx, md, &dl, err)
 }
 
-func (m *Manager) handleCompletion(ctx context.Context, md *managedDownload, err error) {
+func (m *Manager) handleCompletion(ctx context.Context, md *managedDownload, result *download.Download, err error) {
 	m.mu.Lock()
+
+	md.download.State = result.State
+	md.download.TotalSize = result.TotalSize
+	md.download.Filename = result.Filename
 
 	if err == nil {
 		md.download.Status = download.Completed
@@ -443,7 +452,10 @@ func (m *Manager) handleCompletion(ctx context.Context, md *managedDownload, err
 		snap := md.tracker.Snapshot()
 		md.download.Downloaded = snap.Downloaded
 	} else {
-		md.download.Status = download.Failed
+		if md.download.Status == download.Active {
+			md.download.Status = download.Failed
+		}
+
 		snap := md.tracker.Snapshot()
 		md.download.Downloaded = snap.Downloaded
 		m.sendError(md.download.ID, err)
@@ -454,7 +466,7 @@ func (m *Manager) handleCompletion(ctx context.Context, md *managedDownload, err
 	m.mu.Unlock()
 
 	if saveErr := m.store.Save(ctx, &dlCopy); saveErr != nil {
-		logger.Errorf("failed to save download after completion: %v", saveErr)
+		slog.Error("failed to save download after completion", "err", saveErr)
 	}
 
 	m.requestReschedule()
@@ -474,7 +486,7 @@ func (m *Manager) saveAll(ctx context.Context) {
 
 	for _, dl := range toSave {
 		if err := m.store.Save(ctx, dl); err != nil {
-			logger.Errorf("failed to persist download %s: %v", dl.ID, err)
+			slog.Error("failed to persist download", "id", dl.ID, "err", err)
 		}
 	}
 }
@@ -484,7 +496,7 @@ func (m *Manager) sendError(id uuid.UUID, err error) {
 	select {
 	case m.errors <- download.DownloadError{ID: id, Error: err}:
 	default:
-		logger.Errorf("error channel full, dropping error for %s: %v", id, err)
+		slog.Error("error channel full, dropping error", "id", id, "err", err)
 	}
 }
 

@@ -3,10 +3,10 @@ package components_test
 import (
 	"strings"
 	"testing"
+	"uuid"
 
 	"github.com/NamanBalaji/tdm/internal/download"
 	"github.com/NamanBalaji/tdm/internal/tui/components"
-	"github.com/google/uuid"
 )
 
 func TestRenderDownloadList(t *testing.T) {

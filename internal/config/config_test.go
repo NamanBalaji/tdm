@@ -220,8 +220,8 @@ func TestLoadConfig_ExplicitZeroFailsValidation(t *testing.T) {
 				t.Fatal("expected validation error for explicit zero")
 			}
 
-			var ve *ValidationError
-			if !errors.As(err, &ve) {
+			ve, ok := errors.AsType[*ValidationError](err)
+			if !ok {
 				t.Fatalf("expected *ValidationError, got %T", err)
 			}
 
@@ -295,8 +295,8 @@ func TestValidation_Errors(t *testing.T) {
 				t.Errorf("expected error to wrap ErrInvalidConfig, got %v", err)
 			}
 
-			var ve *ValidationError
-			if !errors.As(err, &ve) {
+			ve, ok := errors.AsType[*ValidationError](err)
+			if !ok {
 				t.Fatalf("expected *ValidationError, got %T", err)
 			}
 

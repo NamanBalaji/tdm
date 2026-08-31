@@ -19,7 +19,9 @@ import "context"
 //
 // Start is a blocking call. The Manager runs it in a goroutine and uses
 // context cancellation to pause or stop it. When context is cancelled,
-// Start should save resumable state into dl.BackendState and return ctx.Err().
+// Start should save resumable state into dl.State and return ctx.Err().
+// Start receives a private copy of the Download; the Manager merges State,
+// TotalSize, and Filename back when it returns.
 type Downloader interface {
 	// Type returns the protocol identifier (e.g., "http", "torrent").
 	// Used to find the right Downloader when reloading persisted downloads.
@@ -41,8 +43,8 @@ type Downloader interface {
 	// It calls onProgress(downloaded, totalSize) periodically to report
 	// byte counts. The Manager uses these to compute speed and ETA.
 	//
-	// On context cancellation, Start MUST update dl.BackendState with
-	// current progress so the download can be resumed later, then return ctx.Err().
+	// On context cancellation, Start MUST update dl.State with current
+	// progress so the download can be resumed later, then return ctx.Err().
 	//
 	// On success, Start returns nil. On permanent failure, it returns the error.
 	Start(ctx context.Context, dl *Download, onProgress func(downloaded int64, totalSize int64)) error

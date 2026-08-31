@@ -5,9 +5,10 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
+	"uuid"
 
-	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -194,7 +195,7 @@ func TestManager(t *testing.T) {
 
 			id, err := m.AddDownload(context.Background(), "http://example.com/file.zip", 5)
 			require.NoError(t, err)
-			assert.NotEqual(t, uuid.Nil, id)
+			assert.NotEqual(t, uuid.Nil(), id)
 			assert.Equal(t, 1, s.count())
 		})
 
@@ -549,8 +550,7 @@ func TestManager(t *testing.T) {
 		s.getAllErr = errors.New("db corrupt")
 		dlr := newMockDownloader()
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		ctx := t.Context()
 
 		m := manager.New(s, 2)
 		m.Register(dlr)
@@ -721,4 +721,91 @@ func TestManager(t *testing.T) {
 			close(blockCh)
 		})
 	})
+}
+
+// Regression test: downloader State writes must not race the persist ticker.
+func TestDownloaderStateWriteDoesNotRacePersistLoop(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		s := newMockStore()
+		dlr := newMockDownloader()
+
+		stateBlob := []byte(`{"resume":"data"}`)
+		dlr.startFn = func(ctx context.Context, dl *download.Download, onProgress func(int64, int64)) error {
+			for {
+				select {
+				case <-ctx.Done():
+					dl.State = stateBlob
+
+					return ctx.Err()
+				case <-time.After(10 * time.Millisecond):
+					dl.State = stateBlob
+					onProgress(500, 1000)
+				}
+			}
+		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		m := manager.New(s, 2)
+		m.Register(dlr)
+		require.NoError(t, m.Start(ctx))
+
+		id, err := m.AddDownload(ctx, "http://example.com/file.zip", 5)
+		require.NoError(t, err)
+
+		time.Sleep(2100 * time.Millisecond)
+
+		cancel()
+
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer shutdownCancel()
+		require.NoError(t, m.Shutdown(shutdownCtx))
+
+		persisted := s.get(id)
+		require.NotNil(t, persisted)
+		assert.Equal(t, stateBlob, []byte(persisted.State))
+	})
+}
+
+// Regression test: an error reported after Shutdown times out must not panic.
+func TestShutdownTimeoutLateErrorDoesNotPanic(t *testing.T) {
+	s := newMockStore()
+	dlr := newMockDownloader()
+
+	blockCh := make(chan struct{})
+	lateErr := errors.New("disk write failed during cleanup")
+	dlr.startFn = func(ctx context.Context, _ *download.Download, _ func(int64, int64)) error {
+		<-ctx.Done()
+		<-blockCh
+
+		return lateErr
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	m := manager.New(s, 2)
+	m.Register(dlr)
+	require.NoError(t, m.Start(ctx))
+
+	_, err := m.AddDownload(ctx, "http://example.com/file.zip", 5)
+	require.NoError(t, err)
+
+	time.Sleep(100 * time.Millisecond)
+
+	cancel()
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer shutdownCancel()
+	require.ErrorIs(t, m.Shutdown(shutdownCtx), manager.ErrShutdownTimeout)
+
+	close(blockCh)
+
+	select {
+	case dlErr := <-m.GetErrors():
+		assert.ErrorIs(t, dlErr.Error, lateErr)
+	case <-time.After(time.Second):
+		t.Fatal("expected the late error to be reported")
+	}
+
+	infos := m.GetAllDownloads()
+	require.Len(t, infos, 1)
+	assert.Equal(t, download.Paused, infos[0].Status)
 }
