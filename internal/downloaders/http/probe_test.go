@@ -29,7 +29,7 @@ func TestProbe(t *testing.T) {
 		defer srv.Close()
 
 		cfg := &config.HTTPConfig{}
-		client := httpPkg.NewClient()
+		client := httpPkg.NewClient(0)
 		d := httpdl.NewDownloaderWithClient(cfg, client)
 
 		result, err := d.TestProbe(context.Background(), srv.URL)
@@ -51,7 +51,7 @@ func TestProbe(t *testing.T) {
 		defer srv.Close()
 
 		cfg := &config.HTTPConfig{}
-		client := httpPkg.NewClient()
+		client := httpPkg.NewClient(0)
 		d := httpdl.NewDownloaderWithClient(cfg, client)
 
 		result, err := d.TestProbe(context.Background(), srv.URL)
@@ -80,7 +80,7 @@ func TestProbe(t *testing.T) {
 		defer srv.Close()
 
 		cfg := &config.HTTPConfig{}
-		client := httpPkg.NewClient()
+		client := httpPkg.NewClient(0)
 		d := httpdl.NewDownloaderWithClient(cfg, client)
 
 		result, err := d.TestProbe(context.Background(), srv.URL)
@@ -113,7 +113,7 @@ func TestProbe(t *testing.T) {
 		defer srv.Close()
 
 		cfg := &config.HTTPConfig{}
-		client := httpPkg.NewClient()
+		client := httpPkg.NewClient(0)
 		d := httpdl.NewDownloaderWithClient(cfg, client)
 
 		result, err := d.TestProbe(context.Background(), srv.URL)
@@ -130,7 +130,7 @@ func TestProbe(t *testing.T) {
 		defer srv.Close()
 
 		cfg := &config.HTTPConfig{}
-		client := httpPkg.NewClient()
+		client := httpPkg.NewClient(0)
 		d := httpdl.NewDownloaderWithClient(cfg, client)
 
 		_, err := d.TestProbe(context.Background(), srv.URL)
@@ -151,7 +151,7 @@ func TestProbe(t *testing.T) {
 		defer srv.Close()
 
 		cfg := &config.HTTPConfig{}
-		client := httpPkg.NewClient()
+		client := httpPkg.NewClient(0)
 		d := httpdl.NewDownloaderWithClient(cfg, client)
 
 		result, err := d.TestProbe(context.Background(), srv.URL)
@@ -172,7 +172,7 @@ func TestProbe(t *testing.T) {
 		defer srv.Close()
 
 		cfg := &config.HTTPConfig{}
-		client := httpPkg.NewClient()
+		client := httpPkg.NewClient(0)
 		d := httpdl.NewDownloaderWithClient(cfg, client)
 
 		result, err := d.TestProbe(context.Background(), srv.URL)
@@ -190,7 +190,7 @@ func TestProbe(t *testing.T) {
 		defer srv.Close()
 
 		cfg := &config.HTTPConfig{}
-		client := httpPkg.NewClient()
+		client := httpPkg.NewClient(0)
 		d := httpdl.NewDownloaderWithClient(cfg, client)
 
 		result, err := d.TestProbe(context.Background(), srv.URL+"/path/to/myfile.tar.gz")

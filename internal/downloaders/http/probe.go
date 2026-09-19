@@ -3,6 +3,7 @@ package http
 import (
 	"context"
 	"log/slog"
+	"mime"
 	"strconv"
 	"strings"
 
@@ -45,6 +46,7 @@ func (d *Downloader) probeWithHEAD(ctx context.Context, url string) (*probeResul
 
 	return &probeResult{
 		filename:       httpPkg.GetFilename(resp),
+		contentType:    resp.Header.Get("Content-Type"),
 		totalSize:      resp.ContentLength,
 		supportsRanges: resp.Header.Get("Accept-Ranges") == "bytes",
 	}, nil
@@ -70,6 +72,7 @@ func (d *Downloader) probeWithRangeGET(ctx context.Context, url string) (*probeR
 
 	return &probeResult{
 		filename:       httpPkg.GetFilename(resp),
+		contentType:    resp.Header.Get("Content-Type"),
 		totalSize:      totalSize,
 		supportsRanges: true,
 	}, nil
@@ -85,7 +88,19 @@ func (d *Downloader) probeWithRegularGET(ctx context.Context, url string) (*prob
 
 	return &probeResult{
 		filename:       httpPkg.GetFilename(resp),
+		contentType:    resp.Header.Get("Content-Type"),
 		totalSize:      resp.ContentLength,
 		supportsRanges: false,
 	}, nil
+}
+
+// isTorrentContentType reports whether a Content-Type header value marks a
+// .torrent (BitTorrent metainfo) file.
+func isTorrentContentType(contentType string) bool {
+	mediaType, _, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		return false
+	}
+
+	return mediaType == "application/x-bittorrent" || mediaType == "application/torrent"
 }

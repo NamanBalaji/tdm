@@ -1,6 +1,25 @@
 package download
 
-import "context"
+import (
+	"context"
+	"encoding/json/jsontext"
+	"fmt"
+)
+
+// HandoffError is returned by Init when probing shows that a different
+// Downloader must handle the URL — e.g. an HTTP link that serves a .torrent
+// file, whose contents the torrent downloader must fetch rather than the
+// HTTP downloader saving the .torrent itself. CanHandle can't know this
+// because it must not do network I/O, so the Manager retries Init with the
+// Downloader whose Type() matches.
+type HandoffError struct {
+	Type   string // Type() of the Downloader that should handle the URL
+	Reason string
+}
+
+func (e *HandoffError) Error() string {
+	return fmt.Sprintf("URL should be handled by the %s downloader: %s", e.Type, e.Reason)
+}
 
 // Downloader defines the contract for a protocol-specific download strategy.
 //
@@ -28,26 +47,34 @@ type Downloader interface {
 	Type() string
 
 	// CanHandle reports whether this Downloader can handle the given URL.
-	// Called in registration order; first match wins.
+	// Called in registration order; first match wins. It must judge from
+	// the URL alone — no network I/O.
 	CanHandle(url string) bool
 
 	// Init creates a new Download by probing the URL for metadata.
 	// It populates Filename, TotalSize, Type, Dir, and BackendState.
 	// The download directory comes from the Downloader's own config.
 	// This may make network requests (e.g., HTTP HEAD, torrent metadata fetch).
+	// If the probe shows another Downloader must handle the URL, Init
+	// returns a *HandoffError naming it.
 	Init(ctx context.Context, url string, priority int) (*Download, error)
 
 	// Start downloads the file. It blocks until the download completes,
 	// fails, or ctx is cancelled (pause/cancel).
 	//
-	// It calls onProgress(downloaded, totalSize) periodically to report
-	// byte counts. The Manager uses these to compute speed and ETA.
+	// It calls onProgress(downloaded, totalSize, state) periodically to
+	// report byte counts. The Manager uses these to compute speed and ETA.
+	// state, when non-nil, is a crash-safe checkpoint of the protocol's
+	// resume state that the Manager persists on its next save tick — a
+	// SIGKILL loses at most the last checkpoint interval. After a power
+	// loss the persisted counters may be ahead of what reached disk, so
+	// Start must re-validate them against the actual files on resume.
 	//
 	// On context cancellation, Start MUST update dl.State with current
 	// progress so the download can be resumed later, then return ctx.Err().
 	//
 	// On success, Start returns nil. On permanent failure, it returns the error.
-	Start(ctx context.Context, dl *Download, onProgress func(downloaded int64, totalSize int64)) error
+	Start(ctx context.Context, dl *Download, onProgress func(downloaded, totalSize int64, state jsontext.Value)) error
 
 	// Remove deletes all files (temp and final) associated with the download.
 	// Called when the user removes a download from the list.

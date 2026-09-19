@@ -1,37 +1,26 @@
 package torrent
 
 import (
-	"log/slog"
-	"net/http"
 	"net/url"
 	"strings"
 )
 
-// HasTorrentFile checks if a given URL points to a torrent file by examining its extension and Content-Type header.
-func HasTorrentFile(url string) bool {
-	if strings.HasSuffix(url, ".torrent") {
+// HasTorrentFile reports whether a URL points to a torrent file, judged from
+// the URL alone (no network I/O): its path, or the whole URL, ends in
+// ".torrent". Links that serve a torrent without saying so in the URL
+// (e.g. download.php?id=123) are caught later, when the HTTP downloader's
+// probe sees the torrent Content-Type and hands the download over.
+func HasTorrentFile(rawURL string) bool {
+	if strings.HasSuffix(rawURL, ".torrent") {
 		return true
 	}
 
-	resp, err := http.Head(url)
+	u, err := url.Parse(rawURL)
 	if err != nil {
 		return false
 	}
 
-	defer func() {
-		if err := resp.Body.Close(); err != nil {
-			slog.Warn("failed to close response body", "err", err)
-		}
-	}()
-
-	contentType := resp.Header.Get("Content-Type")
-	switch contentType {
-	case "application/x-bittorrent",
-		"application/torrent":
-		return true
-	default:
-		return false
-	}
+	return strings.HasSuffix(u.Path, ".torrent")
 }
 
 // IsValidMagnetLink checks if a given string is a valid magnet link.

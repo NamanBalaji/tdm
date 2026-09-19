@@ -71,6 +71,7 @@ type (
 	tickMsg       struct{}
 	downloadsMsg  []download.DownloadInfo
 	downloadError struct{ error }
+	downloadAdded struct{ url string }
 )
 
 func clearNotifications() tea.Cmd {
@@ -161,6 +162,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case downloadError:
 		m.errMsg = msg.Error()
+		m.successMsg = ""
+
+		return m, clearNotifications()
+
+	case downloadAdded:
+		m.successMsg = "Added download: " + msg.url
+		m.errMsg = ""
+
 		return m, clearNotifications()
 
 	case clearMsg:
@@ -415,22 +424,21 @@ func (m *Model) updateAddView(msg tea.Msg) tea.Cmd {
 				}
 
 				url := m.urlInput.Value()
-				m.successMsg = "Added download for: " + url
+				// The add runs async (it probes the network); only report
+				// success once it actually succeeds.
+				m.successMsg = "Adding download: " + url
 				m.view = viewList
 				m.urlInput.SetValue("")
 				m.priorityInput.SetValue("")
 				m.addFormFocusIndex = 0
 
-				return tea.Batch(
-					func() tea.Msg {
-						if err := m.actions.Add(url, priority); err != nil {
-							return downloadError{err}
-						}
+				return func() tea.Msg {
+					if err := m.actions.Add(url, priority); err != nil {
+						return downloadError{err}
+					}
 
-						return nil
-					},
-					clearNotifications(),
-				)
+					return downloadAdded{url: url}
+				}
 			}
 
 		case key.Matches(msg, m.keys.Back):

@@ -40,7 +40,7 @@ func TestMerge(t *testing.T) {
 		}
 
 		d := newDownloader()
-		err := d.TestMerge(st, outDir, "output.bin")
+		_, err := d.TestMerge(st, outDir, "output.bin")
 		require.NoError(t, err)
 
 		data, err := os.ReadFile(filepath.Join(outDir, "output.bin"))
@@ -78,7 +78,7 @@ func TestMerge(t *testing.T) {
 		}
 
 		d := newDownloader()
-		err := d.TestMerge(st, outDir, "output.bin")
+		_, err := d.TestMerge(st, outDir, "output.bin")
 		require.NoError(t, err)
 
 		data, err := os.ReadFile(filepath.Join(outDir, "output.bin"))
@@ -108,7 +108,7 @@ func TestMerge(t *testing.T) {
 		}
 
 		d := newDownloader()
-		err := d.TestMerge(st, outDir, "output.bin")
+		_, err := d.TestMerge(st, outDir, "output.bin")
 		require.NoError(t, err)
 
 		data, err := os.ReadFile(filepath.Join(outDir, "output.bin"))
@@ -127,9 +127,94 @@ func TestMerge(t *testing.T) {
 		}
 
 		d := newDownloader()
-		err := d.TestMerge(st, outDir, "output.bin")
+		_, err := d.TestMerge(st, outDir, "output.bin")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "failed to open chunk file")
+	})
+
+	t.Run("does not overwrite an existing file", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		outDir := t.TempDir()
+
+		existing := []byte("precious user data")
+		require.NoError(t, os.WriteFile(filepath.Join(outDir, "output.bin"), existing, 0o644))
+
+		content := []byte("downloaded content")
+		chunkFile := filepath.Join(tmpDir, "chunk0")
+		require.NoError(t, os.WriteFile(chunkFile, content, 0o644))
+
+		st := &httpdl.HttpState{
+			Chunks: []httpdl.ChunkState{
+				{ID: uuid.New(), StartByte: 0, EndByte: int64(len(content) - 1), TempFilePath: chunkFile},
+			},
+			TempDir: tmpDir,
+		}
+
+		d := newDownloader()
+		finalName, err := d.TestMerge(st, outDir, "output.bin")
+		require.NoError(t, err)
+		assert.Equal(t, "output.1.bin", finalName)
+
+		// The pre-existing file is untouched.
+		data, err := os.ReadFile(filepath.Join(outDir, "output.bin"))
+		require.NoError(t, err)
+		assert.Equal(t, existing, data)
+
+		// The merged data landed under the renamed path.
+		data, err = os.ReadFile(filepath.Join(outDir, "output.1.bin"))
+		require.NoError(t, err)
+		assert.Equal(t, content, data)
+	})
+
+	t.Run("truncated chunk file fails the merge", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		outDir := t.TempDir()
+
+		// Chunk claims 100 bytes but only 10 are on disk.
+		chunkFile := filepath.Join(tmpDir, "chunk0")
+		require.NoError(t, os.WriteFile(chunkFile, []byte("0123456789"), 0o644))
+
+		st := &httpdl.HttpState{
+			Chunks: []httpdl.ChunkState{
+				{ID: uuid.New(), StartByte: 0, EndByte: 99, TempFilePath: chunkFile},
+			},
+			TempDir: tmpDir,
+		}
+
+		d := newDownloader()
+		_, err := d.TestMerge(st, outDir, "output.bin")
+		require.Error(t, err)
+
+		// No final or partial output may remain.
+		entries, readErr := os.ReadDir(outDir)
+		require.NoError(t, readErr)
+		assert.Empty(t, entries)
+	})
+
+	t.Run("leaves no part files behind", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		outDir := t.TempDir()
+
+		content := []byte("content")
+		chunkFile := filepath.Join(tmpDir, "chunk0")
+		require.NoError(t, os.WriteFile(chunkFile, content, 0o644))
+
+		st := &httpdl.HttpState{
+			Chunks: []httpdl.ChunkState{
+				{ID: uuid.New(), StartByte: 0, EndByte: int64(len(content) - 1), TempFilePath: chunkFile},
+			},
+			TempDir: tmpDir,
+		}
+
+		d := newDownloader()
+		finalName, err := d.TestMerge(st, outDir, "output.bin")
+		require.NoError(t, err)
+		assert.Equal(t, "output.bin", finalName)
+
+		entries, err := os.ReadDir(outDir)
+		require.NoError(t, err)
+		require.Len(t, entries, 1)
+		assert.Equal(t, "output.bin", entries[0].Name())
 	})
 
 	t.Run("creates output directory if not exists", func(t *testing.T) {
@@ -148,7 +233,7 @@ func TestMerge(t *testing.T) {
 		}
 
 		d := newDownloader()
-		err := d.TestMerge(st, outDir, "output.bin")
+		_, err := d.TestMerge(st, outDir, "output.bin")
 		require.NoError(t, err)
 
 		data, err := os.ReadFile(filepath.Join(outDir, "output.bin"))

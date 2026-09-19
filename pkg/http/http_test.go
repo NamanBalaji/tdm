@@ -6,7 +6,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
+	"unicode/utf8"
 
 	httpmod "github.com/NamanBalaji/tdm/pkg/http"
 )
@@ -51,6 +53,34 @@ func TestGetFilename(t *testing.T) {
 			},
 			want: "download",
 		},
+		{
+			name: "Content-Disposition path traversal is sanitized",
+			resp: &http.Response{
+				Header: http.Header{
+					"Content-Disposition": []string{`attachment; filename="../../home/user/.ssh/authorized_keys"`},
+				},
+				Request: &http.Request{URL: mustParseURL("http://example.com/x")},
+			},
+			want: "authorized_keys",
+		},
+		{
+			name: "query filename traversal is sanitized",
+			resp: &http.Response{
+				Header:  http.Header{},
+				Request: &http.Request{URL: mustParseURL("http://example.com/dl?filename=..%2F..%2Fetc%2Fcrontab")},
+			},
+			want: "crontab",
+		},
+		{
+			name: "hostile Content-Disposition falls through to URL path",
+			resp: &http.Response{
+				Header: http.Header{
+					"Content-Disposition": []string{`attachment; filename=".."`},
+				},
+				Request: &http.Request{URL: mustParseURL("http://example.com/real-name.zip")},
+			},
+			want: "real-name.zip",
+		},
 	}
 
 	for _, tt := range tests {
@@ -83,56 +113,94 @@ func TestParseLastModified(t *testing.T) {
 }
 
 func TestIsDownloadable(t *testing.T) {
-	mux := http.NewServeMux()
-	// 1. HEAD returns HTML
-	mux.HandleFunc("/html", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodHead {
-			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-		http.Error(w, "fallback GET", http.StatusOK)
-	})
-	// 2. HEAD returns binary
-	mux.HandleFunc("/binary", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodHead {
-			w.Header().Set("Content-Type", "application/octet-stream")
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-		http.Error(w, "fallback GET", http.StatusOK)
-	})
-	// 3. HEAD not allowed, GET returns binary
-	mux.HandleFunc("/nohead", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodHead {
-			http.Error(w, "not supported", http.StatusMethodNotAllowed)
-			return
-		}
-		w.Header().Set("Content-Type", "application/octet-stream")
-		w.WriteHeader(http.StatusOK)
-	})
-	ts := httptest.NewServer(mux)
-	defer ts.Close()
-
+	// IsDownloadable is purely syntactic — no network I/O.
 	tests := []struct {
 		name string
-		path string
+		url  string
 		want bool
 	}{
-		{"HTML not downloadable", "/html", false},
-		{"Binary downloadable", "/binary", true},
-		{"No HEAD, fallback GET downloadable", "/nohead", true},
+		{"http URL", "http://example.com/file.bin", true},
+		{"https URL", "https://example.com/file.bin", true},
+		{"URL without path", "https://example.com", true},
+		{"magnet link", "magnet:?xt=urn:btih:abc", false},
+		{"ftp URL", "ftp://example.com/file", false},
+		{"missing host", "http://", false},
+		{"relative path", "some/file.bin", false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			url := ts.URL + tt.path
-			got := httpmod.IsDownloadable(url)
+			got := httpmod.IsDownloadable(tt.url)
 			if got != tt.want {
-				t.Errorf("IsDownloadable(%q) = %v; want %v", url, got, tt.want)
+				t.Errorf("IsDownloadable(%q) = %v; want %v", tt.url, got, tt.want)
 			}
 		})
 	}
+}
+
+func TestSanitizeFilename(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"plain name unchanged", "file.txt", "file.txt"},
+		{"unix traversal stripped", "../../etc/cron.d/evil", "evil"},
+		{"windows traversal stripped", `..\..\Windows\system32\evil.exe`, "evil.exe"},
+		{"absolute path stripped", "/etc/passwd", "passwd"},
+		{"dot-dot alone rejected", "..", ""},
+		{"dot alone rejected", ".", ""},
+		{"slash alone rejected", "/", ""},
+		{"empty rejected", "", ""},
+		{"control chars removed", "fi\x00le\x1f.txt", "file.txt"},
+		{"invalid windows chars replaced", `a<b>c:d"e|f?g*h.txt`, "a_b_c_d_e_f_g_h.txt"},
+		{"trailing dots and spaces trimmed", "name.. ", "name"},
+		{"dotfile preserved", ".bashrc", ".bashrc"},
+		{"windows reserved name prefixed", "CON", "_CON"},
+		{"windows reserved with extension prefixed", "com1.txt", "_com1.txt"},
+		{"non-reserved similar name kept", "CONFIG.txt", "CONFIG.txt"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := httpmod.SanitizeFilename(tt.in)
+			if got != tt.want {
+				t.Errorf("SanitizeFilename(%q) = %q; want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+
+	t.Run("over-long names are truncated below the filesystem limit", func(t *testing.T) {
+		long := strings.Repeat("a", 300) + ".bin"
+
+		got := httpmod.SanitizeFilename(long)
+		if len(got) > 200 {
+			t.Errorf("len = %d; want <= 200 (room for .part/.N suffixes under NAME_MAX)", len(got))
+		}
+
+		if !strings.HasSuffix(got, ".bin") {
+			t.Errorf("extension not preserved: %q", got)
+		}
+	})
+
+	t.Run("truncation does not split multi-byte runes", func(t *testing.T) {
+		// 3-byte runes with a 4-byte extension: the 196-byte cut lands
+		// mid-rune (196 % 3 == 1), forcing the backoff loop to trim.
+		long := strings.Repeat("€", 100) + ".txt"
+
+		got := httpmod.SanitizeFilename(long)
+		if !utf8.ValidString(got) {
+			t.Errorf("truncated name is not valid UTF-8: %q", got)
+		}
+
+		if len(got) > 200 {
+			t.Errorf("len = %d; want <= 200", len(got))
+		}
+
+		if !strings.HasSuffix(got, ".txt") {
+			t.Errorf("extension not preserved: %q", got)
+		}
+	})
 }
 
 func TestClient_Head(t *testing.T) {
@@ -158,7 +226,7 @@ func TestClient_Head(t *testing.T) {
 	ts404 := httptest.NewServer(http.HandlerFunc(notFoundHandler))
 	defer ts404.Close()
 
-	client := httpmod.NewClient()
+	client := httpmod.NewClient(0)
 
 	t.Run("Head success", func(t *testing.T) {
 		resp, err := client.Head(context.Background(), tsOK.URL, map[string]string{"X-Test": "value"})
@@ -188,7 +256,7 @@ func TestClient_Range(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(rangeHandler))
 	defer ts.Close()
 
-	client := httpmod.NewClient()
+	client := httpmod.NewClient(0)
 
 	t.Run("Range supported", func(t *testing.T) {
 		resp, err := client.Range(context.Background(), ts.URL, 0, 0, nil)
@@ -228,7 +296,7 @@ func TestClient_Get(t *testing.T) {
 	ts404 := httptest.NewServer(http.HandlerFunc(notFoundHandler))
 	defer ts404.Close()
 
-	client := httpmod.NewClient()
+	client := httpmod.NewClient(0)
 
 	t.Run("Get success", func(t *testing.T) {
 		resp, err := client.Get(context.Background(), tsOK.URL)

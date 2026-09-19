@@ -1,68 +1,35 @@
 package torrent_test
 
 import (
-	"net/http"
-	"net/http/httptest"
 	"testing"
 
 	"github.com/NamanBalaji/tdm/pkg/torrent"
 )
 
-func newCTServer(t *testing.T, ct string) *httptest.Server {
-	t.Helper()
-
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Ensure header is set before status line is written.
-		w.Header().Set("Content-Type", ct)
-		// HEAD should not write a body, but headers + status must be present.
-		w.WriteHeader(http.StatusOK)
-		if r.Method != http.MethodHead {
-			_, _ = w.Write([]byte("ok"))
-		}
-	}))
-}
-
 func TestHasTorrentFile(t *testing.T) {
-	t.Run("suffix .torrent short-circuits to true", func(t *testing.T) {
-		got := torrent.HasTorrentFile("http://example.com/file.torrent")
-		if !got {
-			t.Fatalf("want true")
-		}
-	})
+	tests := []struct {
+		name string
+		in   string
+		want bool
+	}{
+		{"suffix .torrent is true", "http://example.com/file.torrent", true},
+		{".torrent path with query string", "http://example.com/file.torrent?token=abc", true},
+		{"no .torrent suffix is false (no network probe)", "http://example.com/file.iso", false},
+		{"URL ending in .torrent via the query (as in v0.4.0)", "http://example.com/dl?file=x.torrent", true},
+		{".torrent mid-query is false", "http://example.com/dl?file=x.torrent&t=1", false},
+		{"tracker link without .torrent is false (probe hands it off)", "http://example.com/download.php?id=123", false},
+		{"bare filename", "file.torrent", true},
+		{"html page", "http://example.com/index.html", false},
+	}
 
-	t.Run("HEAD Content-Type application/x-bittorrent", func(t *testing.T) {
-		ts := newCTServer(t, "application/x-bittorrent")
-		defer ts.Close()
-		got := torrent.HasTorrentFile(ts.URL + "/bittorrent")
-		if !got {
-			t.Fatalf("want true")
-		}
-	})
-
-	t.Run("HEAD Content-Type application/torrent", func(t *testing.T) {
-		ts := newCTServer(t, "application/torrent")
-		defer ts.Close()
-		got := torrent.HasTorrentFile(ts.URL + "/alt")
-		if !got {
-			t.Fatalf("want true")
-		}
-	})
-
-	t.Run("HEAD Content-Type not a torrent", func(t *testing.T) {
-		ts := newCTServer(t, "text/html")
-		defer ts.Close()
-		got := torrent.HasTorrentFile(ts.URL + "/html")
-		if got {
-			t.Fatalf("want false")
-		}
-	})
-
-	t.Run("HEAD error returns false", func(t *testing.T) {
-		got := torrent.HasTorrentFile("http://[::1]:-1")
-		if got {
-			t.Fatalf("want false")
-		}
-	})
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := torrent.HasTorrentFile(tc.in); got != tc.want {
+				t.Fatalf("HasTorrentFile(%q) = %v, want %v", tc.in, got, tc.want)
+			}
+		})
+	}
 }
 
 func TestIsValidMagnetLink(t *testing.T) {

@@ -125,6 +125,50 @@ func TestStore(t *testing.T) {
 		assert.Equal(t, int64(500), all[0].Downloaded)
 	})
 
+	t.Run("SaveBatch", func(t *testing.T) {
+		t.Run("persists all downloads in one call", func(t *testing.T) {
+			store, cleanup := setup(t)
+			defer cleanup()
+
+			ctx := context.Background()
+			dls := []*download.Download{
+				makeDownload("http://example.com/a", "a.zip"),
+				makeDownload("http://example.com/b", "b.zip"),
+				makeDownload("http://example.com/c", "c.zip"),
+			}
+
+			require.NoError(t, store.SaveBatch(ctx, dls))
+
+			all, err := store.GetAll(ctx)
+			require.NoError(t, err)
+			assert.Len(t, all, 3)
+		})
+
+		t.Run("empty batch is a no-op", func(t *testing.T) {
+			store, cleanup := setup(t)
+			defer cleanup()
+
+			assert.NoError(t, store.SaveBatch(context.Background(), nil))
+		})
+
+		t.Run("overwrites existing entries", func(t *testing.T) {
+			store, cleanup := setup(t)
+			defer cleanup()
+
+			ctx := context.Background()
+			dl := makeDownload("http://example.com/a", "a.zip")
+			require.NoError(t, store.Save(ctx, dl))
+
+			dl.Downloaded = 42
+			require.NoError(t, store.SaveBatch(ctx, []*download.Download{dl}))
+
+			all, err := store.GetAll(ctx)
+			require.NoError(t, err)
+			require.Len(t, all, 1)
+			assert.Equal(t, int64(42), all[0].Downloaded)
+		})
+	})
+
 	t.Run("GetAll", func(t *testing.T) {
 		testCases := []struct {
 			name      string

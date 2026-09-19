@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"encoding/json/jsontext"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -23,6 +24,7 @@ var (
 	ErrNoDownloader       = errors.New("no downloader can handle this URL")
 	ErrDownloaderNotFound = errors.New("no downloader registered for type")
 	ErrShutdownTimeout    = errors.New("shutdown timed out waiting for downloads to stop")
+	ErrDuplicateURL       = errors.New("download with this URL already exists")
 )
 
 // managedDownload wraps a Download with runtime state that only the Manager.
@@ -30,6 +32,8 @@ type managedDownload struct {
 	download *download.Download
 	cancel   context.CancelFunc
 	tracker  *download.ProgressTracker
+	dirty    bool // has unsaved changes; cleared by the persist loop
+	running  bool // a Start goroutine is live; cleared by handleCompletion
 }
 
 // Manager orchestrates downloads. It is the SOLE OWNER of all Download
@@ -38,10 +42,15 @@ type managedDownload struct {
 type Manager struct {
 	mu          sync.RWMutex
 	downloads   map[uuid.UUID]*managedDownload
+	pendingURLs map[string]struct{} // URLs whose AddDownload is still initializing
 	downloaders []download.Downloader
 	dlrByType   map[string]download.Downloader // type string → downloader (for reload)
 	store       store.Store
 	maxConc     int
+
+	// persistMu serializes store writes so a snapshot taken before a state
+	// change can never commit after (and clobber) that change's record.
+	persistMu sync.Mutex
 
 	errors       chan download.DownloadError
 	scheduleCh   chan struct{}
@@ -53,6 +62,7 @@ type Manager struct {
 func New(store store.Store, maxConcurrent int) *Manager {
 	return &Manager{
 		downloads:    make(map[uuid.UUID]*managedDownload),
+		pendingURLs:  make(map[string]struct{}),
 		dlrByType:    make(map[string]download.Downloader),
 		store:        store,
 		maxConc:      maxConcurrent,
@@ -77,18 +87,18 @@ func (m *Manager) Start(ctx context.Context) error {
 
 	m.mu.Lock()
 	for _, dl := range downloads {
-		// Downloads that were Active when the app closed are reset to Paused
-		if dl.Status == download.Active {
-			dl.Status = download.Paused
-		}
+		statusChanged := false
+		// Downloads that were Active when the app closed are reset to Paused.
 		// Downloads that were Queued/Pending are also paused (they'll be scheduled when resumed)
-		if dl.Status == download.Queued || dl.Status == download.Pending {
+		if dl.Status == download.Active || dl.Status == download.Queued || dl.Status == download.Pending {
 			dl.Status = download.Paused
+			statusChanged = true
 		}
 
 		m.downloads[dl.ID] = &managedDownload{
 			download: dl,
 			tracker:  download.NewProgressTracker(5 * time.Second),
+			dirty:    statusChanged,
 		}
 	}
 	m.mu.Unlock()
@@ -106,6 +116,38 @@ func (m *Manager) AddDownload(ctx context.Context, url string, priority int) (uu
 		return uuid.Nil(), ErrInvalidPriority
 	}
 
+	// Reject re-adds of a URL that is still pending, active, paused, or
+	// failed (resume covers those). Beyond the UX, this prevents two live
+	// torrent rows from sharing one anacrolix handle, where dropping one
+	// (pause/complete) would stall the other. Completed/Cancelled records
+	// don't block a fresh download of the same URL. The URL is reserved in
+	// pendingURLs for the duration of Init (which can block on the network
+	// for a long time) so a concurrent add of the same URL can't slip
+	// through before this one lands in the downloads map.
+	m.mu.Lock()
+
+	if _, pending := m.pendingURLs[url]; pending {
+		m.mu.Unlock()
+		return uuid.Nil(), fmt.Errorf("%w: %s", ErrDuplicateURL, url)
+	}
+
+	for _, md := range m.downloads {
+		s := md.download.Status
+		if md.download.URL == url && s != download.Completed && s != download.Cancelled {
+			m.mu.Unlock()
+			return uuid.Nil(), fmt.Errorf("%w: %s", ErrDuplicateURL, url)
+		}
+	}
+
+	m.pendingURLs[url] = struct{}{}
+	m.mu.Unlock()
+
+	defer func() {
+		m.mu.Lock()
+		delete(m.pendingURLs, url)
+		m.mu.Unlock()
+	}()
+
 	// Find a Downloader that can handle this URL
 	var dlr download.Downloader
 
@@ -121,6 +163,10 @@ func (m *Manager) AddDownload(ctx context.Context, url string, priority int) (uu
 	}
 
 	dl, err := dlr.Init(ctx, url, priority)
+	if handoff, ok := errors.AsType[*download.HandoffError](err); ok {
+		dl, err = m.initHandoff(ctx, dlr, handoff, url, priority)
+	}
+
 	if err != nil {
 		return uuid.Nil(), fmt.Errorf("failed to initialize download: %w", err)
 	}
@@ -159,6 +205,7 @@ func (m *Manager) PauseDownload(ctx context.Context, id uuid.UUID) {
 	}
 
 	md.download.Status = download.Paused
+	md.dirty = true
 	if md.cancel != nil {
 		md.cancel()
 	}
@@ -184,6 +231,7 @@ func (m *Manager) ResumeDownload(ctx context.Context, id uuid.UUID) {
 	}
 
 	md.download.Status = download.Queued
+	md.dirty = true
 	md.tracker.Reset(md.download.Downloaded, md.download.TotalSize)
 	m.mu.Unlock()
 
@@ -206,6 +254,7 @@ func (m *Manager) CancelDownload(ctx context.Context, id uuid.UUID) {
 	}
 
 	md.download.Status = download.Cancelled
+	md.dirty = true
 	if md.cancel != nil {
 		md.cancel()
 	}
@@ -224,24 +273,51 @@ func (m *Manager) RemoveDownload(ctx context.Context, id uuid.UUID) {
 		return
 	}
 
-	// Cancel if running
-	md.download.Status = download.Cancelled
+	// Cancel if running. Terminal statuses are preserved so downloaders can
+	// tell a completed download (final file exists) from an aborted one.
+	if !md.download.Status.IsTerminal() {
+		md.download.Status = download.Cancelled
+	}
+
 	if md.cancel != nil {
 		md.cancel()
 	}
 
 	delete(m.downloads, id)
 	dlCopy := *md.download
+
+	// If another record references the same output (e.g. a completed row
+	// plus a re-download of the same URL), deleting files — or, for
+	// torrents, dropping the shared client handle — would break that other
+	// record's data or freeze its live transfer. Remove only this record.
+	shared := false
+
+	for _, other := range m.downloads {
+		if other.download.Type == dlCopy.Type &&
+			other.download.Dir == dlCopy.Dir &&
+			other.download.Filename == dlCopy.Filename {
+			shared = true
+			break
+		}
+	}
 	m.mu.Unlock()
 
-	dlr := m.findDownloader(dlCopy.Type)
-	if dlr != nil {
+	if shared {
+		slog.Info("skipping file removal: another download references the same output", "filename", dlCopy.Filename)
+	} else if dlr := m.findDownloader(dlCopy.Type); dlr != nil {
 		if err := dlr.Remove(&dlCopy); err != nil {
 			slog.Error("failed to remove download files", "err", err)
 		}
 	}
 
-	if err := m.store.Delete(ctx, id); err != nil {
+	// Under persistMu so an in-flight persist batch that still holds this
+	// download commits before the delete — not after it (which would
+	// resurrect the record).
+	m.persistMu.Lock()
+	err := m.store.Delete(ctx, id)
+	m.persistMu.Unlock()
+
+	if err != nil {
 		slog.Error("failed to delete download from store", "id", id, "err", err)
 	}
 
@@ -332,7 +408,7 @@ func (m *Manager) Shutdown(ctx context.Context) error {
 			err = ErrShutdownTimeout
 		}
 
-		m.saveAll(context.WithoutCancel(ctx))
+		m.saveAll(context.WithoutCancel(ctx), true)
 
 		close(m.shutdownDone)
 	})
@@ -360,7 +436,7 @@ func (m *Manager) run(ctx context.Context) {
 		case <-m.scheduleCh:
 			m.doSchedule(ctx)
 		case <-persistTicker.C:
-			m.saveAll(ctx)
+			m.saveAll(ctx, false)
 		}
 	}
 }
@@ -381,6 +457,7 @@ func (m *Manager) doSchedule(ctx context.Context) {
 
 	for _, md := range decision.toPause {
 		md.download.Status = download.Queued
+		md.dirty = true
 		if md.cancel != nil {
 			md.cancel()
 		}
@@ -389,17 +466,33 @@ func (m *Manager) doSchedule(ctx context.Context) {
 	running := 0
 
 	for _, md := range m.downloads {
-		if md.cancel != nil {
+		if md.running {
 			running++
 		}
 	}
 
 	available := m.maxConc - running
 
-	for i := range min(available, len(decision.toStart)) {
-		md := decision.toStart[i]
+	started := 0
+
+	for _, md := range decision.toStart {
+		if started >= available {
+			break
+		}
+
+		// A previous Start goroutine may still be unwinding after a quick
+		// pause→resume. Starting a second one would race it for the same
+		// resources (torrents would share one client handle, and its
+		// handleCompletion would clobber the new cancel func). Leave the
+		// download Queued — handleCompletion reschedules when it exits.
+		if md.running {
+			continue
+		}
+
 		md.download.Status = download.Active
 		md.download.StartTime = time.Now()
+		md.dirty = true
+		md.running = true
 
 		runCtx, cancel := context.WithCancel(ctx)
 		md.cancel = cancel
@@ -407,6 +500,8 @@ func (m *Manager) doSchedule(ctx context.Context) {
 		m.wg.Add(1)
 
 		go m.runDownload(ctx, runCtx, md)
+
+		started++
 	}
 
 	m.mu.Unlock()
@@ -423,15 +518,41 @@ func (m *Manager) runDownload(managerCtx, dlCtx context.Context, md *managedDown
 	if dlr == nil {
 		m.mu.Lock()
 		md.download.Status = download.Failed
+		md.cancel = nil
+		md.running = false
+		md.dirty = true
 		m.mu.Unlock()
 
 		m.sendError(dl.ID, fmt.Errorf("%w: %q", ErrDownloaderNotFound, dl.Type))
 
+		// The failure freed a scheduler slot; without this, downloads left
+		// Queued by the pass that started this one would wait until the
+		// next user action.
+		m.requestReschedule()
+
 		return
 	}
 
-	err := dlr.Start(dlCtx, &dl, func(downloaded, totalSize int64) {
+	err := dlr.Start(dlCtx, &dl, func(downloaded, totalSize int64, state jsontext.Value) {
 		md.tracker.Update(downloaded, totalSize)
+
+		// Sync in-flight progress (and, when provided, the protocol's resume
+		// state checkpoint) into the Manager-owned Download so the persist
+		// loop saves it — otherwise a SIGKILL loses all progress since Start.
+		// Only mark dirty on real change: a stalled download must not cost a
+		// store write (and fsync) every tick.
+		m.mu.Lock()
+		changed := md.download.Downloaded != downloaded
+		if state != nil && !bytes.Equal(md.download.State, state) {
+			md.download.State = state
+			changed = true
+		}
+
+		if changed {
+			md.download.Downloaded = downloaded
+			md.dirty = true
+		}
+		m.mu.Unlock()
 	})
 
 	m.handleCompletion(managerCtx, md, &dl, err)
@@ -462,32 +583,61 @@ func (m *Manager) handleCompletion(ctx context.Context, md *managedDownload, res
 	}
 
 	md.cancel = nil
-	dlCopy := *md.download
+	md.running = false
+	md.dirty = true
 	m.mu.Unlock()
 
-	if saveErr := m.store.Save(ctx, &dlCopy); saveErr != nil {
-		slog.Error("failed to save download after completion", "err", saveErr)
-	}
+	// Persist promptly via the shared batch path: it serializes against the
+	// 1s tick (a stale pre-completion snapshot can't commit after this
+	// record), only writes downloads still in the map (a removed download
+	// isn't resurrected), and on failure leaves dirty set so the next tick
+	// retries.
+	m.saveAll(ctx, false)
 
 	m.requestReschedule()
 }
 
-// saveAll persists all downloads to the store.
-func (m *Manager) saveAll(ctx context.Context) {
-	m.mu.RLock()
+// saveAll persists downloads to the store in a single batched transaction.
+// Only dirty downloads are written unless force is set, so idle downloads
+// don't cost an fsync every tick. persistMu is held across snapshot AND
+// write: without it, a snapshot taken before a status change could commit
+// after the change's own write and permanently clobber it (both paths clear
+// dirty, so nothing would ever re-save the newer state).
+func (m *Manager) saveAll(ctx context.Context, force bool) {
+	m.persistMu.Lock()
+	defer m.persistMu.Unlock()
+
+	m.mu.Lock()
 
 	toSave := make([]*download.Download, 0, len(m.downloads))
+	saved := make([]*managedDownload, 0, len(m.downloads))
+
 	for _, md := range m.downloads {
+		if !force && !md.dirty {
+			continue
+		}
+
 		dlCopy := *md.download
 		toSave = append(toSave, &dlCopy)
+		md.dirty = false
+		saved = append(saved, md)
 	}
 
-	m.mu.RUnlock()
+	m.mu.Unlock()
 
-	for _, dl := range toSave {
-		if err := m.store.Save(ctx, dl); err != nil {
-			slog.Error("failed to persist download", "id", dl.ID, "err", err)
+	if len(toSave) == 0 {
+		return
+	}
+
+	if err := m.store.SaveBatch(ctx, toSave); err != nil {
+		slog.Error("failed to persist downloads", "count", len(toSave), "err", err)
+
+		// Re-mark so the next tick retries.
+		m.mu.Lock()
+		for _, md := range saved {
+			md.dirty = true
 		}
+		m.mu.Unlock()
 	}
 }
 
@@ -503,4 +653,17 @@ func (m *Manager) sendError(id uuid.UUID, err error) {
 // findDownloader finds the registered Downloader for the given type string.
 func (m *Manager) findDownloader(dlType string) download.Downloader {
 	return m.dlrByType[dlType]
+}
+
+// initHandoff retries Init with the Downloader that from's probe named.
+// Only one hop is followed, so Downloaders naming each other can't loop.
+func (m *Manager) initHandoff(ctx context.Context, from download.Downloader, h *download.HandoffError, url string, priority int) (*download.Download, error) {
+	to := m.findDownloader(h.Type)
+	if to == nil || to.Type() == from.Type() {
+		return nil, h
+	}
+
+	slog.Debug("handing off download", "url", url, "from", from.Type(), "to", to.Type(), "reason", h.Reason)
+
+	return to.Init(ctx, url, priority)
 }
