@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json/jsontext"
 	"errors"
+	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -109,7 +111,16 @@ type mockDownloader struct {
 	startDelay time.Duration
 	startFn    func(ctx context.Context, dl *download.Download, onProgress func(int64, int64, jsontext.Value)) error
 	removeCh   chan uuid.UUID
+	initCalls  atomic.Int32
 }
+
+// namedDownloader is a mockDownloader registered under another Type().
+type namedDownloader struct {
+	*mockDownloader
+	name string
+}
+
+func (d *namedDownloader) Type() string { return d.name }
 
 func newMockDownloader() *mockDownloader {
 	return &mockDownloader{
@@ -123,6 +134,8 @@ func (d *mockDownloader) Type() string { return "mock" }
 func (d *mockDownloader) CanHandle(_ string) bool { return d.canHandle }
 
 func (d *mockDownloader) Init(_ context.Context, url string, priority int) (*download.Download, error) {
+	d.initCalls.Add(1)
+
 	if d.initErr != nil {
 		return nil, d.initErr
 	}
@@ -254,6 +267,112 @@ func TestManager(t *testing.T) {
 			_, err := m.AddDownload(context.Background(), "http://example.com/file.zip", 5)
 			assert.Error(t, err)
 			assert.Equal(t, 0, s.count())
+		})
+
+		t.Run("duplicate URL of a live download is rejected", func(t *testing.T) {
+			s := newMockStore()
+			dlr := newMockDownloader()
+
+			blockCh := make(chan struct{})
+			dlr.startFn = func(ctx context.Context, _ *download.Download, _ func(int64, int64, jsontext.Value)) error {
+				select {
+				case <-blockCh:
+					return nil
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+			}
+
+			m, cancel := startManager(t, s, dlr, 2)
+			defer func() {
+				close(blockCh)
+				shutdownManager(t, m, cancel)
+			}()
+
+			url := "http://example.com/dup.zip"
+			_, err := m.AddDownload(context.Background(), url, 5)
+			require.NoError(t, err)
+
+			// Two live rows for one URL would share a single torrent handle
+			// (dropping one stalls the other), so the re-add must fail.
+			_, err = m.AddDownload(context.Background(), url, 5)
+			assert.ErrorIs(t, err, manager.ErrDuplicateURL)
+		})
+
+		t.Run("concurrent adds of the same URL race to exactly one record", func(t *testing.T) {
+			s := newMockStore()
+			dlr := newMockDownloader()
+
+			// Block Start so the first record can't reach Completed (which
+			// would legitimately allow a re-add) while the others race.
+			blockCh := make(chan struct{})
+			dlr.startFn = func(ctx context.Context, _ *download.Download, _ func(int64, int64, jsontext.Value)) error {
+				select {
+				case <-blockCh:
+					return nil
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+			}
+
+			m, cancel := startManager(t, s, dlr, 2)
+			defer func() {
+				close(blockCh)
+				shutdownManager(t, m, cancel)
+			}()
+
+			// Init is instantaneous in the mock, so widen the race window by
+			// launching many adds at once — the pendingURLs reservation must
+			// let exactly one through regardless of interleaving.
+			url := "http://example.com/race.zip"
+
+			var (
+				wg    sync.WaitGroup
+				okMu  sync.Mutex
+				okays int
+			)
+
+			start := make(chan struct{})
+
+			for range 8 {
+
+				wg.Go(func() {
+					<-start
+
+					if _, err := m.AddDownload(context.Background(), url, 5); err == nil {
+						okMu.Lock()
+						okays++
+						okMu.Unlock()
+					} else {
+						assert.ErrorIs(t, err, manager.ErrDuplicateURL)
+					}
+				})
+			}
+
+			close(start)
+			wg.Wait()
+
+			assert.Equal(t, 1, okays, "exactly one concurrent add may succeed")
+		})
+
+		t.Run("re-adding a completed URL is allowed", func(t *testing.T) {
+			s := newMockStore()
+			dlr := newMockDownloader()
+			m, cancel := startManager(t, s, dlr, 2)
+			defer shutdownManager(t, m, cancel)
+
+			url := "http://example.com/again.zip"
+			_, err := m.AddDownload(context.Background(), url, 5)
+			require.NoError(t, err)
+
+			// Default mock completes immediately.
+			require.Eventually(t, func() bool {
+				infos := m.GetAllDownloads()
+				return len(infos) == 1 && infos[0].Status == download.Completed
+			}, 5*time.Second, 10*time.Millisecond)
+
+			_, err = m.AddDownload(context.Background(), url, 5)
+			assert.NoError(t, err, "a completed record must not block a fresh download")
 		})
 
 		t.Run("store save error", func(t *testing.T) {
@@ -654,7 +773,7 @@ func TestManager(t *testing.T) {
 
 		ctx := context.Background()
 		for i := range 5 {
-			_, err := m.AddDownload(ctx, "http://example.com/file", i%10+1)
+			_, err := m.AddDownload(ctx, fmt.Sprintf("http://example.com/file-%d", i), i%10+1)
 			require.NoError(t, err)
 		}
 
@@ -731,6 +850,437 @@ func TestManager(t *testing.T) {
 
 			close(blockCh)
 		})
+	})
+}
+
+// A URL whose content only reveals its real type once probed (e.g. a
+// tracker link serving a .torrent) is handed from one downloader to another.
+func TestAddDownloadHandoff(t *testing.T) {
+	const url = "http://example.com/download.php?id=1"
+
+	setup := func(t *testing.T, firstErr error) (*mockStore, *mockDownloader, *namedDownloader, *manager.Manager, context.CancelFunc) {
+		t.Helper()
+
+		s := newMockStore()
+
+		first := newMockDownloader()
+		first.initErr = firstErr
+
+		// The handoff target doesn't claim the URL itself — only the probe
+		// of the first downloader knows it should get it.
+		second := &namedDownloader{mockDownloader: newMockDownloader(), name: "other"}
+		second.canHandle = false
+		second.initDL = &download.Download{
+			ID:        uuid.New(),
+			URL:       url,
+			Filename:  "linux.iso",
+			Status:    download.Pending,
+			Priority:  5,
+			Type:      "other",
+			TotalSize: 1000,
+		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		m := manager.New(s, 2)
+		m.Register(first)
+		m.Register(second)
+		require.NoError(t, m.Start(ctx))
+
+		return s, first, second, m, cancel
+	}
+
+	t.Run("follows the handoff to the named downloader", func(t *testing.T) {
+		s, first, second, m, cancel := setup(t, &download.HandoffError{Type: "other", Reason: "serves a torrent"})
+		defer shutdownManager(t, m, cancel)
+
+		id, err := m.AddDownload(context.Background(), url, 5)
+		require.NoError(t, err)
+
+		persisted := s.get(id)
+		require.NotNil(t, persisted)
+		assert.Equal(t, "other", persisted.Type)
+		assert.Equal(t, int32(1), first.initCalls.Load())
+		assert.Equal(t, int32(1), second.initCalls.Load())
+	})
+
+	t.Run("handoff to an unregistered downloader fails cleanly", func(t *testing.T) {
+		s, _, second, m, cancel := setup(t, &download.HandoffError{Type: "missing", Reason: "x"})
+		defer shutdownManager(t, m, cancel)
+
+		_, err := m.AddDownload(context.Background(), url, 5)
+
+		var handoff *download.HandoffError
+		require.ErrorAs(t, err, &handoff)
+		assert.Equal(t, "missing", handoff.Type)
+		assert.Equal(t, 0, s.count())
+		assert.Equal(t, int32(0), second.initCalls.Load())
+	})
+
+	t.Run("handoff to itself is not followed", func(t *testing.T) {
+		s, first, _, m, cancel := setup(t, &download.HandoffError{Type: "mock", Reason: "x"})
+		defer shutdownManager(t, m, cancel)
+
+		_, err := m.AddDownload(context.Background(), url, 5)
+		require.Error(t, err)
+		assert.Equal(t, int32(1), first.initCalls.Load())
+		assert.Equal(t, 0, s.count())
+	})
+
+	t.Run("a second handoff is not followed", func(t *testing.T) {
+		s, first, second, m, cancel := setup(t, &download.HandoffError{Type: "other", Reason: "x"})
+		defer shutdownManager(t, m, cancel)
+
+		// The target hands straight back: following it would loop forever.
+		second.initErr = &download.HandoffError{Type: "mock", Reason: "y"}
+
+		_, err := m.AddDownload(context.Background(), url, 5)
+		require.Error(t, err)
+		assert.Equal(t, int32(1), first.initCalls.Load())
+		assert.Equal(t, int32(1), second.initCalls.Load())
+		assert.Equal(t, 0, s.count())
+	})
+}
+
+// Regression test: when a download fails because its persisted type has no
+// registered downloader, the freed scheduler slot must be re-offered —
+// otherwise downloads left Queued by the same scheduling pass starve until
+// the next user action.
+func TestUnknownTypeFailureReschedulesQueued(t *testing.T) {
+	s := newMockStore()
+	dlr := newMockDownloader()
+
+	// Ghost record: unregistered type, higher priority — wins the only slot.
+	ghost := &download.Download{
+		ID:        uuid.New(),
+		URL:       "http://example.com/ghost",
+		Status:    download.Paused,
+		Priority:  10,
+		Type:      "ghost",
+		TotalSize: 1000,
+		CreatedAt: time.Now(),
+	}
+	healthy := &download.Download{
+		ID:        uuid.New(),
+		URL:       "http://example.com/healthy",
+		Status:    download.Paused,
+		Priority:  1,
+		Type:      "mock",
+		TotalSize: 1000,
+		CreatedAt: time.Now(),
+	}
+	require.NoError(t, s.Save(context.Background(), ghost))
+	require.NoError(t, s.Save(context.Background(), healthy))
+
+	m, cancel := startManager(t, s, dlr, 1)
+	defer shutdownManager(t, m, cancel)
+
+	m.ResumeDownload(context.Background(), ghost.ID)
+	m.ResumeDownload(context.Background(), healthy.ID)
+
+	// Drain the ghost's error so the channel doesn't fill.
+	go func() {
+		for range m.GetErrors() { //nolint:revive // draining
+		}
+	}()
+
+	require.Eventually(t, func() bool {
+		for _, info := range m.GetAllDownloads() {
+			if info.ID == healthy.ID {
+				return info.Status == download.Completed
+			}
+		}
+
+		return false
+	}, 5*time.Second, 10*time.Millisecond, "healthy download must run after the ghost frees its slot")
+}
+
+// Regression test: a quick pause→resume while the previous Start goroutine
+// is still unwinding must NOT start a second goroutine for the same
+// download — two live Starts would share torrent handles and the old
+// goroutine's completion would clobber the new one's cancel func.
+func TestPauseResumeDoesNotDoubleStart(t *testing.T) {
+	s := newMockStore()
+	dlr := newMockDownloader()
+
+	var (
+		mu          sync.Mutex
+		live        int
+		maxLive     int
+		slowUnwind  = 50 * time.Millisecond
+		startedOnce = make(chan struct{}, 16)
+	)
+
+	dlr.startFn = func(ctx context.Context, _ *download.Download, _ func(int64, int64, jsontext.Value)) error {
+		mu.Lock()
+		live++
+		if live > maxLive {
+			maxLive = live
+		}
+		mu.Unlock()
+
+		startedOnce <- struct{}{}
+
+		<-ctx.Done()
+		// Simulate slow teardown (torrent Drop, state save) after cancel.
+		time.Sleep(slowUnwind)
+
+		mu.Lock()
+		live--
+		mu.Unlock()
+
+		return ctx.Err()
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	m := manager.New(s, 3)
+	m.Register(dlr)
+	require.NoError(t, m.Start(ctx))
+
+	id, err := m.AddDownload(ctx, "http://example.com/file.zip", 5)
+	require.NoError(t, err)
+
+	select {
+	case <-startedOnce:
+	case <-time.After(5 * time.Second):
+		t.Fatal("download never started")
+	}
+
+	// Pause then resume immediately — well inside the unwind window.
+	m.PauseDownload(ctx, id)
+	m.ResumeDownload(ctx, id)
+
+	// Wait for the second start (must happen only after the first exits).
+	select {
+	case <-startedOnce:
+	case <-time.After(5 * time.Second):
+		t.Fatal("download was never restarted after resume")
+	}
+
+	mu.Lock()
+	observed := maxLive
+	mu.Unlock()
+	assert.Equal(t, 1, observed, "at most one Start goroutine per download")
+
+	cancel()
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer shutdownCancel()
+	require.NoError(t, m.Shutdown(shutdownCtx))
+}
+
+// Regression test: removing a record whose output path is shared with
+// another record (same URL re-downloaded after completion) must not call
+// the downloader's Remove — that would delete the other record's files or
+// drop its live torrent handle.
+func TestRemoveSkipsSharedOutput(t *testing.T) {
+	s := newMockStore()
+	dlr := newMockDownloader()
+
+	// Two records sharing Dir+Filename: an old Completed row and a live one.
+	oldDL := &download.Download{
+		ID:        uuid.New(),
+		URL:       "http://example.com/shared.bin",
+		Filename:  "shared.bin",
+		Dir:       "/tmp/dl",
+		Status:    download.Completed,
+		Priority:  5,
+		Type:      "mock",
+		TotalSize: 100,
+		CreatedAt: time.Now(),
+	}
+	liveDL := &download.Download{
+		ID:        uuid.New(),
+		URL:       "http://example.com/shared.bin",
+		Filename:  "shared.bin",
+		Dir:       "/tmp/dl",
+		Status:    download.Paused,
+		Priority:  5,
+		Type:      "mock",
+		TotalSize: 100,
+		CreatedAt: time.Now(),
+	}
+	require.NoError(t, s.Save(context.Background(), oldDL))
+	require.NoError(t, s.Save(context.Background(), liveDL))
+
+	m, cancel := startManager(t, s, dlr, 2)
+	defer shutdownManager(t, m, cancel)
+
+	m.RemoveDownload(context.Background(), oldDL.ID)
+
+	select {
+	case id := <-dlr.removeCh:
+		t.Fatalf("downloader Remove must not run for a shared output (got %s)", id)
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	// The record itself is still gone from list and store.
+	assert.Len(t, m.GetAllDownloads(), 1)
+	assert.Nil(t, s.get(oldDL.ID))
+
+	// Removing the last reference must clean up normally.
+	m.RemoveDownload(context.Background(), liveDL.ID)
+
+	select {
+	case id := <-dlr.removeCh:
+		assert.Equal(t, liveDL.ID, id)
+	case <-time.After(2 * time.Second):
+		t.Fatal("downloader Remove should run for the last reference")
+	}
+}
+
+// Regression test: a persist-tick snapshot taken just before a download
+// completes must never commit AFTER (and clobber) the completion record —
+// both paths clear the dirty flag, so a clobbered record would stay stale
+// in the store until shutdown and resurrect a finished download as Active
+// after a crash.
+func TestCompletionNotClobberedByPersistTick(t *testing.T) {
+	s := newMockStore()
+	dlr := newMockDownloader()
+
+	dlr.startFn = func(ctx context.Context, dl *download.Download, onProgress func(int64, int64, jsontext.Value)) error {
+		onProgress(500, 1000, jsontext.Value(`{"mid":"flight"}`))
+		time.Sleep(2 * time.Millisecond)
+		onProgress(1000, 1000, jsontext.Value(`{"all":"done"}`))
+
+		return nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	m := manager.New(s, 8)
+	m.Register(dlr)
+	require.NoError(t, m.Start(ctx))
+
+	// Hammer the persist path the way the 1s ticker would, concurrently
+	// with completions.
+	stopSaves := make(chan struct{})
+	savesDone := make(chan struct{})
+
+	go func() {
+		defer close(savesDone)
+
+		for {
+			select {
+			case <-stopSaves:
+				return
+			default:
+				m.SaveAllForTest(ctx)
+			}
+		}
+	}()
+
+	ids := make([]uuid.UUID, 0, 30)
+
+	for i := range 30 {
+		id, err := m.AddDownload(ctx, fmt.Sprintf("http://example.com/file-%d.zip", i), 5)
+		require.NoError(t, err)
+
+		ids = append(ids, id)
+	}
+
+	require.Eventually(t, func() bool {
+		for _, id := range ids {
+			persisted := s.get(id)
+			if persisted == nil || persisted.Status != download.Completed {
+				return false
+			}
+		}
+
+		return true
+	}, 10*time.Second, 10*time.Millisecond, "every completion must reach the store despite concurrent persist ticks")
+
+	close(stopSaves)
+	<-savesDone
+
+	cancel()
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer shutdownCancel()
+	require.NoError(t, m.Shutdown(shutdownCtx))
+}
+
+// Regression test: removing an active download must not let the unwinding
+// download goroutine (or an in-flight persist batch) write the record back
+// after store.Delete — a "ghost" download on next launch.
+func TestRemovedDownloadIsNotResurrected(t *testing.T) {
+	s := newMockStore()
+	dlr := newMockDownloader()
+
+	started := make(chan struct{}, 1)
+	dlr.startFn = func(ctx context.Context, _ *download.Download, _ func(int64, int64, jsontext.Value)) error {
+		started <- struct{}{}
+		<-ctx.Done()
+		// Simulate slow unwinding (saveState etc.) after cancellation so
+		// handleCompletion runs well after RemoveDownload's store.Delete.
+		time.Sleep(20 * time.Millisecond)
+
+		return ctx.Err()
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	m := manager.New(s, 2)
+	m.Register(dlr)
+	require.NoError(t, m.Start(ctx))
+
+	id, err := m.AddDownload(ctx, "http://example.com/file.zip", 5)
+	require.NoError(t, err)
+
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("download never started")
+	}
+
+	m.RemoveDownload(ctx, id)
+
+	// Give the unwinding goroutine time to (incorrectly) resurrect it.
+	time.Sleep(200 * time.Millisecond)
+	assert.Nil(t, s.get(id), "removed download must stay deleted")
+
+	cancel()
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer shutdownCancel()
+	require.NoError(t, m.Shutdown(shutdownCtx))
+}
+
+// Regression test: in-flight progress and resume-state checkpoints must reach
+// the store while Start is still running — otherwise a SIGKILL or power loss
+// throws away everything downloaded since the download began.
+func TestCheckpointPersistedWhileDownloadRunning(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		s := newMockStore()
+		dlr := newMockDownloader()
+
+		stateBlob := jsontext.Value(`{"chunks":"in-flight"}`)
+		dlr.startFn = func(ctx context.Context, _ *download.Download, onProgress func(int64, int64, jsontext.Value)) error {
+			onProgress(400, 1000, stateBlob)
+			<-ctx.Done()
+
+			return ctx.Err()
+		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		m := manager.New(s, 2)
+		m.Register(dlr)
+		require.NoError(t, m.Start(ctx))
+
+		id, err := m.AddDownload(ctx, "http://example.com/file.zip", 5)
+		require.NoError(t, err)
+
+		// Cross a persist tick while the download is still running.
+		time.Sleep(2100 * time.Millisecond)
+
+		persisted := s.get(id)
+		require.NotNil(t, persisted)
+		assert.Equal(t, download.Active, persisted.Status)
+		assert.Equal(t, int64(400), persisted.Downloaded)
+		assert.Equal(t, stateBlob, persisted.State)
+
+		cancel()
+
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer shutdownCancel()
+		require.NoError(t, m.Shutdown(shutdownCtx))
 	})
 }
 
