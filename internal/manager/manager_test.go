@@ -43,6 +43,16 @@ func (s *mockStore) Save(_ context.Context, dl *download.Download) error {
 	return nil
 }
 
+func (s *mockStore) SaveBatch(ctx context.Context, dls []*download.Download) error {
+	for _, dl := range dls {
+		if err := s.Save(ctx, dl); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 func (s *mockStore) GetAll(_ context.Context) ([]*download.Download, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -11,6 +11,8 @@ import (
 // Store abstracts download persistence.
 type Store interface {
 	Save(ctx context.Context, dl *download.Download) error
+	// SaveBatch persists all downloads in a single transaction (one fsync).
+	SaveBatch(ctx context.Context, dls []*download.Download) error
 	GetAll(ctx context.Context) ([]*download.Download, error)
 	Delete(ctx context.Context, id uuid.UUID) error
 	Close() error

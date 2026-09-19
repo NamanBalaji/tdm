@@ -61,6 +61,32 @@ func (s *Store) Save(_ context.Context, dl *download.Download) error {
 	})
 }
 
+func (s *Store) SaveBatch(_ context.Context, dls []*download.Download) error {
+	if len(dls) == 0 {
+		return nil
+	}
+
+	return s.db.Update(func(tx *bbolt.Tx) error {
+		b := tx.Bucket(bucketName)
+		if b == nil {
+			return ErrBucketNotFound
+		}
+
+		for _, dl := range dls {
+			data, err := json.Marshal(dl)
+			if err != nil {
+				return fmt.Errorf("failed to marshal download %s: %w", dl.ID, err)
+			}
+
+			if err := b.Put([]byte(dl.ID.String()), data); err != nil {
+				return err
+			}
+		}
+
+		return nil
+	})
+}
+
 func (s *Store) GetAll(_ context.Context) ([]*download.Download, error) {
 	var downloads []*download.Download
 
