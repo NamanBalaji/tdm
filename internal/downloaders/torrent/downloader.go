@@ -2,6 +2,7 @@ package torrent
 
 import (
 	"context"
+	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"fmt"
 	"log/slog"
@@ -72,7 +73,7 @@ func (d *Downloader) Init(ctx context.Context, url string, priority int) (*downl
 	}, nil
 }
 
-func (d *Downloader) Start(ctx context.Context, dl *download.Download, onProgress func(int64, int64)) error {
+func (d *Downloader) Start(ctx context.Context, dl *download.Download, onProgress func(int64, int64, jsontext.Value)) error {
 	var st torrentState
 	if err := json.Unmarshal(dl.State, &st); err != nil {
 		return fmt.Errorf("failed to unmarshal state: %w", err)
@@ -114,7 +115,7 @@ func (d *Downloader) Start(ctx context.Context, dl *download.Download, onProgres
 
 			downloaded := th.BytesCompleted()
 			totalSize := th.Length()
-			onProgress(downloaded, totalSize)
+			onProgress(downloaded, totalSize, nil)
 
 			// Check completion
 			if th.Complete().Bool() && downloaded >= totalSize {

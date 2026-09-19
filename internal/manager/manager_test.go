@@ -2,6 +2,7 @@ package manager_test
 
 import (
 	"context"
+	"encoding/json/jsontext"
 	"errors"
 	"sync"
 	"testing"
@@ -106,7 +107,7 @@ type mockDownloader struct {
 	initErr    error
 	startErr   error
 	startDelay time.Duration
-	startFn    func(ctx context.Context, dl *download.Download, onProgress func(int64, int64)) error
+	startFn    func(ctx context.Context, dl *download.Download, onProgress func(int64, int64, jsontext.Value)) error
 	removeCh   chan uuid.UUID
 }
 
@@ -142,7 +143,7 @@ func (d *mockDownloader) Init(_ context.Context, url string, priority int) (*dow
 	}, nil
 }
 
-func (d *mockDownloader) Start(ctx context.Context, dl *download.Download, onProgress func(int64, int64)) error {
+func (d *mockDownloader) Start(ctx context.Context, dl *download.Download, onProgress func(int64, int64, jsontext.Value)) error {
 	if d.startFn != nil {
 		return d.startFn(ctx, dl, onProgress)
 	}
@@ -159,7 +160,7 @@ func (d *mockDownloader) Start(ctx context.Context, dl *download.Download, onPro
 		return d.startErr
 	}
 
-	onProgress(dl.TotalSize, dl.TotalSize)
+	onProgress(dl.TotalSize, dl.TotalSize, nil)
 
 	return nil
 }
@@ -285,7 +286,7 @@ func TestManager(t *testing.T) {
 				dlr := newMockDownloader()
 
 				blockCh := make(chan struct{})
-				dlr.startFn = func(ctx context.Context, _ *download.Download, _ func(int64, int64)) error {
+				dlr.startFn = func(ctx context.Context, _ *download.Download, _ func(int64, int64, jsontext.Value)) error {
 					select {
 					case <-blockCh:
 						return nil
@@ -344,7 +345,7 @@ func TestManager(t *testing.T) {
 				dlr := newMockDownloader()
 
 				blockCh := make(chan struct{})
-				dlr.startFn = func(ctx context.Context, _ *download.Download, _ func(int64, int64)) error {
+				dlr.startFn = func(ctx context.Context, _ *download.Download, _ func(int64, int64, jsontext.Value)) error {
 					select {
 					case <-blockCh:
 						return nil
@@ -405,7 +406,7 @@ func TestManager(t *testing.T) {
 				dlr := newMockDownloader()
 
 				blockCh := make(chan struct{})
-				dlr.startFn = func(ctx context.Context, _ *download.Download, _ func(int64, int64)) error {
+				dlr.startFn = func(ctx context.Context, _ *download.Download, _ func(int64, int64, jsontext.Value)) error {
 					select {
 					case <-blockCh:
 						return nil
@@ -485,7 +486,7 @@ func TestManager(t *testing.T) {
 		t.Run("returns sorted by priority desc", func(t *testing.T) {
 			s := newMockStore()
 			dlr := newMockDownloader()
-			dlr.startFn = func(ctx context.Context, _ *download.Download, _ func(int64, int64)) error {
+			dlr.startFn = func(ctx context.Context, _ *download.Download, _ func(int64, int64, jsontext.Value)) error {
 				<-ctx.Done()
 				return ctx.Err()
 			}
@@ -625,7 +626,7 @@ func TestManager(t *testing.T) {
 		maxSeen := 0
 		doneCh := make(chan struct{})
 
-		dlr.startFn = func(ctx context.Context, _ *download.Download, onProgress func(int64, int64)) error {
+		dlr.startFn = func(ctx context.Context, _ *download.Download, onProgress func(int64, int64, jsontext.Value)) error {
 			activeMu.Lock()
 			activeCount++
 			if activeCount > maxSeen {
@@ -641,7 +642,7 @@ func TestManager(t *testing.T) {
 
 			select {
 			case <-doneCh:
-				onProgress(1000, 1000)
+				onProgress(1000, 1000, nil)
 				return nil
 			case <-ctx.Done():
 				return ctx.Err()
@@ -672,7 +673,7 @@ func TestManager(t *testing.T) {
 		t.Run("graceful shutdown saves all downloads", func(t *testing.T) {
 			s := newMockStore()
 			dlr := newMockDownloader()
-			dlr.startFn = func(ctx context.Context, _ *download.Download, _ func(int64, int64)) error {
+			dlr.startFn = func(ctx context.Context, _ *download.Download, _ func(int64, int64, jsontext.Value)) error {
 				<-ctx.Done()
 				return ctx.Err()
 			}
@@ -699,7 +700,7 @@ func TestManager(t *testing.T) {
 			dlr := newMockDownloader()
 
 			blockCh := make(chan struct{})
-			dlr.startFn = func(ctx context.Context, _ *download.Download, _ func(int64, int64)) error {
+			dlr.startFn = func(ctx context.Context, _ *download.Download, _ func(int64, int64, jsontext.Value)) error {
 				select {
 				case <-blockCh:
 					return nil
@@ -740,7 +741,7 @@ func TestDownloaderStateWriteDoesNotRacePersistLoop(t *testing.T) {
 		dlr := newMockDownloader()
 
 		stateBlob := []byte(`{"resume":"data"}`)
-		dlr.startFn = func(ctx context.Context, dl *download.Download, onProgress func(int64, int64)) error {
+		dlr.startFn = func(ctx context.Context, dl *download.Download, onProgress func(int64, int64, jsontext.Value)) error {
 			for {
 				select {
 				case <-ctx.Done():
@@ -749,7 +750,7 @@ func TestDownloaderStateWriteDoesNotRacePersistLoop(t *testing.T) {
 					return ctx.Err()
 				case <-time.After(10 * time.Millisecond):
 					dl.State = stateBlob
-					onProgress(500, 1000)
+					onProgress(500, 1000, nil)
 				}
 			}
 		}
@@ -783,7 +784,7 @@ func TestShutdownTimeoutLateErrorDoesNotPanic(t *testing.T) {
 
 	blockCh := make(chan struct{})
 	lateErr := errors.New("disk write failed during cleanup")
-	dlr.startFn = func(ctx context.Context, _ *download.Download, _ func(int64, int64)) error {
+	dlr.startFn = func(ctx context.Context, _ *download.Download, _ func(int64, int64, jsontext.Value)) error {
 		<-ctx.Done()
 		<-blockCh
 

@@ -78,6 +78,11 @@ func TestIsRetryableError(t *testing.T) {
 			err:      io.EOF,
 			expected: false,
 		},
+		{
+			name:     "unexpected EOF (premature server close) is retryable",
+			err:      fmt.Errorf("%w: server closed connection", httpPkg.ErrUnexpectedEOF),
+			expected: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -128,6 +133,40 @@ func TestCalculateBackoff(t *testing.T) {
 		b := httpdl.CalculateBackoff(0, time.Millisecond)
 		assert.GreaterOrEqual(t, b, time.Millisecond)
 	})
+}
+
+func TestParseContentRange(t *testing.T) {
+	tests := []struct {
+		header    string
+		wantStart int64
+		wantTotal int64
+		wantOK    bool
+	}{
+		{"bytes 0-99/1000", 0, 1000, true},
+		{"bytes 500-999/1000", 500, 1000, true},
+		{"bytes 500-999/*", 500, -1, true},        // total unknown
+		{"bytes 500-999", 500, -1, true},          // total omitted (non-conforming)
+		{"bytes 500-999/", 500, -1, true},         // total empty (non-conforming)
+		{"bytes 500-999/ 1000 ", 500, 1000, true}, // tolerate whitespace
+		{"bytes */1000", 0, 0, false},             // unsatisfied-range form
+		{"items 0-99/1000", 0, 0, false},
+		{"bytes -5-99/1000", 0, 0, false},
+		{"bytes 0-99/abc", 0, 0, false},
+		{"bytes 0-99/-1", 0, 0, false},
+		{"", 0, 0, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.header, func(t *testing.T) {
+			start, total, ok := httpdl.ParseContentRange(tt.header)
+			assert.Equal(t, tt.wantOK, ok)
+
+			if tt.wantOK {
+				assert.Equal(t, tt.wantStart, start)
+				assert.Equal(t, tt.wantTotal, total)
+			}
+		})
+	}
 }
 
 func TestConnectionRead(t *testing.T) {
@@ -185,7 +224,8 @@ func TestConnectionRead(t *testing.T) {
 		var receivedHeaders http.Header
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			receivedHeaders = r.Header
-			w.WriteHeader(http.StatusOK)
+			w.Header().Set("Content-Range", "bytes 100-200/1000")
+			w.WriteHeader(http.StatusPartialContent)
 			w.Write([]byte("ok"))
 		}))
 		defer srv.Close()
@@ -204,6 +244,121 @@ func TestConnectionRead(t *testing.T) {
 		}
 		assert.Equal(t, "bytes=100-200", receivedHeaders.Get("Range"))
 		assert.Equal(t, "TestAgent/1.0", receivedHeaders.Get("User-Agent"))
+	})
+
+	t.Run("200 response to a range request is rejected", func(t *testing.T) {
+		// A server that ignores the Range header sends bytes from 0; writing
+		// them into a chunk at a different offset would corrupt the file.
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte("whole file from byte zero"))
+		}))
+		defer srv.Close()
+
+		headers := map[string]string{"Range": "bytes=100-200"}
+		client := httpPkg.NewClient(0)
+		conn := httpdl.NewTestConnection(srv.URL, headers, client, 100, 200)
+
+		buf := make([]byte, 64)
+		_, err := conn.Read(context.Background(), buf)
+		require.Error(t, err)
+		assert.ErrorIs(t, err, httpPkg.ErrRangesNotSupported)
+	})
+
+	t.Run("mismatched Content-Range start is rejected", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Range", "bytes 0-200/1000")
+			w.WriteHeader(http.StatusPartialContent)
+			w.Write([]byte("data"))
+		}))
+		defer srv.Close()
+
+		headers := map[string]string{"Range": "bytes=100-200"}
+		client := httpPkg.NewClient(0)
+		conn := httpdl.NewTestConnection(srv.URL, headers, client, 100, 200)
+
+		buf := make([]byte, 64)
+		_, err := conn.Read(context.Background(), buf)
+		require.Error(t, err)
+		assert.ErrorIs(t, err, httpPkg.ErrInvalidContentRange)
+	})
+
+	t.Run("missing Content-Range is rejected", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusPartialContent)
+			w.Write([]byte("data"))
+		}))
+		defer srv.Close()
+
+		headers := map[string]string{"Range": "bytes=100-200"}
+		client := httpPkg.NewClient(0)
+		conn := httpdl.NewTestConnection(srv.URL, headers, client, 100, 200)
+
+		buf := make([]byte, 64)
+		_, err := conn.Read(context.Background(), buf)
+		require.Error(t, err)
+		assert.ErrorIs(t, err, httpPkg.ErrInvalidContentRange)
+	})
+
+	t.Run("range response for a different file size is rejected", func(t *testing.T) {
+		// The file on the server was replaced by a bigger one after the
+		// download was added: the right offset, but of a different file.
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Range", "bytes 100-200/2000")
+			w.WriteHeader(http.StatusPartialContent)
+			w.Write([]byte("data"))
+		}))
+		defer srv.Close()
+
+		headers := map[string]string{"Range": "bytes=100-200"}
+		conn := httpdl.NewTestConnectionWithTotal(srv.URL, headers, httpPkg.NewClient(0), 100, 200, 1000)
+
+		buf := make([]byte, 64)
+		_, err := conn.Read(context.Background(), buf)
+		require.Error(t, err)
+		assert.ErrorIs(t, err, httpPkg.ErrSizeMismatch)
+		assert.False(t, httpdl.IsRetryableError(err), "retrying can't fix a changed remote file")
+	})
+
+	t.Run("range response with matching or unknown total is accepted", func(t *testing.T) {
+		for _, cr := range []string{"bytes 100-200/1000", "bytes 100-200/*"} {
+			t.Run(cr, func(t *testing.T) {
+				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					w.Header().Set("Content-Range", cr)
+					w.WriteHeader(http.StatusPartialContent)
+					w.Write([]byte("data"))
+				}))
+				defer srv.Close()
+
+				headers := map[string]string{"Range": "bytes=100-200"}
+				conn := httpdl.NewTestConnectionWithTotal(srv.URL, headers, httpPkg.NewClient(0), 100, 200, 1000)
+
+				buf := make([]byte, 64)
+				n, err := conn.Read(context.Background(), buf)
+				if err != nil && err != io.EOF {
+					require.NoError(t, err)
+				}
+				assert.Equal(t, "data", string(buf[:n]))
+			})
+		}
+	})
+
+	t.Run("full response for a different file size is rejected", func(t *testing.T) {
+		// No Range header (the server doesn't support ranges): the whole
+		// file comes back, and its length must still match.
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Length", "2000")
+			w.WriteHeader(http.StatusOK)
+			w.Write(make([]byte, 2000))
+		}))
+		defer srv.Close()
+
+		conn := httpdl.NewTestConnectionWithTotal(srv.URL, nil, httpPkg.NewClient(0), 0, 999, 1000)
+
+		buf := make([]byte, 64)
+		_, err := conn.Read(context.Background(), buf)
+		require.Error(t, err)
+		assert.ErrorIs(t, err, httpPkg.ErrSizeMismatch)
 	})
 
 	t.Run("lazy connection - not connected until first read", func(t *testing.T) {

@@ -22,6 +22,7 @@ type chunkState struct {
 // probeResult holds metadata discovered by probing the URL.
 type probeResult struct {
 	filename       string
+	contentType    string
 	totalSize      int64
 	supportsRanges bool
 }

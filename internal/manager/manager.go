@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"encoding/json/jsontext"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -430,7 +431,7 @@ func (m *Manager) runDownload(managerCtx, dlCtx context.Context, md *managedDown
 		return
 	}
 
-	err := dlr.Start(dlCtx, &dl, func(downloaded, totalSize int64) {
+	err := dlr.Start(dlCtx, &dl, func(downloaded, totalSize int64, _ jsontext.Value) {
 		md.tracker.Update(downloaded, totalSize)
 	})
 

@@ -13,6 +13,7 @@ var (
 	ErrRangesNotSupported  = errors.New("byte ranges not supported by server")
 	ErrInvalidContentRange = errors.New("invalid Content-Range header")
 	ErrUnknownSize         = errors.New("content length unknown")
+	ErrSizeMismatch        = errors.New("remote file size changed since the download was added")
 
 	ErrTimeout         = errors.New("operation timed out")
 	ErrNetworkProblem  = errors.New("network-related error")
@@ -60,7 +61,18 @@ func ClassifyHTTPError(statusCode int) error {
 	}
 }
 
+// classifiedSentinels lists every sentinel this package classifies into;
+// used to make ClassifyError idempotent.
+var classifiedSentinels = []error{
+	ErrHeadNotSupported, ErrRangesNotSupported, ErrInvalidContentRange, ErrUnknownSize, ErrSizeMismatch,
+	ErrTimeout, ErrNetworkProblem, ErrIOProblem, ErrRequestCreation,
+	ErrServerProblem, ErrTooManyRequests, ErrResourceNotFound, ErrAccessDenied,
+	ErrAuthentication, ErrGone, ErrClientRequest, ErrUnknown, ErrUnexpectedEOF,
+}
+
 // ClassifyError categorizes a general error into a sentinel error.
+// Errors that already wrap one of this package's sentinels are returned
+// unchanged, so classification is safe to apply at multiple layers.
 func ClassifyError(err error) error {
 	if err == nil {
 		return nil
@@ -68,6 +80,12 @@ func ClassifyError(err error) error {
 
 	if errors.Is(err, context.Canceled) {
 		return err
+	}
+
+	for _, sentinel := range classifiedSentinels {
+		if errors.Is(err, sentinel) {
+			return err
+		}
 	}
 
 	if errors.Is(err, context.DeadlineExceeded) {
