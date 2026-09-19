@@ -12,6 +12,7 @@ import (
 	"path"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 const (
@@ -33,7 +34,9 @@ type Client struct {
 }
 
 // NewClient creates a new HTTP client with custom transport settings.
-func NewClient() *Client {
+// perHostConns raises the per-host connection limit above the default of
+// 16 so a configured connection count is never silently capped.
+func NewClient(perHostConns int) *Client {
 	transport := &http.Transport{
 		Proxy: http.ProxyFromEnvironment,
 		DialContext: (&net.Dialer{
@@ -45,7 +48,7 @@ func NewClient() *Client {
 		TLSHandshakeTimeout:   tlsHandshakeTimeout,
 		ExpectContinueTimeout: expectContinueTimeout,
 		DisableCompression:    true,
-		MaxConnsPerHost:       maxConnsPerHost,
+		MaxConnsPerHost:       max(perHostConns, maxConnsPerHost),
 	}
 
 	return &Client{
@@ -55,54 +58,16 @@ func NewClient() *Client {
 	}
 }
 
-// IsDownloadable checks if the given URL is downloadable.
+// IsDownloadable reports whether the URL is a candidate for HTTP download.
+// It is purely syntactic — no network I/O. Whether the content is actually
+// downloadable is determined by the probe at Init time.
 func IsDownloadable(urlStr string) bool {
-	_, err := url.Parse(urlStr)
+	u, err := url.Parse(urlStr)
 	if err != nil {
 		return false
 	}
 
-	resp, err := http.Head(urlStr)
-	if err != nil || resp.StatusCode >= 400 {
-		// Fallback to GET if HEAD fails
-		resp, err = http.Get(urlStr)
-		if err != nil {
-			return false
-		}
-	}
-
-	defer func() {
-		if err := resp.Body.Close(); err != nil {
-			slog.Warn("failed to close response body", "err", err)
-		}
-	}()
-
-	finalURL := resp.Request.URL
-
-	return (finalURL.Scheme == "http" || finalURL.Scheme == "https") && isDownloadableContent(resp)
-}
-
-// isDownloadableContent checks if the response represents downloadable content.
-func isDownloadableContent(resp *http.Response) bool {
-	contentType := resp.Header.Get("Content-Type")
-	contentDisp := resp.Header.Get("Content-Disposition")
-
-	// Explicit attachment disposition means downloadable
-	if contentDisp != "" {
-		return true
-	}
-
-	// Check content type
-	if contentType != "" {
-		// HTML is typically not downloadable (it's a web page)
-		if strings.HasPrefix(contentType, "text/html") {
-			return false
-		}
-
-		return true
-	}
-
-	return true
+	return (u.Scheme == "http" || u.Scheme == "https") && u.Host != ""
 }
 
 // Head performs a HEAD request to the specified URL with optional headers.
@@ -228,23 +193,113 @@ func generateRequest(ctx context.Context, urlStr, method string, headers map[str
 }
 
 // GetFilename tries extracts the filename from the Content-Disposition header or the URL.
+// All sources are server-controlled, so every candidate is sanitized before use.
 func GetFilename(resp *http.Response) string {
-	fileName, ok := getFileNameFromContentDisposition(resp.Header.Get("Content-Disposition"))
-	if ok {
-		return fileName
+	if fileName, ok := getFileNameFromContentDisposition(resp.Header.Get("Content-Disposition")); ok {
+		if s := SanitizeFilename(fileName); s != "" {
+			return s
+		}
 	}
 
 	u := resp.Request.URL
 	if qname := u.Query().Get("filename"); qname != "" {
-		return qname
+		if s := SanitizeFilename(qname); s != "" {
+			return s
+		}
 	}
 
-	base := path.Base(u.Path)
-	if base != "" && base != "/" {
-		return base
+	if s := SanitizeFilename(path.Base(u.Path)); s != "" {
+		return s
 	}
 
 	return defaultDownloadName
+}
+
+// SanitizeFilename reduces an untrusted filename to a single safe path
+// element: no directory components, control characters, or Windows
+// reserved names. Returns "" if nothing safe remains.
+func SanitizeFilename(name string) string {
+	// A hostile server can smuggle traversal like "../../etc/cron.d/x"
+	// (with either separator); keep only the last path element.
+	name = strings.ReplaceAll(name, "\\", "/")
+	name = path.Base(name)
+
+	if name == "/" || name == "." || name == ".." {
+		return ""
+	}
+
+	name = strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		switch r {
+		case '<', '>', ':', '"', '|', '?', '*':
+			return '_'
+		}
+
+		return r
+	}, name)
+
+	// Windows strips trailing dots and spaces, which could turn "safe.."
+	// into an unexpected name.
+	name = strings.TrimRight(name, " .")
+	if name == "" {
+		return ""
+	}
+
+	name = truncateFilename(name)
+
+	if isWindowsReservedName(name) {
+		name = "_" + name
+	}
+
+	return name
+}
+
+// maxFilenameBytes caps sanitized names well under the common 255-byte
+// filesystem limit, leaving room for the suffixes tdm appends (".<rand>.part"
+// merge temps, ".N" collision renames).
+const maxFilenameBytes = 200
+
+// truncateFilename shortens over-long names, preserving the extension and
+// never splitting a multi-byte rune.
+func truncateFilename(name string) string {
+	if len(name) <= maxFilenameBytes {
+		return name
+	}
+
+	ext := path.Ext(name)
+	if len(ext) > maxFilenameBytes/2 {
+		ext = ""
+	}
+
+	base := name[:maxFilenameBytes-len(ext)]
+	for len(base) > 0 && !utf8.ValidString(base) {
+		base = base[:len(base)-1]
+	}
+
+	return strings.TrimRight(base, " .") + ext
+}
+
+// isWindowsReservedName reports whether name (ignoring any extension) is a
+// reserved device name on Windows, e.g. "CON" or "com1.txt".
+func isWindowsReservedName(name string) bool {
+	base := strings.ToUpper(name)
+	if i := strings.IndexByte(base, '.'); i >= 0 {
+		base = base[:i]
+	}
+
+	switch base {
+	case "CON", "PRN", "AUX", "NUL":
+		return true
+	}
+
+	if len(base) == 4 && (strings.HasPrefix(base, "COM") || strings.HasPrefix(base, "LPT")) &&
+		base[3] >= '1' && base[3] <= '9' {
+		return true
+	}
+
+	return false
 }
 
 func getFileNameFromContentDisposition(header string) (string, bool) {

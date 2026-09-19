@@ -28,7 +28,7 @@ type Downloader struct {
 func New(cfg *config.HTTPConfig) *Downloader {
 	return &Downloader{
 		cfg:    cfg,
-		client: httpPkg.NewClient(),
+		client: httpPkg.NewClient(cfg.Connections),
 	}
 }
 

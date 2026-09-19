@@ -139,7 +139,7 @@ func TestConnectionRead(t *testing.T) {
 		}))
 		defer srv.Close()
 
-		client := httpPkg.NewClient()
+		client := httpPkg.NewClient(0)
 		conn := httpdl.NewTestConnection(srv.URL, nil, client, 0, int64(len(body)-1))
 
 		buf := make([]byte, 64)
@@ -157,7 +157,7 @@ func TestConnectionRead(t *testing.T) {
 		}))
 		defer srv.Close()
 
-		client := httpPkg.NewClient()
+		client := httpPkg.NewClient(0)
 		conn := httpdl.NewTestConnection(srv.URL, nil, client, 0, 10)
 
 		buf := make([]byte, 64)
@@ -172,7 +172,7 @@ func TestConnectionRead(t *testing.T) {
 		}))
 		defer srv.Close()
 
-		client := httpPkg.NewClient()
+		client := httpPkg.NewClient(0)
 		conn := httpdl.NewTestConnection(srv.URL, nil, client, 0, 10)
 
 		buf := make([]byte, 64)
@@ -194,7 +194,7 @@ func TestConnectionRead(t *testing.T) {
 			"Range":      "bytes=100-200",
 			"User-Agent": "TestAgent/1.0",
 		}
-		client := httpPkg.NewClient()
+		client := httpPkg.NewClient(0)
 		conn := httpdl.NewTestConnection(srv.URL, headers, client, 100, 200)
 
 		buf := make([]byte, 64)
@@ -214,7 +214,7 @@ func TestConnectionRead(t *testing.T) {
 		}))
 		defer srv.Close()
 
-		client := httpPkg.NewClient()
+		client := httpPkg.NewClient(0)
 		conn := httpdl.NewTestConnection(srv.URL, nil, client, 0, 3)
 		assert.Equal(t, 0, callCount)
 

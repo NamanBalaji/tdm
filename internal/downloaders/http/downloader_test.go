@@ -131,7 +131,7 @@ func TestDownloadChunk(t *testing.T) {
 			RetryDelay:  10 * time.Millisecond,
 			Connections: 1,
 		}
-		client := httpPkg.NewClient()
+		client := httpPkg.NewClient(0)
 		d := httpdl.NewDownloaderWithClient(cfg, client)
 
 		chunk := &httpdl.ChunkState{
@@ -175,7 +175,7 @@ func TestDownloadChunk(t *testing.T) {
 			RetryDelay:  1 * time.Millisecond,
 			Connections: 1,
 		}
-		client := httpPkg.NewClient()
+		client := httpPkg.NewClient(0)
 		d := httpdl.NewDownloaderWithClient(cfg, client)
 
 		chunk := &httpdl.ChunkState{
@@ -208,7 +208,7 @@ func TestDownloadChunk(t *testing.T) {
 			RetryDelay:  1 * time.Millisecond,
 			Connections: 1,
 		}
-		client := httpPkg.NewClient()
+		client := httpPkg.NewClient(0)
 		d := httpdl.NewDownloaderWithClient(cfg, client)
 
 		chunk := &httpdl.ChunkState{
@@ -240,7 +240,7 @@ func TestDownloadChunk(t *testing.T) {
 			RetryDelay:  100 * time.Millisecond,
 			Connections: 1,
 		}
-		client := httpPkg.NewClient()
+		client := httpPkg.NewClient(0)
 		d := httpdl.NewDownloaderWithClient(cfg, client)
 
 		chunk := &httpdl.ChunkState{
@@ -275,7 +275,7 @@ func TestDownloadChunk(t *testing.T) {
 			RetryDelay:  1 * time.Millisecond,
 			Connections: 1,
 		}
-		client := httpPkg.NewClient()
+		client := httpPkg.NewClient(0)
 		d := httpdl.NewDownloaderWithClient(cfg, client)
 
 		chunk := &httpdl.ChunkState{
@@ -315,7 +315,7 @@ func TestStart(t *testing.T) {
 			MaxRetries:  2,
 			RetryDelay:  1 * time.Millisecond,
 		}
-		client := httpPkg.NewClient()
+		client := httpPkg.NewClient(0)
 		d := httpdl.NewDownloaderWithClient(cfg, client)
 
 		chunkFile := filepath.Join(tmpDir, "chunk0")
@@ -372,7 +372,7 @@ func TestStart(t *testing.T) {
 			MaxRetries:  2,
 			RetryDelay:  1 * time.Millisecond,
 		}
-		client := httpPkg.NewClient()
+		client := httpPkg.NewClient(0)
 		d := httpdl.NewDownloaderWithClient(cfg, client)
 
 		st := httpdl.HttpState{
@@ -429,7 +429,7 @@ func TestStart(t *testing.T) {
 			MaxRetries:  1,
 			RetryDelay:  1 * time.Millisecond,
 		}
-		client := httpPkg.NewClient()
+		client := httpPkg.NewClient(0)
 		d := httpdl.NewDownloaderWithClient(cfg, client)
 
 		chunkFile := filepath.Join(tmpDir, "chunk0")
@@ -497,7 +497,7 @@ func TestInit(t *testing.T) {
 			MaxRetries:  3,
 			RetryDelay:  time.Second,
 		}
-		client := httpPkg.NewClient()
+		client := httpPkg.NewClient(0)
 		d := httpdl.NewDownloaderWithClient(cfg, client)
 
 		dl, err := d.Init(context.Background(), srv.URL, 5)
@@ -531,7 +531,7 @@ func TestInit(t *testing.T) {
 			TempDir:     t.TempDir(),
 			Chunks:      4,
 		}
-		client := httpPkg.NewClient()
+		client := httpPkg.NewClient(0)
 		d := httpdl.NewDownloaderWithClient(cfg, client)
 
 		_, err := d.Init(context.Background(), srv.URL, 1)
