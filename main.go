@@ -85,7 +85,7 @@ func main() {
 	mgr := manager.New(store, cfg.MaxConcurrentDownloads)
 
 	// Register downloaders (order matters — first match wins)
-	mgr.Register(torrentdl.New(torrentClient, cfg.Torrent.DownloadDir))
+	mgr.Register(torrentdl.New(torrentClient, cfg.Torrent))
 	mgr.Register(httpdl.New(cfg.HTTP))
 
 	if err := mgr.Start(ctx); err != nil {
