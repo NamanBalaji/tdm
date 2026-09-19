@@ -92,13 +92,9 @@ func main() {
 		log.Fatalf("Error starting manager: %v\n", err)
 	}
 
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	queueFlagURLs(ctx, mgr, cfg.Urls)
 
-	go func() {
-		<-sigChan
-		cancel()
-	}()
+	cancelOnSignal(cancel)
 
 	if err := tui.Run(ctx, mgr); err != nil {
 		slog.Error("TUI error", "err", err)
@@ -114,4 +110,31 @@ func main() {
 	}
 
 	mgr.Wait()
+}
+
+// cancelOnSignal cancels the app context on SIGINT/SIGTERM.
+func cancelOnSignal(cancel context.CancelFunc) {
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
+	go func() {
+		<-sigChan
+		cancel()
+	}()
+}
+
+// queueFlagURLs adds downloads passed via the -urls flag. Adding probes the
+// network, so it runs in the background and the TUI comes up immediately.
+func queueFlagURLs(ctx context.Context, mgr *manager.Manager, urls []string) {
+	if len(urls) == 0 {
+		return
+	}
+
+	go func() {
+		for _, u := range urls {
+			if _, err := mgr.AddDownload(ctx, u, 5); err != nil {
+				slog.Error("failed to add download from -urls flag", "url", u, "err", err)
+			}
+		}
+	}()
 }
